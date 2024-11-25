@@ -467,165 +467,232 @@ class ImageProcessor:
 class TabularProcessor:
     """Handles tabular data viewing and editing for extracted masks"""
     
-    def __init__(self, config: TabularConfig):  # You'll need to create this config class
-        self.pdfimg_output_dir = Path(config.pdfimg_output_dir)
-        self.pred_output_dir = Path(config.pred_output_dir)
+    def __init__(self, config: TabularConfig):
+        self.pdfimg_output_dir = Path(config.pdfimg_output_dir).resolve()
+        self.pred_output_dir = Path(config.pred_output_dir).resolve()
         self._current_file = None
 
     def get_results_folders(self) -> List[str]:
-        """Get list of folders containing results"""
-        folder_list = os.listdir(self.pred_output_dir)
-        return [folder for folder in folder_list if folder.endswith('_card') and not folder.endswith('transformed_card')]
+        """Get list of folders containing results with validation"""
+        try:
+            folder_list = [f for f in os.listdir(self.pred_output_dir) 
+                          if f.endswith('_card') and not f.endswith('transformed_card')]
+            
+            # Validate each folder contains required files
+            valid_folders = []
+            for folder in folder_list:
+                folder_path = self.pred_output_dir / folder
+                if folder_path.is_dir():
+                    mask_info = folder_path / "mask_info.csv"
+                    mask_info_annots = folder_path / "mask_info_annots.csv"
+                    if mask_info.exists() and mask_info_annots.exists():
+                        valid_folders.append(folder)
+                        print(f"Valid folder found: {folder}")
+            
+            return valid_folders
+            
+        except Exception as e:
+            print(f"Error in get_results_folders: {str(e)}")
+            return []
 
     def convert_bbox(self, bbox_str: str) -> tuple:
-        """Convert bbox string to tuple of integers"""
-        bbox = bbox_str.strip('()').split(',')
-        return tuple(int(coord) for coord in bbox)
+        """Convert bbox string to tuple with error handling"""
+        try:
+            # Remove parentheses and split
+            bbox = bbox_str.strip('()').split(',')
+            return tuple(int(float(coord)) for coord in bbox)
+        except Exception as e:
+            print(f"Error converting bbox {bbox_str}: {str(e)}")
+            return (0, 0, 0, 0)
 
     def create_annotation_tuple(self, df: pd.DataFrame, image_name: str) -> List[tuple]:
-        """Create list of annotation tuples for an image"""
-        df_selected = df[df['image_name'] == image_name]
-        return [(self.convert_bbox(row['bbox']), row['ID']) for _, row in df_selected.iterrows()]
+        """Create list of annotation tuples with validation"""
+        try:
+            # Filter dataframe for current image
+            df_selected = df[df['image_name'] == image_name].copy()
+            
+            if df_selected.empty:
+                print(f"No annotations found for image {image_name}")
+                return []
+            
+            # Create annotation tuples with error handling
+            annotations = []
+            for _, row in df_selected.iterrows():
+                try:
+                    bbox = self.convert_bbox(row['bbox'])
+                    mask_id = str(row['ID']).strip()  # Ensure ID is string and clean
+                    if all(isinstance(x, (int, float)) for x in bbox):
+                        annotations.append((bbox, mask_id))
+                except Exception as e:
+                    print(f"Error processing annotation row: {str(e)}")
+                    continue
+                    
+            return annotations
+            
+        except Exception as e:
+            print(f"Error creating annotations: {str(e)}")
+            return []
 
     def image_selection(self, folder: str, img_num: int) -> tuple:
         """Select and prepare image and associated data for display"""
         try:
-            # Get folder paths
+            if not folder:
+                return None, img_num, pd.DataFrame()
+
+            # Setup paths
             context = folder.split("_card")[0]
-            folder_mask_path = self.pred_output_dir / f"{context}_mask"
-            folder_img_path = self.pdfimg_output_dir / context
-            csv_path = self.pred_output_dir / folder
+            folder_mask_path = (self.pred_output_dir / f"{context}_mask").resolve()
+            folder_img_path = (self.pdfimg_output_dir / context).resolve()
+            csv_path = (self.pred_output_dir / folder).resolve()
+
+            print(f"\nProcessing paths:")
+            print(f"Mask folder: {folder_mask_path}")
+            print(f"Image folder: {folder_img_path}")
+            print(f"CSV folder: {csv_path}")
+
+            # Validate paths existence
+            if not all(p.exists() for p in [folder_mask_path, folder_img_path, csv_path]):
+                print("Missing required folders")
+                return None, img_num, pd.DataFrame()
 
             # Load CSV files
-            csv_files = [f for f in os.listdir(csv_path) if f.endswith('.csv')]
-            if not csv_files:
+            try:
+                mask_info_path = csv_path / "mask_info.csv"
+                mask_info_annots_path = csv_path / "mask_info_annots.csv"
+
+                print(f"\nReading CSV files:")
+                print(f"mask_info.csv: {mask_info_path}")
+                print(f"mask_info_annots.csv: {mask_info_annots_path}")
+
+                if not mask_info_path.exists() or not mask_info_annots_path.exists():
+                    print("Required CSV files not found")
+                    return None, img_num, pd.DataFrame()
+
+                # Read CSVs with explicit dtypes
+                df = pd.read_csv(mask_info_path).fillna('')
+                df_annots = pd.read_csv(mask_info_annots_path)
+                
+                # Clean and prepare annotation data
+                df_annots['image_name'] = df_annots['mask_file'].apply(
+                    lambda x: x.split('_mask')[0] if isinstance(x, str) else '')
+                df_annots['ID'] = df_annots['mask_file'].apply(
+                    lambda x: x.split('layer_')[1] if isinstance(x, str) else '')
+
+            except Exception as e:
+                print(f"Error reading CSV files: {str(e)}")
                 return None, img_num, pd.DataFrame()
 
-            # Read main data and annotations
-            df = pd.read_csv(csv_path / csv_files[0])
-            df = df.loc[:, ~df.columns.str.contains('Header')]
-            
-            df_annots = pd.read_csv(csv_path / csv_files[-1])
-            df_annots['image_name'] = df_annots['mask_file'].apply(lambda x: x.split('_mask')[0])
-            df_annots['ID'] = df_annots['mask_file'].apply(lambda x: x.split('layer_')[1])
-
-            # Get list of images with masks
-            images = [f for f in os.listdir(folder_img_path) 
-                     if f.split(".")[0] + "_mask_layer.png" in os.listdir(folder_mask_path)]
+            # Get valid images with corresponding masks
+            images = []
+            for f in os.listdir(folder_img_path):
+                if not f.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    continue
+                    
+                mask_file = f.split(".")[0] + "_mask_layer.png"
+                if os.path.exists(folder_mask_path / mask_file):
+                    images.append(f)
 
             if not images:
+                print("No valid images found")
                 return None, img_num, pd.DataFrame()
 
-            # Get current image and prepare data
+            # Get current image
+            img_num = max(0, min(img_num, len(images) - 1))
             current_image = images[img_num]
             image_base_name = current_image.split(".")[0]
             
-            # Store current file name in class variable
+            print(f"\nProcessing image: {image_base_name}")
+            
+            # Store current file
             self._current_file = image_base_name
             
-            # Prepare subset of data for current image
+            # Prepare display data
             df_subset = df[df["file"] == image_base_name].copy()
-            df_subset["ID"] = df_subset["mask_file"].apply(lambda x: x.split('layer_')[1])
-            df_subset.drop(columns=["mask_file", "file"], inplace=True)  # Now we can safely drop file
             
-            # Reorder columns to put ID first
+            if df_subset.empty:
+                print(f"No data found for image {image_base_name}")
+                return None, img_num, pd.DataFrame()
+
+            df_subset["ID"] = df_subset["mask_file"].apply(lambda x: x.split('layer_')[1] if isinstance(x, str) else '')
+            
+            # Clean up columns
+            drop_cols = [col for col in ["mask_file", "file"] if col in df_subset.columns]
+            if drop_cols:
+                df_subset.drop(columns=drop_cols, inplace=True)
+            
+            # Reorder columns
             columns_order = ["ID"] + [col for col in df_subset.columns if col != "ID"]
             df_display = df_subset[columns_order]
 
-            # Create annotation tuples for image
-            annotations = self.create_annotation_tuple(df_annots, image_base_name)
+            # Create image with annotations
+            try:
+                img_path = folder_img_path / current_image
+                if not img_path.exists():
+                    print(f"Image file not found: {img_path}")
+                    return None, img_num, df_display
 
-            return (gr.AnnotatedImage(value=[Image.open(folder_img_path / current_image), 
-                                           annotations]), 
+                image = Image.open(img_path)
+                annotations = self.create_annotation_tuple(df_annots, image_base_name)
+                
+                print(f"Created {len(annotations)} annotations")
+                
+                return (
+                    gr.AnnotatedImage(value=[image, annotations]), 
                     img_num, 
-                    df_display)
+                    df_display
+                )
+                
+            except Exception as e:
+                print(f"Error creating annotated image: {str(e)}")
+                return None, img_num, df_display
+
         except Exception as e:
             print(f"Error in image selection: {str(e)}")
             return None, img_num, pd.DataFrame()
 
     def save_table(self, table: pd.DataFrame, folder: str) -> None:
-        """Save table with intelligent data type handling"""
+        """Save table with robust error handling"""
         try:
             if self._current_file is None:
                 print("No file currently selected")
                 return
 
-            csv_path = self.pred_output_dir / folder
-            csv_files = [f for f in os.listdir(csv_path) if f.endswith('.csv')]
+            csv_path = self.pred_output_dir / folder / "mask_info.csv"
+            if not csv_path.exists():
+                print(f"CSV file not found: {csv_path}")
+                return
+
+            # Read existing table
+            existing_table = pd.read_csv(csv_path)
             
-            csv_file_original = csv_files[0]
-            existing_table = pd.read_csv(csv_path / csv_file_original)
-            
-            # Add back the file column using stored value
+            # Add back file information
             table = table.copy()
             table['file'] = self._current_file
-            
-            # Create mask_file using the file column
             table["mask_file"] = table["file"] + "_mask_layer_" + table["ID"]
-            table.drop(columns=["ID"], inplace=True)
             
-            def infer_and_convert_dtype(series):
-                """Infer and convert to appropriate data type"""
-                # Convert to string first to handle all cases
-                series = series.astype(str)
-                
-                # Remove any whitespace
-                series = series.str.strip()
-                
-                # Replace empty strings with NaN using the recommended approach
-                series = series.mask(series == '', np.nan)
-                
-                # Try converting to numeric while preserving NaN
-                numeric_series = pd.to_numeric(series, errors='coerce')
-                
-                # If all values are NaN after conversion, keep as string
-                if numeric_series.isna().all():
-                    return series
-                
-                # If we have any valid numbers
-                if not numeric_series.isna().all():
-                    # Check if all valid numbers are integers
-                    valid_nums = numeric_series.dropna()
-                    if valid_nums.equals(valid_nums.astype(int)):
-                        return numeric_series.astype('Int64')  # Use Int64 to handle NaN
-                    else:
-                        return numeric_series.astype('float64')
-                
-                # If we reach here, keep as string
-                return series
-
-            # Prepare data types before updating
-            for col in table.columns:
-                if col not in ['file', 'mask_file']:  # Skip these columns
-                    table[col] = infer_and_convert_dtype(table[col])
-                    if col in existing_table.columns:
-                        existing_table[col] = infer_and_convert_dtype(existing_table[col])
+            if "ID" in table.columns:
+                table.drop(columns=["ID"], inplace=True)
             
+            # Update existing table
             existing_table.set_index("mask_file", inplace=True)
             table.set_index("mask_file", inplace=True)
 
-            # Update existing table with new data
+            # Update values
             for col in table.columns:
                 if col not in existing_table.columns:
-                    # For new columns, use the inferred type
-                    existing_table[col] = table[col]
-                else:
-                    # For existing columns, update preserving the inferred type
-                    existing_table[col] = table[col].combine_first(existing_table[col])
+                    existing_table[col] = pd.NA
+                existing_table.loc[table.index, col] = table[col]
 
+            # Clean up and save
             existing_table.reset_index(inplace=True)
             existing_table = existing_table.loc[:, ~existing_table.columns.str.contains('Header')]
+            existing_table.to_csv(csv_path, index=False)
             
-            # Final type conversion for the whole table
-            for col in existing_table.columns:
-                if col not in ['file', 'mask_file']:
-                    existing_table[col] = infer_and_convert_dtype(existing_table[col])
-
-            existing_table.to_csv(csv_path / csv_file_original, index=False)
+            print(f"Table saved successfully to {csv_path}")
             
         except Exception as e:
             print(f"Error saving table: {str(e)}")
-
+            
 def save_mask(img: Image.Image,
              masks_array: np.ndarray,
              img_name: str = "",

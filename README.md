@@ -23,7 +23,7 @@ As part of the **PyPottery** toolkit, `PyPotteryLens` is a Gradio desktop applic
 
 ### Quick Installation (Windows)
 
-1. Download the repository ZIP and extract it in a folder of your choice.
+1. Download the releases ZIP and extract it in a folder of your choice.
 
 2. Download Python 3.11 from [Microsoft Store](https://www.microsoft.com/store/productId/9NRWMJP3717K?ocid=pdpshare)
 
@@ -33,7 +33,7 @@ As part of the **PyPottery** toolkit, `PyPotteryLens` is a Gradio desktop applic
 
 #### UNIX (Linux, MacOS)
 
-1. Download the repository ZIP and extract it in a folder of your choice.
+1. Download the releases ZIP and extract it in a folder of your choice.
 
 2. Open a terminal and move into the downloaded folder.
 

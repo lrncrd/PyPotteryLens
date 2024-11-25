@@ -168,6 +168,7 @@ docs
 model_classifier/*
 model_vision/*
 outputs
+release
 
 
 *.pth
