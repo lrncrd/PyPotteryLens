@@ -24,6 +24,7 @@ import shutil
 from reportlab.lib import pagesizes
 from reportlab.pdfgen import canvas
 from PIL import Image
+import gc
 
 
 
@@ -262,16 +263,7 @@ class MaskExtractor:
                     orig_array: np.ndarray, 
                     total_area: int) -> tuple[np.ndarray, tuple] | None:
         """
-        Extract region using precise segmentation mask
-        
-        Args:
-            region: Region properties from skimage.measure.regionprops
-            mask_array: Binary mask array
-            orig_array: Original image array
-            total_area: Total area for size comparison
-            
-        Returns:
-            Tuple of (cropped_image, bbox) or None if region is too small
+        Extract region using precise segmentation mask with PIL for image handling
         """
         if region.area < total_area * self.config.min_area_ratio:
             return None
@@ -279,11 +271,37 @@ class MaskExtractor:
         # Get bounding box coordinates
         minr, minc, maxr, maxc = region.bbox
         
-        # Get the region's mask
-        region_mask = region.image
+        # Ensure dimensions match before processing
+        mask_shape = mask_array.shape[:2]
+        orig_shape = orig_array.shape[:2]
         
+        if mask_shape != orig_shape:
+            # Convert mask array to PIL Image for resizing
+            mask_img = Image.fromarray(mask_array)
+            # Resize mask to match original image dimensions
+            mask_resized = mask_img.resize((orig_array.shape[1], orig_array.shape[0]), 
+                                        resample=Image.Resampling.NEAREST)
+            # Convert back to numpy array
+            mask_array = np.array(mask_resized)
+            
+            # Recalculate bbox coordinates
+            scale_y = orig_shape[0] / mask_shape[0]
+            scale_x = orig_shape[1] / mask_shape[1]
+            minr = int(minr * scale_y)
+            maxr = int(maxr * scale_y)
+            minc = int(minc * scale_x)
+            maxc = int(maxc * scale_x)
+            
+            # Convert region mask to PIL Image and resize
+            region_mask_img = Image.fromarray(region.image.astype(np.uint8) * 255)
+            region_mask_resized = region_mask_img.resize((maxc - minc, maxr - minr), 
+                                                        resample=Image.Resampling.NEAREST)
+            region_mask = np.array(region_mask_resized) > 0
+        else:
+            region_mask = region.image
+
         # Create full-size mask
-        full_mask = np.zeros_like(mask_array, dtype=bool)
+        full_mask = np.zeros_like(orig_array[:,:,0], dtype=bool)
         full_mask[minr:maxr, minc:maxc] = region_mask
         
         # Expand mask to match image dimensions
@@ -291,8 +309,6 @@ class MaskExtractor:
         mask_exp = np.repeat(mask_exp, 3, axis=-1)
         
         # Apply mask to original image
-        # Where mask is 0 (outside region), set to white (255)
-        # Where mask is 1 (inside region), keep original image
         masked_img = np.where(mask_exp == 0, 255, orig_array)
         
         # Crop to bounding box
@@ -367,75 +383,79 @@ class MaskExtractor:
             return f"Error extracting masks: {str(e)}"
     
 class AnnotationProcessor:
-    """Handles annotation processing with enhanced functionality"""
+    """Handles annotation processing"""
     
     def __init__(self, config: AnnotationConfig):
         self.config = config
 
-    def get_file_explorer(self, folder: str) -> gr.FileExplorer:
-        """Get file explorer for folder"""
+    def save_annotation(self, folder: str, editor_data: Dict, current_image: str) -> bool:
+        """Save annotation and return success status"""
         try:
-            explorer = gr.FileExplorer(
-                glob="*.jpg",
-                root_dir=self.config.pred_output_dir.parent / "pdf2img_outputs" / folder,
-                file_count="single",
-                visible=True,
-                height=500
-            )
-            return explorer
-        except Exception as e:
-            print(f"Error setting up file explorer: {str(e)}")
-            return gr.FileExplorer(visible=False)
-
-    def save_annotation(self, folder: str, image_editor: Dict, file_path: str) -> None:
-        """Save annotation from image editor"""
-        try:
-            if not all([folder, image_editor, file_path]):
-                return
-                
-            file_name = Path(file_path).stem + "_mask_layer"
-            saving_folder = folder + "_mask"
-            saving_path = self.config.pred_output_dir / saving_folder
-            os.makedirs(saving_path, exist_ok=True)
+            if not all([folder, editor_data, current_image]):
+                return False
+                    
+            # Fast path for saving
+            if 'layers' in editor_data and editor_data['layers']:
+                layer = editor_data['layers'][0]
+                if layer is not None:
+                    # Setup paths
+                    file_name = Path(current_image).stem + "_mask_layer"
+                    saving_folder = folder + "_mask"
+                    saving_path = self.config.pred_output_dir / saving_folder / f"{file_name}.png"
+                    
+                    # Ensure saving directory exists
+                    os.makedirs(self.config.pred_output_dir / saving_folder, exist_ok=True)
+                    
+                    # Direct save
+                    Image.fromarray(layer).save(saving_path)
+                    
+                    # Force Python garbage collection
+                    del layer
+                    gc.collect()
+                    
+                    return True
+                    
+            return False
             
-            if 'layers' in image_editor and image_editor['layers']:
-                for i, layer in enumerate(image_editor['layers']):
-                    img_save = Image.fromarray(layer)
-                    img_save.save(saving_path / f"{file_name}.png")
-                print(f"Saved annotation for {file_name}")
-                
         except Exception as e:
             print(f"Error saving annotation: {str(e)}")
-
-    def file_selection(self, file_explorer: str) -> Dict:
-        """Select file from explorer with better image handling"""
+            return False
+        
+    def file_selection(self, file_path: str) -> Dict:
+        """Select file and prepare image data with performance optimizations"""
         try:
-            if not file_explorer:
+            if not file_path:
                 return {"background": None, "layers": [], "composite": None}
-                
-            mask_dir_name = Path(file_explorer).parent.name + "_mask"
-            mask_name = Path(file_explorer).stem + "_mask_layer.png"
-            mask_path = self.config.pred_output_dir / mask_dir_name
+                    
+            file_path = Path(file_path)
             
-            # Create mask directory if it doesn't exist
-            os.makedirs(mask_path, exist_ok=True)
+            # Prepare mask path
+            mask_dir_name = file_path.parent.name + "_mask"
+            mask_name = file_path.stem + "_mask_layer.png"
+            mask_path = self.config.pred_output_dir / mask_dir_name / mask_name
+
+            # Load and resize original image
+            with Image.open(file_path) as img:
+                # Resize for preview while maintaining aspect ratio
+                img.thumbnail((1200, 1200))
+                img_background = np.asarray(img, dtype=np.uint8)
             
-            # Check if mask exists
-            mask_exists = os.path.exists(mask_path / mask_name)
-            layer_0 = str(mask_path / mask_name) if mask_exists else file_explorer
+            # Check and load mask if exists
+            layers = []
+            if mask_path.exists():
+                with Image.open(mask_path) as mask_img:
+                    # Resize mask to match image dimensions
+                    mask_img = mask_img.resize(img_background.shape[:2][::-1], Image.Resampling.NEAREST)
+                    mask = np.asarray(mask_img, dtype=np.uint8)
+                    layers = [mask]
             
-            # Open and get image dimensions for proper sizing
-            with Image.open(file_explorer) as img:
-                width, height = img.size
-                
+            # Force cleanup
+            gc.collect()
+            
             return {
-                "background": file_explorer,
-                "layers": [layer_0] if mask_exists else [],
-                "composite": file_explorer,
-                "image_dimensions": {
-                    "width": width,
-                    "height": height
-                }
+                "background": img_background,
+                "layers": layers,
+                "composite": img_background.copy()
             }
             
         except Exception as e:
@@ -702,10 +722,11 @@ def save_mask(img: Image.Image,
              export_masks: bool = False) -> None:
     """Save mask layers for detected objects"""
     output_path = Path(output_dir)
-    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
     
-    # Process masks
+    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+
     dilated_masks = _process_masks(masks_array, kernel, num_iterations)
+
     combined_mask = _combine_masks(dilated_masks, kernel)
     
     if export_masks:
@@ -723,8 +744,9 @@ def _process_masks(masks_array: np.ndarray,
 def _combine_masks(masks: List[np.ndarray], kernel: np.ndarray) -> np.ndarray:
     """Combine multiple masks into one"""
     combined = np.sum(masks, axis=0)
-    #combined[combined > 1] = 0
+    ###
     combined = binary_erosion(combined, iterations=2, structure=kernel)
+    ###
     return median(combined, footprint=disk(5))
 
 def _export_mask(mask: np.ndarray,

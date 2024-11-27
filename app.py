@@ -6,7 +6,8 @@ import os
 from typing import List
 import pandas as pd
 import torch
-
+import gc
+import time
 
 
 from utils import (
@@ -374,52 +375,74 @@ class App:
         }
 
     def _create_annotation_tab(self):
-        """Create annotation review tab with properly displayed editor"""
-        # Add the CSS for FileExplorer fix first
+        """Create annotation review tab with navigation controls and memory management"""
         with gr.Tab("Review Annotations and extract masks") as annotation_tab:
-            gr.HTML("""
-                <style>
-                    .file-explorer {
-                        overflow: hidden !important;
-                    }
-                    .file-explorer > div {
-                        height: 95% !important;
-                    }
-                </style>
-            """)
-            
             with gr.Row():
                 # Left side - Controls
                 with gr.Column(scale=1):
                     # Image Selection section
                     with gr.Group():
                         gr.HTML("""
-                            <div style="padding: 1em; border-radius: 8px;>
+                            <div style="padding: 1em; border-radius: 8px;">
                             <h3 style="margin-bottom: 1em">
                                 📁 Image Selection
                             </h3>
-                        """)
+                            """)
                         folder_dropdown = gr.Dropdown(
                             label="Select Folder",
                             choices=self.get_image_folders(),
                             interactive=True,
                             info="Choose the folder containing images to annotate"
                         )
-                        file_explorer = gr.FileExplorer(
-                            visible=False,
-                            height=300, #300
-                            elem_classes=["file-explorer"]
+                        
+                        # Current Image Name
+                        current_image_name = gr.Textbox(
+                            label="Current Image",
+                            interactive=False,
+                            scale=1
                         )
+                        
+                        # Navigation Controls
+                        with gr.Row():
+                            img_num = gr.Number(
+                                value=0,
+                                label="Image Number",
+                                interactive=False,
+                                scale=1
+                            )
+                            max_img = gr.Number(
+                                value=0,
+                                label="Total Images",
+                                interactive=False,
+                                scale=1
+                            )
+                        
+                        # We no longer need the save_notification HTML element here
+                            
+                        with gr.Row():
+                            prev_button = gr.Button("◀ Previous", scale=1)
+                            save_button = gr.Button("💾 Save Mask", variant="primary", scale=1)
+                            next_button = gr.Button("Next ▶", scale=1)
+                            
+                        with gr.Row():
+                            img_num_input = gr.Number(
+                                value=None,
+                                label="Go to Image",
+                                interactive=True,
+                                scale=2
+                            )
+                            goto_button = gr.Button("🔍 Go", scale=1)
+                            
                         gr.HTML("</div>")
 
                     # Size Control section
                     with gr.Group():
                         gr.HTML("""
-                            <div style="padding: 1em; border-radius: 8px;>
+                            <div style="padding: 1em; border-radius: 8px;">
                             <h3 style="margin-bottom: 1em">
                                 📐 Editor Size
                             </h3>
-                        """)
+                            """)
                         size_slider = gr.Slider(
                             minimum=20,
                             maximum=100,
@@ -433,11 +456,11 @@ class App:
                     # Extraction section
                     with gr.Group():
                         gr.HTML("""
-                            <div style="padding: 1em; border-radius: 8px;>
+                            <div style="padding: 1em; border-radius: 8px;">
                             <h3 style="margin-bottom: 1em">
                                 🎯 Extraction
                             </h3>
-                        """)
+                            """)
                         extract_button = gr.Button(
                             "📤 Extract Masks",
                             variant="primary"
@@ -469,78 +492,185 @@ class App:
                         layers=False,
                         sources=[],
                         transforms=[],
-                        brush=gr.Brush(colors=["#80808080"], default_size=20),  # Hex color with alpha
+                        brush=gr.Brush(colors=["#80808080"], default_size=20),
                         eraser=gr.Eraser(default_size=20),
-                        visible=True,
+                        visible=False,
                         height="50%",
                         width="50%"
                     )
 
-            # Event Handlers
-            def update_file_explorer(folder):
+            # Helper Functions
+            def get_folder_images(folder):
+                """Get list of images in folder"""
                 if not folder:
-                    return {
-                        file_explorer: gr.update(visible=False),
-                        empty_editor_msg: gr.update(visible=True),
-                        image_editor: gr.update(visible=False)
-                    }
-                return {
-                    file_explorer: self.annotation_processor.get_file_explorer(folder),
-                    empty_editor_msg: gr.update(visible=True),
-                    image_editor: gr.update(visible=False)
-                }
+                    return []
+                folder_path = self.pdfimg_output_dir / folder
+                return sorted([f for f in os.listdir(folder_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
 
-            def update_image_editor(file_path):
-                if not file_path:
+            def update_image_display(folder, img_index):
+                """Update image display with memory optimization"""
+                try:
+                    if not folder:
+                        return {
+                            empty_editor_msg: gr.update(visible=True),
+                            image_editor: gr.update(visible=False),
+                            img_num: 0,
+                            max_img: 0,
+                            current_image_name: ""
+                        }
+                    
+                    images = get_folder_images(folder)
+                    if not images:
+                        return {
+                            empty_editor_msg: gr.update(visible=True),
+                            image_editor: gr.update(visible=False),
+                            img_num: 0,
+                            max_img: 0,
+                            current_image_name: ""
+                        }
+                    
+                    # Ensure valid index
+                    img_index = max(0, min(img_index, len(images) - 1))
+                    current_image = images[img_index]
+                    
+                    # Get file path and process image
+                    file_path = self.pdfimg_output_dir / folder / current_image
+                    image_data = self.annotation_processor.file_selection(str(file_path))
+                    
+                    # Force cleanup of previous image data
+                    gc.collect()
+                    
+                    return {
+                        empty_editor_msg: gr.update(visible=False),
+                        image_editor: gr.update(visible=True, value=image_data),
+                        img_num: img_index,
+                        max_img: len(images) - 1,
+                        current_image_name: current_image
+                    }
+                    
+                except Exception as e:
+                    print(f"Error in update_image_display: {str(e)}")
                     return {
                         empty_editor_msg: gr.update(visible=True),
-                        image_editor: gr.update(visible=False)
+                        image_editor: gr.update(visible=False),
+                        img_num: 0,
+                        max_img: 0,
+                        current_image_name: ""
                     }
-                result = self.annotation_processor.file_selection(file_path)
-                return {
-                    empty_editor_msg: gr.update(visible=False),
-                    image_editor: gr.update(visible=True, value=result)
-                }
+
+            def handle_navigation(folder, current_idx, direction):
+                """Handle navigation between images"""
+                if direction == "next":
+                    new_idx = current_idx + 1
+                elif direction == "prev":
+                    new_idx = current_idx - 1
+                else:
+                    new_idx = current_idx
+                    
+                return update_image_display(folder, new_idx)
+
+            def handle_goto(folder, target_idx):
+                """Handle goto specific image index"""
+                try:
+                    target_idx = int(target_idx) if target_idx is not None else 0
+                except:
+                    target_idx = 0
+                return update_image_display(folder, target_idx)
 
             def update_editor_size(size):
+                """Update editor size"""
                 return gr.update(width=f"{size}%", height=f"{size}%")
 
-            # Connect events
-            annotation_tab.select(self.get_image_folders, outputs=folder_dropdown)
-            
+            def save_with_notification(folder, editor_data, current_idx):
+                """Save mask and show notification"""
+                try:
+                    if not folder or current_idx is None:
+                        return gr.Info("Please select a folder and image first")
+                        
+                    images = get_folder_images(folder)
+                    if 0 <= current_idx < len(images):
+                        current_image = images[current_idx]
+                        # Save the mask
+                        save_successful = self.annotation_processor.save_annotation(folder, editor_data, current_image)
+                        if save_successful:
+                            return gr.Info("✅ Mask saved successfully!")
+                        return gr.Warning("❌ Failed to save mask")
+                    return gr.Warning("❌ Invalid image index")
+                except Exception as e:
+                    print(f"Error saving mask: {str(e)}")
+                    return gr.Error(f"❌ Error saving mask: {str(e)}")
+                
+            # Connect Events
             folder_dropdown.change(
-                fn=update_file_explorer,
-                inputs=folder_dropdown,
-                outputs=[file_explorer, empty_editor_msg, image_editor]
+                fn=lambda f: update_image_display(f, 0),
+                inputs=[folder_dropdown],
+                outputs=[empty_editor_msg, image_editor, img_num, max_img, current_image_name]
+            )
+            
+            next_button.click(
+                fn=lambda f, i: handle_navigation(f, i, "next"),
+                inputs=[folder_dropdown, img_num],
+                outputs=[empty_editor_msg, image_editor, img_num, max_img, current_image_name]
+            )
+            
+            prev_button.click(
+                fn=lambda f, i: handle_navigation(f, i, "prev"),
+                inputs=[folder_dropdown, img_num],
+                outputs=[empty_editor_msg, image_editor, img_num, max_img, current_image_name]
+            )
+            
+            goto_button.click(
+                fn=handle_goto,
+                inputs=[folder_dropdown, img_num_input],
+                outputs=[empty_editor_msg, image_editor, img_num, max_img, current_image_name]
             )
 
-            file_explorer.change(
-                fn=update_image_editor,
-                inputs=file_explorer,
-                outputs=[empty_editor_msg, image_editor]
-            )
+            def save_with_notification(folder, editor_data, current_idx):
+                """Save mask and show notification"""
+                try:
+                    if not folder or current_idx is None:
+                        gr.Warning("Please select a folder and image first")
+                        return
+                        
+                    images = get_folder_images(folder)
+                    if 0 <= current_idx < len(images):
+                        current_image = images[current_idx]
+                        duration = 3
+                        # Save the mask
+                        save_successful = self.annotation_processor.save_annotation(folder, editor_data, current_image)
+                        if save_successful:
+                            gr.Info("✅ Mask saved successfully!", duration=duration)
+                        else:
+                            gr.Warning("❌ Failed to save mask", duration=duration)
+                    else:
+                        gr.Warning("❌ Invalid image index", duration=duration)
+                except Exception as e:
+                    print(f"Error saving mask: {str(e)}")
+                    gr.Error(f"❌ Error saving mask: {str(e)}", duration=duration)
 
-            image_editor.change(
-                fn=self.annotation_processor.save_annotation,
-                inputs=[folder_dropdown, image_editor, file_explorer]
+            # Connect save button with notification
+            save_button.click(
+                fn=save_with_notification,
+                inputs=[folder_dropdown, image_editor, img_num],
+                outputs=None
+)
+            # Connect size control
+            size_slider.change(
+                fn=update_editor_size,
+                inputs=[size_slider],
+                outputs=image_editor
             )
-
+            
+            # Connect extract button
             extract_button.click(
                 fn=self.mask_extractor.extract_masks,
                 inputs=[folder_dropdown],
                 outputs=status_text
             )
 
-            # Connect size control event
-            size_slider.change(
-                fn=update_editor_size,
-                inputs=[size_slider],
-                outputs=image_editor
-            )
-
-        return {
-            "folder_dropdown": folder_dropdown
-        }
+            return {
+                "folder_dropdown": folder_dropdown
+            }
 
     def _create_tabular_tab(self):
         """Create tabular information tab with mask-filtered navigation"""

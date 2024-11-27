@@ -8,7 +8,7 @@ echo.
 :: Check CUDA availability through nvidia-smi
 nvidia-smi >nul 2>&1
 if %ERRORLEVEL% EQU 0 (
-    echo [x] NVIDIA GPU detected
+    echo [*] NVIDIA GPU detected
     for /f "tokens=2 delims=," %%a in ('nvidia-smi --query-gpu^=name --format^=csv ^| findstr /v "name"') do set GPU_NAME=%%a
     echo     • GPU: %GPU_NAME%
     
@@ -27,7 +27,7 @@ echo Checking Python environment...
 :: Check if Python virtual environment exists
 set VENV_EXISTS=0
 if exist "venv" (
-    echo [x] Virtual environment already exists
+    echo [*] Virtual environment already exists
     set VENV_EXISTS=1
 ) else (
     echo [*] Creating virtual environment...
