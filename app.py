@@ -7,7 +7,6 @@ from typing import List
 import pandas as pd
 import torch
 import gc
-import time
 
 
 from utils import (
@@ -31,8 +30,6 @@ from utils import (
 class App:
     """Main application class for the PyPotteryLens project"""
     
-    # In new_app.py, update the __init__ method
-
     def __init__(self):
         # Setup directories
         self.root_dir = Path(".")
@@ -114,6 +111,7 @@ class App:
                 annotation_tab = self._create_annotation_tab()
                 tabular_tab = self._create_tabular_tab()
                 second_step_tab = self._create_second_step_tab()
+                
                 # Refresh all dropdowns when switching tabs
 
                 tabs.select(
@@ -156,7 +154,7 @@ class App:
                 <div>
                     <h1>PyPotteryLens</h1>
                     <span>Archaeological Pottery Documentation Tool 
-                        <span style="font-size: 0.9em; color: #666;">v0.1.0</span>
+                        <span style="font-size: 0.9em; color: #666;">v0.1.1</span>
                     </span>
                 </div>
             </div>
@@ -383,7 +381,7 @@ class App:
                     # Image Selection section
                     with gr.Group():
                         gr.HTML("""
-                            <div style="padding: 1em; border-radius: 8px;">
+                            <div style="padding: 1em; border-radius: 8px;>
                             <h3 style="margin-bottom: 1em">
                                 📁 Image Selection
                             </h3>
@@ -438,7 +436,7 @@ class App:
                     # Size Control section
                     with gr.Group():
                         gr.HTML("""
-                            <div style="padding: 1em; border-radius: 8px;">
+                            <div style="padding: 1em; border-radius: 8px;>
                             <h3 style="margin-bottom: 1em">
                                 📐 Editor Size
                             </h3>
@@ -456,7 +454,7 @@ class App:
                     # Extraction section
                     with gr.Group():
                         gr.HTML("""
-                            <div style="padding: 1em; border-radius: 8px;">
+                            <div style="padding: 1em; border-radius: 8px;>
                             <h3 style="margin-bottom: 1em">
                                 🎯 Extraction
                             </h3>
@@ -1559,7 +1557,7 @@ def print_ascii_banner():
 |_|    \__, ||_|   \___/ \__|\__\___|_|   \__, |_____\___|_| |_|___/
        |___/                               |___/                      
                                                                   
-    🏺 V0.1.0 🔍
+    🏺 V0.1.1 🔍
 """
     return banner
 

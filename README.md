@@ -5,7 +5,7 @@
 <img src="imgs/pypotterylens.png" width="150"/>
 </p>
 <p align="center">
-Version: 0.1.0
+Version: 0.1.1
 </p>
 
 As part of the **PyPottery** toolkit, `PyPotteryLens` is a Gradio desktop application for archaeological pottery drawings recording. It provides a comprehensive suite of tools for processing, detecting, and analyzing pottery fragments from scanned documents.
@@ -274,8 +274,25 @@ Full list available in `requirements.txt`
 
 ## Version History
 
-- 0.1
+- 0.1.1
+   - Checked compatibility with Linux (Ubuntu 24.10) and MacOS (Sonoma 14)
+   - Improved bin packing algorithm for PDF creation
+   - Added paper's (PyPotteryLens: An Open-Source Deep Learning Framework for Automated Digitisation of Archaeological Pottery Documentation) supporting scripts
+   - Reworked the GUI for better user experience and compatibility
+- 0.1.0
   - Initial Release
+
+## System compatibility
+
+- Windows 11
+- Ubuntu 24.10
+- MacOS Sonoma 14
+
+## Known Issues ⚠️
+
+- The brush tool in the annotation revision tool doesn't support transparency, making it difficult to see the original image through brush strokes. This feature is planned for a future update.
+- For older version of MacOS (<= Monterey 12.7.5), the last version of Pytorch supported is `2.2.2`. Please modify the `requirements.txt` file accordingly.
+
 
 ## Contributors
 

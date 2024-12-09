@@ -625,7 +625,7 @@ class TabularProcessor:
             
             # Store current file
             self._current_file = image_base_name
-            
+
             # Prepare display data
             df_subset = df[df["file"] == image_base_name].copy()
             
@@ -651,13 +651,28 @@ class TabularProcessor:
                     print(f"Image file not found: {img_path}")
                     return None, img_num, df_display
 
-                image = Image.open(img_path)
-                annotations = self.create_annotation_tuple(df_annots, image_base_name)
-                
-                print(f"Created {len(annotations)} annotations")
+                with Image.open(img_path) as img:
+                    original_size = img.size  # Save original dimensions
+                    img.thumbnail((1200, 1200))
+                    scale_x = img.size[0] / original_size[0]
+                    scale_y = img.size[1] / original_size[1]
+                    image = np.asarray(img, dtype=np.uint8)
+                    
+                # Get original annotations and scale them
+                original_annotations = self.create_annotation_tuple(df_annots, image_base_name)
+                scaled_annotations = []
+                    
+                for bbox, mask_id in original_annotations:
+                    scaled_bbox = (
+                        int(bbox[0] * scale_x),
+                        int(bbox[1] * scale_y),
+                        int(bbox[2] * scale_x),
+                        int(bbox[3] * scale_y)
+                    )
+                    scaled_annotations.append((scaled_bbox, mask_id))
                 
                 return (
-                    gr.AnnotatedImage(value=[image, annotations]), 
+                    gr.AnnotatedImage(value=[image, scaled_annotations]), 
                     img_num, 
                     df_display
                 )
@@ -1192,8 +1207,155 @@ class ExportProcessor:
         
 
 
+from typing import List, Dict, Tuple
+from PIL import Image
+from reportlab.lib import pagesizes
+from reportlab.pdfgen import canvas
+import numpy as np
+
+class LayoutNode:
+    """Tree node representing available space in the layout"""
+    def __init__(self, x: float, y: float, width: float, height: float):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.used = False
+        self.down = None
+        self.right = None
+        self.image_info = None
+
+    def fits(self, width: float, height: float) -> bool:
+        """Check if an image fits in this node"""
+        return (not self.used and 
+                width <= self.width and 
+                height <= self.height)
+
+class PDFLayoutOptimizer:
+    """Optimizes PDF layout using binary tree bin packing algorithm"""
+    
+    def __init__(self, page_width: float, page_height: float, margin: float = 50):
+        self.page_width = page_width - (2 * margin)
+        self.page_height = page_height - (2 * margin)
+        self.margin = margin
+        self.min_padding = 10  # Minimum padding between images
+        self.label_height = 20  # Height reserved for labels
+
+    def find_node(self, root: LayoutNode, width: float, height: float) -> LayoutNode:
+        """Find a node that can accommodate the given dimensions"""
+        if not root:
+            return None
+            
+        if root.used:
+            # Try finding space in existing splits
+            node = self.find_node(root.right, width, height)
+            if not node:
+                node = self.find_node(root.down, width, height)
+            return node
+            
+        elif root.fits(width, height):
+            return root
+            
+        return None
+
+    def split_node(self, node: LayoutNode, width: float, height: float) -> None:
+        """Split a node to accommodate an image and create remaining space"""
+        node.used = True
+        
+        # Create space below current image
+        node.down = LayoutNode(
+            node.x,
+            node.y + height + self.min_padding,
+            node.width,
+            node.height - height - self.min_padding
+        )
+        
+        # Create space to the right of current image
+        node.right = LayoutNode(
+            node.x + width + self.min_padding,
+            node.y,
+            node.width - width - self.min_padding,
+            height
+        )
+
+    def optimize_page_layout(self, images: List[Dict]) -> List[List[Dict]]:
+        """Optimize layout across multiple pages using bin packing"""
+        pages = []
+        current_images = images.copy()
+        
+        while current_images:
+            # Initialize new page
+            root = LayoutNode(self.margin, self.margin, self.page_width, self.page_height)
+            page_layout = []
+            remaining_images = []
+            
+            for img in current_images:
+                # Account for label height in total height
+                total_height = img['height'] + self.label_height + self.min_padding
+                
+                # Find space for image
+                node = self.find_node(root, img['width'], total_height)
+                
+                if node:
+                    # Place image and split remaining space
+                    self.split_node(node, img['width'], total_height)
+                    node.image_info = {
+                        'path': img['path'],
+                        'new_id': img['new_id'],
+                        'x': node.x,
+                        'y': node.y,
+                        'width': img['width'],
+                        'height': img['height'],
+                        'label_y': node.y + img['height'] + 5
+                    }
+                    page_layout.append(node.image_info)
+                else:
+                    remaining_images.append(img)
+            
+            pages.append(page_layout)
+            current_images = remaining_images
+            
+        return pages
+
+    def pack_images(self, image_paths: List[tuple], scale_factor: float = 1.0) -> List[List[Dict]]:
+        """Process images and optimize their layout"""
+        # Get image dimensions and create scaled info
+        image_info = []
+        
+        for img_path, new_id in image_paths:
+            with Image.open(img_path) as img:
+                w, h = img.size
+                # Scale dimensions
+                scaled_w = w * scale_factor
+                scaled_h = h * scale_factor
+                
+                # Ensure scaled image fits on page
+                if scaled_w > self.page_width:
+                    scale = self.page_width / scaled_w
+                    scaled_w *= scale
+                    scaled_h *= scale
+                
+                if scaled_h > (self.page_height - self.label_height):
+                    scale = (self.page_height - self.label_height) / scaled_h
+                    scaled_w *= scale
+                    scaled_h *= scale
+                
+                image_info.append({
+                    'path': img_path,
+                    'new_id': new_id,
+                    'width': scaled_w,
+                    'height': scaled_h,
+                    'area': scaled_w * scaled_h
+                })
+        
+        # Sort images by area for better packing
+        image_info.sort(key=lambda x: x['area'], reverse=True)
+        
+        # Optimize layout
+        return self.optimize_page_layout(image_info)
+
 class PDFExporter:
-    """Handles PDF generation with optimized image arrangement"""
+    """Handles PDF generation with optimized layout"""
     
     PAGE_SIZES = {
         'A4': pagesizes.A4,
@@ -1207,11 +1369,14 @@ class PDFExporter:
         self.page_size = self.PAGE_SIZES.get(page_size, pagesizes.A4)
         self.margin = margin
         self.scale_factor = scale_factor
-        self.width = self.page_size[0] - (2 * margin)
-        self.height = self.page_size[1] - (2 * margin)
+        self.optimizer = PDFLayoutOptimizer(
+            page_width=self.page_size[0],
+            page_height=self.page_size[1],
+            margin=margin
+        )
 
     def generate_pdf(self, output_path: str, image_data: List[tuple]) -> bool:
-        """Generate PDF with optimized image layout and labels"""
+        """Generate PDF with optimized image layout"""
         try:
             # Create PDF canvas
             c = canvas.Canvas(output_path, pagesize=self.page_size)
@@ -1220,18 +1385,12 @@ class PDFExporter:
             c.setFont("Helvetica", 10)
             
             # Get optimized layout
-            optimizer = LayoutOptimizer(
-                page_width=self.page_size[0],
-                page_height=self.page_size[1],
-                margin=self.margin
-            )
-            
-            pages = optimizer.pack_images(image_data, self.scale_factor)
+            pages = self.optimizer.pack_images(image_data, self.scale_factor)
             
             # Generate each page
             for page in pages:
                 for img_info in page:
-                    # Draw the image
+                    # Draw image
                     c.drawImage(
                         img_info['path'],
                         img_info['x'],
@@ -1241,20 +1400,15 @@ class PDFExporter:
                         preserveAspectRatio=True
                     )
                     
-                    # Center and draw the label
-                    c.setFillColorRGB(0, 0, 0)
-                    
-                    # Get the width of the text to center it
-                    text_width = c.stringWidth(img_info['new_id'], "Helvetica", 10)
-                    
-                    # Calculate center position
+                    # Draw centered label
+                    text = img_info['new_id']
+                    text_width = c.stringWidth(text, "Helvetica", 10)
                     center_x = img_info['x'] + (img_info['width'] / 2) - (text_width / 2)
                     
-                    # Draw centered text
                     c.drawString(
                         center_x,
                         img_info['label_y'],
-                        img_info['new_id']
+                        text
                     )
                 
                 c.showPage()
@@ -1265,109 +1419,3 @@ class PDFExporter:
         except Exception as e:
             print(f"Error generating PDF: {str(e)}")
             return False
-
-        
-
-class LayoutOptimizer:
-    """Optimizes image layout for PDF pages"""
-    
-    def __init__(self, page_width: float, page_height: float, margin: float = 50):
-        self.page_width = page_width - (2 * margin)
-        self.page_height = page_height - (2 * margin)
-        self.margin = margin
-        # Add spacing between images
-        self.horizontal_spacing = 20  # Space between images horizontally
-        self.vertical_spacing = 40    # Space between images vertically (includes room for label)
-        self.label_height = 20        # Height reserved for the label
-
-    def optimize_row_layout(self, images: List[Dict], start_y: float) -> Tuple[List[Dict], float]:
-        """Optimize layout for a single row of images with spacing"""
-        if not images:
-            return [], 0
-            
-        # Calculate total width including spacing between images
-        total_width = sum(img['width'] for img in images) + (len(images) - 1) * self.horizontal_spacing
-        total_height = max(img['height'] for img in images) + self.label_height
-        
-        # Scale factor to fit row width if needed
-        scale = min(1.0, self.page_width / total_width)
-        
-        # Position images in row
-        x = self.margin
-        layout = []
-        
-        for img in images:
-            scaled_width = img['width'] * scale
-            scaled_height = img['height'] * scale
-            
-            layout.append({
-                'path': img['path'],
-                'new_id': img['new_id'],  # Add new_id to layout
-                'x': x,
-                'y': start_y,
-                'width': scaled_width,
-                'height': scaled_height,
-                'label_y': start_y + scaled_height + 5  # Position label below image
-            })
-            
-            x += scaled_width + self.horizontal_spacing
-            
-        return layout, total_height + self.vertical_spacing
-
-    def pack_images(self, images: List[tuple], scale_factor: float = 1.0) -> List[List[Dict]]:
-        """Pack images into pages using an optimized layout"""
-        # Get image dimensions and apply scale factor
-        image_info = []
-        for img_path, new_id in images:  # Now expecting tuples of (path, new_id)
-            with Image.open(img_path) as img:
-                w, h = img.size
-                image_info.append({
-                    'path': img_path,
-                    'new_id': new_id,  # Store new_id
-                    'width': w * scale_factor,
-                    'height': h * scale_factor,
-                    'aspect_ratio': w / h
-                })
-        
-        # Sort images by height for better packing
-        image_info.sort(key=lambda x: x['height'], reverse=True)
-        
-        pages = []
-        current_page = []
-        y_position = self.margin
-        current_row = []
-        row_width = 0
-        
-        for img in image_info:
-            # Check if adding this image exceeds page width
-            if row_width + img['width'] + self.horizontal_spacing > self.page_width:
-                # Layout current row
-                row_layout, row_height = self.optimize_row_layout(current_row, y_position)
-                current_page.extend(row_layout)
-                
-                # Move to next row
-                y_position += row_height + self.vertical_spacing
-                
-                # Check if we need a new page
-                if y_position + img['height'] + self.label_height > self.page_height:
-                    pages.append(current_page)
-                    current_page = []
-                    y_position = self.margin
-                
-                # Start new row with current image
-                current_row = [img]
-                row_width = img['width']
-            else:
-                # Add image to current row
-                current_row.append(img)
-                row_width += img['width'] + self.horizontal_spacing
-        
-        # Handle remaining images
-        if current_row:
-            row_layout, _ = self.optimize_row_layout(current_row, y_position)
-            current_page.extend(row_layout)
-        
-        if current_page:
-            pages.append(current_page)
-        
-        return pages

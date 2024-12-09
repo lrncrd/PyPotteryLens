@@ -273,7 +273,7 @@ if __name__ == "__main__":
     # Configuration
     config = {
         'masks_dir': 'path_to_masks',  # Directory containing *_mask_layer.png files
-        'original_images_dir': 'path_to_original_images',  # Directory containing original images
+        'original_images_dir': 'path_to_original_images',  # Directory containing original images (PDF2images output)
         'output_dir': 'output_dir',  # Where to create the YOLO dataset
         'class_name': 'Pot',  # Class name for YOLO
         'train_ratio': 0.8,  # Train/val split ratio
