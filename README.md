@@ -1,5 +1,5 @@
 
-# `PyPotterLens`
+# `PyPotteryLens`
 
 <p align="center">
 <img src="imgs/pypotterylens.png" width="150"/>
