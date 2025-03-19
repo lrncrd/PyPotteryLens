@@ -154,7 +154,7 @@ class App:
                 <div>
                     <h1>PyPotteryLens</h1>
                     <span>Archaeological Pottery Documentation Tool 
-                        <span style="font-size: 0.9em; color: #666;">v0.1.1</span>
+                        <span style="font-size: 0.9em; color: #666;">v0.1.2</span>
                     </span>
                 </div>
             </div>
@@ -1557,7 +1557,7 @@ def print_ascii_banner():
 |_|    \__, ||_|   \___/ \__|\__\___|_|   \__, |_____\___|_| |_|___/
        |___/                               |___/                      
                                                                   
-    🏺 V0.1.1 🔍
+    🏺 V0.1.2 🔍
 """
     return banner
 
@@ -1675,6 +1675,7 @@ def print_version_info():
     if platform.system() == "Windows":
         print(f"   • Windows Version: {platform.win32_ver()[0]}")
 
+
     # Print CUDA information if available
     if torch.cuda.is_available():
         print(f"\n🎮 CUDA Information:")
@@ -1687,6 +1688,17 @@ def print_version_info():
     else:
         print(f"\n🎮 CUDA Information:")
         print(f"   • CUDA Available: No")
+
+    # Print MPS information if available
+    if torch.backends.mps.is_available():
+        print(f"\n🍏 MPS Information:")
+        print(f"   • MPS Available: Yes")
+        print(f"   • MPS Device: {torch.device('mps')}")
+    else:
+        print(f"\n🍏 MPS Information:")
+        print(f"   • MPS Available: No")
+
+    
 
     # Print package versions by category
     for category, package_list in packages.items():

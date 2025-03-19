@@ -43,6 +43,8 @@ class ModelConfig:
     kernel_size: int = 2
     iterations: int = 10
     diagnostic: bool = False
+    ###
+    device: str = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 
 @dataclass
 class MaskExtractionConfig:
@@ -200,11 +202,13 @@ class ModelProcessor:
         """Process a single image with the model"""
         try:
             img = Image.open(image_path / image_file)
+            #img_tensor = transforms.ToTensor()(img).to(self.config.device)
             results = model.predict(
                 img,
                 save_crop=False,
                 conf=confidence,
-                retina_masks=True
+                retina_masks=True,
+                device=self.config.device
             )[0]
             
             if len(results) > 0:
@@ -220,6 +224,39 @@ class ModelProcessor:
                 )
         except Exception as e:
             print(f"Error processing image {image_file}: {str(e)}")
+
+    #def _process_single_image(self,
+    #                        image_file: str,
+    #                        image_path: Path,
+    #                        model: YOLO,
+    #                        confidence: float,
+    #                        kernel_size: int,
+    #                        iterations: int,
+    #                        output_folder: Path) -> None:
+    #    """Process a single image with the model"""
+    #    try:
+    #        img = Image.open(image_path / image_file)
+    #        results = model.predict(
+    #            img,
+    #            save_crop=False,
+    #            conf=confidence,
+    #            retina_masks=True
+    #        )[0]
+    #        
+    #        if len(results) > 0:
+    #            pred_masks = results.masks.data.cpu().numpy()
+    #            save_mask(
+    #                img,
+    #                pred_masks,
+    #                image_file.split(".")[0],
+    #                output_folder,
+    #                kernel_size,
+    #                iterations,
+    #                export_masks=True
+    #            )
+    #    except Exception as e:
+    #        print(f"Error processing image {image_file}: {str(e)}")
+
 
 
 class MaskExtractor:
@@ -365,6 +402,8 @@ class MaskExtractor:
                     output_filename = f"{base_filename}_mask_layer_{i}.png"
                     
                     # Save cropped image
+                    ### add some white space around the cropped image
+                    cropped = np.pad(cropped, ((50, 50), (50, 50), (0, 0)), mode='constant', constant_values=255)
                     Image.fromarray(cropped).save(output_folder / output_filename)
                     
                     # Store metadata
@@ -1328,6 +1367,10 @@ class PDFLayoutOptimizer:
                 # Scale dimensions
                 scaled_w = w * scale_factor
                 scaled_h = h * scale_factor
+                #desired_dpi = 300  
+                #scaled_w = int(w * (72 / desired_dpi) * scale_factor)
+                #scaled_h = int(h * (72 / desired_dpi) * scale_factor)
+                ####
                 
                 # Ensure scaled image fits on page
                 if scaled_w > self.page_width:
