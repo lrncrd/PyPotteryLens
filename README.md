@@ -5,7 +5,7 @@
 <img src="imgs/pypotterylens.png" width="150"/>
 </p>
 <p align="center">
-Version: 0.1.1
+Version: 0.1.2
 </p>
 
 As part of the **PyPottery** toolkit, `PyPotteryLens` is a Gradio desktop application for archaeological pottery drawings recording. It provides a comprehensive suite of tools for processing, detecting, and analyzing pottery fragments from scanned documents.
@@ -274,6 +274,11 @@ Full list available in `requirements.txt`
 
 ## Version History
 
+- 0.1.2
+   - Checked compatibility with MacOS (Sonoma 15.2)
+   - Added MPS support for Apple Silicon Device
+   - Added a white border to extracted images
+
 - 0.1.1
    - Checked compatibility with Linux (Ubuntu 24.10) and MacOS (Sonoma 14)
    - Improved bin packing algorithm for PDF creation
@@ -287,6 +292,7 @@ Full list available in `requirements.txt`
 - Windows 11
 - Ubuntu 24.10
 - MacOS Sonoma 14
+- MacOS Sequoia 15.2
 
 ## Known Issues ⚠️
 
