@@ -1,5 +1,4 @@
 gradio==5.23.3
-torch==2.5.1
 ultralytics==8.3.28
 pillow==11.0.0
 scikit-image==0.24.0

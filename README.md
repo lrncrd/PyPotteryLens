@@ -1,11 +1,8 @@
 
 # `PyPotteryLens`
 
-<p align="center">
+<div align="center">
 <img src="imgs/pypotterylens.png" width="150"/>
-</p>
-<p align="center">
-
 
 [![Version](https://img.shields.io/badge/version-0.1.3-blue.svg)](https://lrncrd.github.io/PyPotteryInk/)
 [![HuggingFace](https://img.shields.io/badge/🤗%20Models-PyPotteryLens-yellow.svg)](https://huggingface.co/lrncrd/PyPotteryLens)
@@ -13,7 +10,7 @@
 [![arXiv Preprint](https://img.shields.io/badge/arXiv-2412.11574-b31b1b.svg)](https://arxiv.org/abs/2412.11574)
 
 
-</p>
+</div>
 
 As part of the **PyPottery** toolkit, `PyPotteryLens` is a Gradio desktop application for archaeological pottery drawings recording. It provides a comprehensive suite of tools for processing, detecting, and analyzing pottery fragments from scanned documents.
 
@@ -38,6 +35,9 @@ As part of the **PyPottery** toolkit, `PyPotteryLens` is a Gradio desktop applic
 
 4. After the installation is complete, the program will be executed and the default browser will open the GUI.
 
+> ⚠️ **Important**: If you are encountering issues with the installation, remove the `venv` folder and run the `PyPotteryLens_WIN.bat` file again. This will create a new virtual environment and install all the dependencies from scratch. 
+
+
 #### UNIX (Linux, MacOS)
 
 1. Download the releases ZIP and extract it in a folder of your choice.
@@ -51,27 +51,44 @@ As part of the **PyPottery** toolkit, `PyPotteryLens` is a Gradio desktop applic
    ```
    This will install the required dependencies and start the application.
 
+> ⚠️ **Important**: If you are encountering issues with the installation, remove the `venv` folder and run the `PyPotteryLens_UNIX.sh` file again. This will create a new virtual environment and install all the dependencies from scratch. 
+
 ### Manual Way (Windows, Linux, MacOS)
 
 1. Download the repository ZIP
 
 2. Move into the downloaded folder
 
-3. Install the required dependencies:
+3. Install PyTorch
+
+   - For CPU support (recommended for most users):
    ```bash
-   pip install -r requirements.txt
+   pip install torch torchvision torchaudio
    ```
 
-   If you have already installed PyTorch with Cuda support, you have to open the `requirements.txt` file and remove the line with `torch`.
+   - For CUDA support (recommended for faster processing):
 
-4. (***OPTIONAL***) For CUDA support (recommended for faster processing):
-   - Install CUDA Toolkit (11.x or higher) from [NVIDIA's website](https://developer.nvidia.com/cuda-downloads)
-   - Install PyTorch with CUDA support:
+   Ensure you have a compatible NVIDIA GPU and the appropriate CUDA drivers installed: open the terminal and run the following command:
+
+   ```bash
+   nvidia-smi
+   ```
+
+   If you see a list of your GPU(s) and their status, you're good to go.
+
+   Then, install PyTorch with CUDA support:
 
    ```bash
    # For CUDA 11.8
    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
    ```
+
+
+4. Install the other required dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
 
 5. Download the basic models from [HuggingFace](https://huggingface.co/lrncrd/PyPotteryLens/tree/main) and place them in to the `models_vision` (BasicModelv8_v01.pt) and `models_classifier` (model_classifier.pth).
 
@@ -105,9 +122,6 @@ As part of the **PyPottery** toolkit, `PyPotteryLens` is a Gradio desktop applic
       ├── model_classifier.pth     # Main classifier model
       ```
 
-
-
-   > ⚠️ **Important**: If you want to use CUDA, install first pytorch with CUDA support (**step 4**) and then the rest of the dependencies (**step 3**).
 
 
 ## Let's get started
