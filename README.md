@@ -5,7 +5,14 @@
 <img src="imgs/pypotterylens.png" width="150"/>
 </p>
 <p align="center">
-Version: 0.1.2
+
+
+[![Version](https://img.shields.io/badge/version-0.1.3-blue.svg)](https://lrncrd.github.io/PyPotteryInk/)
+[![HuggingFace](https://img.shields.io/badge/🤗%20Models-PyPotteryLens-yellow.svg)](https://huggingface.co/lrncrd/PyPotteryLens)
+[![Python 3.10 | 3.11 | 3.12](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/downloads/)
+[![arXiv Preprint](https://img.shields.io/badge/arXiv-2412.11574-b31b1b.svg)](https://arxiv.org/abs/2412.11574)
+
+
 </p>
 
 As part of the **PyPottery** toolkit, `PyPotteryLens` is a Gradio desktop application for archaeological pottery drawings recording. It provides a comprehensive suite of tools for processing, detecting, and analyzing pottery fragments from scanned documents.
@@ -54,6 +61,8 @@ As part of the **PyPottery** toolkit, `PyPotteryLens` is a Gradio desktop applic
    ```bash
    pip install -r requirements.txt
    ```
+
+   If you have already installed PyTorch with Cuda support, you have to open the `requirements.txt` file and remove the line with `torch`.
 
 4. (***OPTIONAL***) For CUDA support (recommended for faster processing):
    - Install CUDA Toolkit (11.x or higher) from [NVIDIA's website](https://developer.nvidia.com/cuda-downloads)
@@ -273,6 +282,9 @@ Key dependencies include:
 Full list available in `requirements.txt`
 
 ## Version History
+
+- 0.1.3
+   - Minor bug fixes
 
 - 0.1.2
    - Checked compatibility with MacOS (Sonoma 15.2)

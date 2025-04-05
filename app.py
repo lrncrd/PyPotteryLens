@@ -154,7 +154,7 @@ class App:
                 <div>
                     <h1>PyPotteryLens</h1>
                     <span>Archaeological Pottery Documentation Tool 
-                        <span style="font-size: 0.9em; color: #666;">v0.1.2</span>
+                        <span style="font-size: 0.9em; color: #666;">v0.1.3</span>
                     </span>
                 </div>
             </div>
@@ -1557,7 +1557,7 @@ def print_ascii_banner():
 |_|    \__, ||_|   \___/ \__|\__\___|_|   \__, |_____\___|_| |_|___/
        |___/                               |___/                      
                                                                   
-    🏺 V0.1.2 🔍
+    🏺 V0.1.3 🔍
 """
     return banner
 
