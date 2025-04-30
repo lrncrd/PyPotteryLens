@@ -28,7 +28,6 @@ import gc
 
 
 
-
 @dataclass
 class PDFConfig:
     """Configuration for PDF processing"""
@@ -96,6 +95,7 @@ class PDFProcessor:
                 
                 # Get the pixel map with a good resolution
                 pix = page.get_pixmap(matrix=fitz.Matrix(300/72, 300/72))
+
                 
                 # Convert to PIL Image
                 img_data = pix.samples
@@ -274,12 +274,41 @@ class MaskExtractor:
         os.makedirs(output_folder, exist_ok=True)
         return img_folder, img_format, mask_folder, output_folder
 
-    def _process_mask(self, mask_array: np.ndarray) -> np.ndarray:
-        """Process mask array to get labeled regions"""
-        thresh = threshold_otsu(mask_array)
-        bw = closing(mask_array > thresh, square(3))
+    #def _process_mask(self, mask_array: np.ndarray) -> np.ndarray:
+    #    """Process mask array to get labeled regions"""
+    #    thresh = threshold_otsu(mask_array)
+    #    bw = closing(mask_array > thresh, square(3))
+    #    cleared = clear_border(bw)
+
+    #    return label(cleared)
+
+
+    def _process_mask(self, image_array: np.ndarray) -> np.ndarray:
+        """
+        Process PNG with alpha channel to get labeled regions from non-transparent areas.
+        """
+        # Extract alpha channel (assuming it's the 4th channel)
+        if image_array.ndim == 3 and image_array.shape[2] >= 4:
+            alpha_channel = image_array[:, :, 3]
+        else:
+            raise ValueError("Input image doesn't appear to have an alpha channel")
+        
+        # Create binary mask from alpha channel (non-zero alpha values)
+        mask_array = np.where(alpha_channel > 0, 1, 0).astype(np.uint8)
+        
+        # Only apply Otsu thresholding if we have both foreground and background pixels
+        if mask_array.min() < mask_array.max():
+            thresh = threshold_otsu(alpha_channel)
+            bw = closing(alpha_channel > thresh, square(3))
+        else:
+            bw = mask_array
+        
+        # Clear artifacts connected to image border
         cleared = clear_border(bw)
-        return label(cleared.astype(int))
+        
+        # Label connected regions
+        return label(cleared)
+
     
     def _create_region_mask(self, shape: tuple, region_bbox: tuple, region_mask: np.ndarray) -> np.ndarray:
         """Create full-size mask for a region"""
@@ -385,7 +414,8 @@ class MaskExtractor:
                 base_filename = file.split(".")[0].replace("_mask_layer", "")
                 
                 # Load images
-                mask_array = np.array(Image.open(mask_folder / file).convert("L"))
+                #mask_array = np.array(Image.open(mask_folder / file).convert("L"))
+                mask_array = np.array(Image.open(mask_folder / file))
                 orig_array = np.array(Image.open(img_folder / f"{base_filename}.{img_format}"))
                 
                 # Process mask and get labeled regions
@@ -1359,18 +1389,27 @@ class PDFLayoutOptimizer:
     def pack_images(self, image_paths: List[tuple], scale_factor: float = 1.0) -> List[List[Dict]]:
         """Process images and optimize their layout"""
         # Get image dimensions and create scaled info
+        ######
+        px_to_pt = 72.0 / 300
+        ###### 
         image_info = []
         
         for img_path, new_id in image_paths:
             with Image.open(img_path) as img:
                 w, h = img.size
+
+
+                ############
+                # Convert pixel dimensions to PDF points
+                w = w * px_to_pt
+                h = h * px_to_pt
+                ###########
+
+
                 # Scale dimensions
                 scaled_w = w * scale_factor
                 scaled_h = h * scale_factor
-                #desired_dpi = 300  
-                #scaled_w = int(w * (72 / desired_dpi) * scale_factor)
-                #scaled_h = int(h * (72 / desired_dpi) * scale_factor)
-                ####
+
                 
                 # Ensure scaled image fits on page
                 if scaled_w > self.page_width:
@@ -1409,6 +1448,7 @@ class PDFExporter:
     }
     
     def __init__(self, page_size: str = 'A4', margin: int = 50, scale_factor: float = 1.0):
+
         self.page_size = self.PAGE_SIZES.get(page_size, pagesizes.A4)
         self.margin = margin
         self.scale_factor = scale_factor
@@ -1417,6 +1457,8 @@ class PDFExporter:
             page_height=self.page_size[1],
             margin=margin
         )
+        
+      
 
     def generate_pdf(self, output_path: str, image_data: List[tuple]) -> bool:
         """Generate PDF with optimized image layout"""
