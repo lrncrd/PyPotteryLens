@@ -13,7 +13,7 @@ class MultiHeadEfficientNet(nn.Module):
         # Load pretrained backbone
         self.backbone = timm.create_model(
             'efficientnetv2_rw_s',
-            pretrained=True,
+            pretrained=False, #True
             in_chans=1,
             num_classes=0
         )

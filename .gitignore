@@ -165,6 +165,8 @@ pdf2img_outputs/*
 safe
 docs
 
+model_vision
+model_classifier
 model_classifier/*
 model_vision/*
 outputs
