@@ -12,18 +12,34 @@ let tabularState = {
     currentImageName: null,  // Track current image for saving
     imageList: [],  // List of all images with reviewed status
     isReviewed: false,  // Current image reviewed status
-    fullImageUrl: null  // Full resolution image URL for zoom
+    fullImageUrl: null,  // Full resolution image URL for zoom
+    excludedImages: new Set()  // Excluded images set
 };
 
 document.addEventListener('DOMContentLoaded', () => {
     setupTabularListeners();
     loadCurrentProject();
-    
+
     // Listen for project changes
     window.addEventListener('projectChanged', (e) => {
         const project = e.detail && e.detail.project ? e.detail.project : null;
         tabularState.currentProject = project;
         loadProjectCards();
+    });
+
+    // Listen for exclusion changes from other tabs (cross-tab sync)
+    window.addEventListener('exclusionChanged', (e) => {
+        const { filename, excluded, allExcluded } = e.detail;
+
+        // Update local state
+        if (excluded) {
+            tabularState.excludedImages.add(filename);
+        } else {
+            tabularState.excludedImages.delete(filename);
+        }
+
+        // Update UI for this specific item
+        updateExclusionVisualInList(filename, excluded);
     });
 });
 
@@ -51,15 +67,434 @@ function setupTabularListeners() {
 
     // Add column
     document.getElementById('add-column-btn')?.addEventListener('click', handleAddColumn);
-    
+
     // Export to CSV - use combined export endpoint
     document.getElementById('export-csv-btn')?.addEventListener('click', exportCombinedCSV);
-    
+
     // Mark as reviewed
     document.getElementById('tabular-mark-reviewed-btn')?.addEventListener('click', markAsReviewed);
-    
+
+    // Extract metadata from PDF
+    document.getElementById('extract-metadata-btn')?.addEventListener('click', extractMetadata);
+
     // Setup magnifying glass zoom on hover
     setupMagnifyingGlass();
+
+    // File browser for PDF
+    setupFileBrowser();
+
+    // AI Settings panel
+    setupAISettings();
+}
+
+// ============================================================================
+// File Browser for Reference PDF
+// ============================================================================
+
+function setupFileBrowser() {
+    const browseBtn = document.getElementById('browse-pdf-btn');
+    const fileInput = document.getElementById('pdf-file-input');
+    const pathInput = document.getElementById('reference-pdf-path');
+
+    if (browseBtn && fileInput && pathInput) {
+        browseBtn.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                const file = e.target.files[0];
+                // Store the file object for potential upload
+                pathInput.dataset.file = file.name;
+                pathInput.value = file.name;
+
+                // Show info about the selected file
+                window.PyPotteryUtils.showStatus('tabular-status',
+                    `Selected: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`, 'info');
+            }
+        });
+    }
+}
+
+// ============================================================================
+// AI Settings Panel
+// ============================================================================
+
+function setupAISettings() {
+    // Load saved settings on init
+    loadAISettings();
+
+    // Toggle panel visibility
+    window.toggleAISettings = function() {
+        const content = document.getElementById('ai-settings-content');
+        const toggle = document.getElementById('ai-settings-toggle');
+        if (content && toggle) {
+            content.classList.toggle('collapsed');
+            toggle.textContent = content.classList.contains('collapsed') ? '▶' : '▼';
+        }
+    };
+
+    // Save Anthropic key
+    document.getElementById('save-anthropic-key')?.addEventListener('click', () => {
+        saveAPIKey('anthropic');
+    });
+
+    // Save OpenAI key
+    document.getElementById('save-openai-key')?.addEventListener('click', () => {
+        saveAPIKey('openai');
+    });
+
+    // Toggle key visibility
+    document.getElementById('toggle-anthropic-key')?.addEventListener('click', () => {
+        toggleKeyVisibility('anthropic-api-key');
+    });
+
+    document.getElementById('toggle-openai-key')?.addEventListener('click', () => {
+        toggleKeyVisibility('openai-api-key');
+    });
+
+    // AI Extract Metadata button
+    document.getElementById('ai-extract-metadata-btn')?.addEventListener('click', aiExtractMetadata);
+
+    // Calibration buttons
+    document.getElementById('set-project-calibration')?.addEventListener('click', setProjectCalibration);
+    document.getElementById('detect-scale-bar-btn')?.addEventListener('click', detectScaleBar);
+}
+
+async function loadAISettings() {
+    try {
+        const response = await fetch('/api/settings');
+        const data = await response.json();
+
+        if (data.success && data.settings) {
+            const settings = data.settings;
+
+            // Update provider dropdown
+            const providerSelect = document.getElementById('ai-provider-select');
+            if (providerSelect && settings.default_ai_provider) {
+                providerSelect.value = settings.default_ai_provider;
+            }
+
+            // Update key status indicators
+            updateKeyStatus('anthropic', settings.has_anthropic_key, settings.anthropic_api_key);
+            updateKeyStatus('openai', settings.has_openai_key, settings.openai_api_key);
+        }
+    } catch (error) {
+        console.error('Failed to load AI settings:', error);
+    }
+}
+
+function updateKeyStatus(provider, hasKey, maskedKey) {
+    const statusEl = document.getElementById(`${provider}-key-status`);
+    if (statusEl) {
+        if (hasKey) {
+            statusEl.textContent = `Configured: ${maskedKey}`;
+            statusEl.className = 'key-status configured';
+        } else {
+            statusEl.textContent = 'Not configured';
+            statusEl.className = 'key-status not-configured';
+        }
+    }
+}
+
+async function saveAPIKey(provider) {
+    const input = document.getElementById(`${provider}-api-key`);
+    const key = input?.value?.trim();
+
+    if (!key) {
+        window.PyPotteryUtils.showStatus('tabular-status', `Please enter a ${provider} API key`, 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/settings/api-key', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider, key })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            window.PyPotteryUtils.showStatus('tabular-status', data.message, 'success');
+            input.value = ''; // Clear input after saving
+            updateKeyStatus(provider, true, data.masked_key);
+        } else {
+            window.PyPotteryUtils.showStatus('tabular-status', data.error || 'Failed to save key', 'error');
+        }
+    } catch (error) {
+        console.error('Failed to save API key:', error);
+        window.PyPotteryUtils.showStatus('tabular-status', 'Failed to save API key', 'error');
+    }
+}
+
+function toggleKeyVisibility(inputId) {
+    const input = document.getElementById(inputId);
+    if (input) {
+        input.type = input.type === 'password' ? 'text' : 'password';
+    }
+}
+
+// Progress polling state
+let progressPollingInterval = null;
+
+function showAIProgress(show = true) {
+    const container = document.getElementById('ai-progress-container');
+    if (container) {
+        container.style.display = show ? 'block' : 'none';
+    }
+}
+
+function updateAIProgress(percent, message, title = 'Processing...') {
+    const progressBar = document.getElementById('ai-progress-bar');
+    const progressPercent = document.getElementById('ai-progress-percent');
+    const progressMessage = document.getElementById('ai-progress-message');
+    const progressTitle = document.getElementById('ai-progress-title');
+
+    if (progressBar) progressBar.style.width = `${percent}%`;
+    if (progressPercent) progressPercent.textContent = `${percent}%`;
+    if (progressMessage) progressMessage.textContent = message;
+    if (progressTitle) progressTitle.textContent = title;
+}
+
+function startProgressPolling() {
+    // Clear any existing interval
+    if (progressPollingInterval) {
+        clearInterval(progressPollingInterval);
+    }
+
+    progressPollingInterval = setInterval(async () => {
+        try {
+            const response = await fetch('/api/operation-progress');
+            const data = await response.json();
+
+            if (data.success && data.progress && data.progress.active) {
+                const p = data.progress;
+                updateAIProgress(
+                    p.percent,
+                    p.message,
+                    `🧠 AI Extraction (${p.current}/${p.total})`
+                );
+            }
+        } catch (error) {
+            console.error('Progress polling error:', error);
+        }
+    }, 500); // Poll every 500ms
+}
+
+function stopProgressPolling() {
+    if (progressPollingInterval) {
+        clearInterval(progressPollingInterval);
+        progressPollingInterval = null;
+    }
+}
+
+async function aiExtractMetadata() {
+    if (!tabularState.currentProject || !tabularState.currentProject.project_id) {
+        window.PyPotteryUtils.showStatus('tabular-status', 'No project selected', 'error');
+        return;
+    }
+
+    const provider = document.getElementById('ai-provider-select')?.value || 'anthropic';
+    const btn = document.getElementById('ai-extract-metadata-btn');
+    const originalText = btn?.innerHTML;
+
+    try {
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '⏳ AI Processing...';
+        }
+
+        // Show progress bar and start polling
+        showAIProgress(true);
+        updateAIProgress(0, 'Initializing AI extraction...', '🧠 Starting AI Extraction');
+        startProgressPolling();
+
+        // Get PDF path from widget if provided
+        const pdfPath = document.getElementById('reference-pdf-path')?.value || '';
+
+        window.PyPotteryUtils.showStatus('tabular-status',
+            `Using ${provider === 'anthropic' ? 'Claude' : 'GPT'} to extract metadata...`, 'info');
+
+        const response = await fetch(`/api/projects/${tabularState.currentProject.project_id}/metadata/ai-extract`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider, pdf_path: pdfPath })
+        });
+
+        const data = await response.json();
+
+        // Stop polling and update final state
+        stopProgressPolling();
+
+        if (data.success) {
+            updateAIProgress(100, 'Extraction complete!', '✅ AI Extraction Complete');
+            window.PyPotteryUtils.showStatus('tabular-status',
+                `AI extraction complete! Processed ${data.processed || 0} images (${data.successful || 0} successful).`, 'success');
+            // Reload table data
+            loadProjectCards();
+
+            // Hide progress bar after 3 seconds
+            setTimeout(() => showAIProgress(false), 3000);
+        } else {
+            updateAIProgress(0, data.error || 'Extraction failed', '❌ AI Extraction Failed');
+            window.PyPotteryUtils.showStatus('tabular-status',
+                data.error || 'AI extraction failed', 'error');
+            // Hide progress bar after 3 seconds
+            setTimeout(() => showAIProgress(false), 3000);
+        }
+    } catch (error) {
+        console.error('AI extraction error:', error);
+        stopProgressPolling();
+        updateAIProgress(0, error.message, '❌ AI Extraction Failed');
+        window.PyPotteryUtils.showStatus('tabular-status',
+            'AI extraction failed: ' + error.message, 'error');
+        setTimeout(() => showAIProgress(false), 3000);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        }
+    }
+}
+
+async function setProjectCalibration() {
+    const pixelsPerCm = parseFloat(document.getElementById('calibration-pixels-per-cm')?.value);
+
+    if (!pixelsPerCm || pixelsPerCm <= 0) {
+        window.PyPotteryUtils.showStatus('tabular-status', 'Please enter a valid pixels per cm value', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/settings/calibration', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pixels_per_cm: pixelsPerCm })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            window.PyPotteryUtils.showStatus('tabular-status', 'Calibration saved', 'success');
+        } else {
+            window.PyPotteryUtils.showStatus('tabular-status', data.error || 'Failed to save calibration', 'error');
+        }
+    } catch (error) {
+        console.error('Calibration error:', error);
+        window.PyPotteryUtils.showStatus('tabular-status', 'Failed to save calibration', 'error');
+    }
+}
+
+async function detectScaleBar() {
+    if (!tabularState.currentProject || !tabularState.currentImageName) {
+        window.PyPotteryUtils.showStatus('tabular-status', 'No image selected', 'error');
+        return;
+    }
+
+    const statusEl = document.getElementById('scale-detection-status');
+    const btn = document.getElementById('detect-scale-bar-btn');
+    const originalText = btn?.innerHTML;
+
+    try {
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '⏳ Detecting...';
+        }
+        if (statusEl) {
+            statusEl.textContent = 'Analyzing...';
+            statusEl.className = 'detection-status';
+        }
+
+        const response = await fetch(`/api/projects/${tabularState.currentProject.project_id}/scale-bar/detect`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_name: tabularState.currentImageName })
+        });
+
+        const data = await response.json();
+
+        if (data.success && data.result) {
+            const result = data.result;
+            if (statusEl) {
+                statusEl.textContent = `Detected: ${result.pixels}px (${result.unit_text || 'unknown scale'})`;
+                statusEl.className = 'detection-status success';
+            }
+            // Auto-fill calibration input if we can parse the scale
+            if (result.pixels && result.cm) {
+                const calibrationInput = document.getElementById('calibration-pixels-per-cm');
+                if (calibrationInput) {
+                    calibrationInput.value = (result.pixels / result.cm).toFixed(2);
+                }
+            }
+        } else {
+            if (statusEl) {
+                statusEl.textContent = 'No scale bar detected';
+                statusEl.className = 'detection-status error';
+            }
+        }
+    } catch (error) {
+        console.error('Scale bar detection error:', error);
+        if (statusEl) {
+            statusEl.textContent = 'Detection failed';
+            statusEl.className = 'detection-status error';
+        }
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        }
+    }
+}
+
+async function extractMetadata() {
+    if (!tabularState.currentProject || !tabularState.currentProject.project_id) {
+        window.PyPotteryUtils.showStatus('tabular-status', 'No project selected', 'error');
+        return;
+    }
+
+    // Check if there's a reference PDF for period extraction
+    const referencePdfInput = document.getElementById('reference-pdf-path');
+    const referencePdfPath = referencePdfInput ? referencePdfInput.value.trim() : '';
+
+    const btn = document.getElementById('extract-metadata-btn');
+    const originalText = btn.innerHTML;
+    try {
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Extracting...';
+
+        let statusMsg = 'Extracting metadata from PDF (may take a while for OCR)...';
+        if (referencePdfPath) {
+            statusMsg += ' Also extracting period info from reference PDF.';
+        }
+        window.PyPotteryUtils.showStatus('tabular-status', statusMsg, 'info');
+
+        const requestBody = {};
+        if (referencePdfPath) {
+            requestBody.reference_pdf_path = referencePdfPath;
+        }
+
+        const response = await window.PyPotteryUtils.apiRequest(
+            `/api/projects/${tabularState.currentProject.project_id}/metadata/extract`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+            }
+        );
+        if (response.success) {
+            window.PyPotteryUtils.showStatus('tabular-status', response.message || 'Metadata extracted!', 'success');
+            await loadTabularData();
+        } else {
+            window.PyPotteryUtils.showStatus('tabular-status', response.error || 'Failed to extract metadata', 'error');
+        }
+    } catch (error) {
+        console.error('Error extracting metadata:', error);
+        window.PyPotteryUtils.showStatus('tabular-status', `Error: ${error.message}`, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+    }
 }
 
 async function loadProjectCards() {
@@ -67,31 +502,37 @@ async function loadProjectCards() {
         showEmptyState('No project selected', 'Select a project from the Project Manager tab');
         return;
     }
-    
+
     try {
         window.PyPotteryUtils.showLoading('Loading project cards...');
-        
+
+        // Initialize exclusion manager for this project
+        await window.PyPotteryUtils.exclusionManager.init(tabularState.currentProject.project_id);
+
+        // Sync local state with exclusion manager
+        tabularState.excludedImages = new Set(window.PyPotteryUtils.exclusionManager.getExcluded());
+
         const response = await window.PyPotteryUtils.apiRequest(
             `/api/projects/${tabularState.currentProject.project_id}/cards`
         );
-        
+
         window.PyPotteryUtils.hideLoading();
-        
+
         if (response.success) {
             tabularState.cards = response.cards || [];
             tabularState.totalCards = response.total || 0;
-            
+
             if (tabularState.totalCards === 0) {
                 showEmptyState('No cards found', 'Extract cards from masks in the Annotation tab first');
                 return;
             }
-            
+
             // Load first card data
             await loadTabularData(0);
         } else {
             showEmptyState('Error loading cards', response.error);
         }
-        
+
     } catch (error) {
         window.PyPotteryUtils.hideLoading();
         console.error('Error loading project cards:', error);
@@ -453,35 +894,113 @@ async function exportCombinedCSV() {
 function displayImageList() {
     const listContainer = document.getElementById('tabular-image-list');
     if (!listContainer) return;
-    
+
     listContainer.innerHTML = '';
-    
+
     if (!tabularState.imageList || tabularState.imageList.length === 0) {
         listContainer.innerHTML = '<div style="padding: 1rem; color: #64748b;">No images</div>';
         return;
     }
-    
+
     tabularState.imageList.forEach((item, index) => {
         const div = document.createElement('div');
         div.className = 'tabular-image-item';
+        div.dataset.filename = item.image_name;
+
         if (index === tabularState.currentIndex) {
             div.classList.add('active');
         }
         if (item.reviewed) {
             div.classList.add('reviewed');
         }
-        
+
+        // Check exclusion state
+        const isExcluded = tabularState.excludedImages.has(item.image_name);
+        if (isExcluded) {
+            div.classList.add('excluded');
+        }
+
         div.innerHTML = `
-            <span class="image-name">${item.image_name}</span>
+            <input type="checkbox" class="exclude-checkbox" title="Exclude from export" ${isExcluded ? 'checked' : ''}>
+            <span class="image-name" title="${item.image_name}">${item.image_name}</span>
+            <span class="exclude-indicator">EXCLUDED</span>
             <span class="status-icon">${item.reviewed ? '✅' : '⚪'}</span>
         `;
-        
-        div.addEventListener('click', () => {
+
+        // Handle exclusion checkbox click (stop propagation to prevent navigation)
+        const checkbox = div.querySelector('.exclude-checkbox');
+        checkbox.addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
+        checkbox.addEventListener('change', async (e) => {
+            e.stopPropagation();
+            const excluded = e.target.checked;
+            await handleTabularExclusionToggle(item.image_name, excluded);
+        });
+
+        // Navigation click (on the rest of the item)
+        div.addEventListener('click', (e) => {
+            // Don't navigate if clicking on checkbox
+            if (e.target.classList.contains('exclude-checkbox')) return;
             loadTabularData(index);
         });
-        
+
         listContainer.appendChild(div);
     });
+
+    // Update excluded count display
+    updateExcludedCountDisplay();
+}
+
+// Handle exclusion toggle in tabular tab
+async function handleTabularExclusionToggle(filename, excluded) {
+    const success = await window.PyPotteryUtils.exclusionManager.toggle(filename, excluded);
+
+    if (success) {
+        // Update local state
+        if (excluded) {
+            tabularState.excludedImages.add(filename);
+        } else {
+            tabularState.excludedImages.delete(filename);
+        }
+
+        // Update visual
+        updateExclusionVisualInList(filename, excluded);
+        updateExcludedCountDisplay();
+    } else {
+        // Revert checkbox if failed
+        const item = document.querySelector(`.tabular-image-item[data-filename="${filename}"] .exclude-checkbox`);
+        if (item) {
+            item.checked = !excluded;
+        }
+        window.PyPotteryUtils.showToast('Failed to update exclusion', 'error');
+    }
+}
+
+// Update visual state of a single item in the list
+function updateExclusionVisualInList(filename, excluded) {
+    const item = document.querySelector(`.tabular-image-item[data-filename="${filename}"]`);
+    if (!item) return;
+
+    const checkbox = item.querySelector('.exclude-checkbox');
+    if (checkbox) {
+        checkbox.checked = excluded;
+    }
+
+    if (excluded) {
+        item.classList.add('excluded');
+    } else {
+        item.classList.remove('excluded');
+    }
+}
+
+// Update excluded count display
+function updateExcludedCountDisplay() {
+    const countEl = document.getElementById('tabular-excluded-count');
+    if (countEl) {
+        const count = tabularState.excludedImages.size;
+        countEl.textContent = count > 0 ? `(${count} excluded)` : '';
+    }
 }
 
 function updateReviewedButton() {

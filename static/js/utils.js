@@ -11,6 +11,16 @@ async function apiRequest(url, options = {}) {
             }
         });
 
+        // Check content type to handle non-JSON responses gracefully
+        const contentType = response.headers.get('content-type');
+
+        if (!contentType || !contentType.includes('application/json')) {
+            // Server returned non-JSON response (e.g., HTML error page)
+            const text = await response.text();
+            console.error('API returned non-JSON response:', response.status, text.substring(0, 200));
+            throw new Error(`Server error: ${response.status} ${response.statusText}`);
+        }
+
         const data = await response.json();
 
         if (!response.ok) {
@@ -319,6 +329,111 @@ async function executeWithProgress(operation, executeFunc, statusElementId, prog
     }
 }
 
+// ============================================================================
+// Global Exclusion Manager
+// Manages exclusion state across tabs (postprocess and tabular)
+// ============================================================================
+
+const exclusionManager = {
+    _excluded: new Set(),
+    _projectId: null,
+    _initialized: false,
+
+    // Initialize for a project
+    async init(projectId) {
+        if (this._projectId === projectId && this._initialized) {
+            return; // Already initialized for this project
+        }
+
+        this._projectId = projectId;
+        this._excluded = new Set();
+
+        if (!projectId) {
+            this._initialized = false;
+            return;
+        }
+
+        try {
+            const response = await apiRequest(`/api/projects/${projectId}/cards/exclusions`);
+            if (response.success && response.exclusions) {
+                // Response is {filename: bool}, filter for excluded ones
+                Object.entries(response.exclusions).forEach(([filename, isExcluded]) => {
+                    if (isExcluded) {
+                        this._excluded.add(filename);
+                    }
+                });
+            }
+            this._initialized = true;
+        } catch (error) {
+            console.error('Failed to load exclusions:', error);
+            this._initialized = true; // Mark as initialized anyway to prevent infinite retries
+        }
+    },
+
+    // Check if a file is excluded
+    isExcluded(filename) {
+        return this._excluded.has(filename);
+    },
+
+    // Get all excluded filenames
+    getExcluded() {
+        return Array.from(this._excluded);
+    },
+
+    // Get count of excluded items
+    getExcludedCount() {
+        return this._excluded.size;
+    },
+
+    // Toggle exclusion state (updates backend and dispatches event)
+    async toggle(filename, excluded) {
+        if (!this._projectId) {
+            console.warn('Exclusion manager not initialized with project');
+            return false;
+        }
+
+        try {
+            const response = await apiRequest(
+                `/api/projects/${this._projectId}/cards/exclude`,
+                {
+                    method: 'POST',
+                    body: JSON.stringify({ filename, excluded })
+                }
+            );
+
+            if (response.success) {
+                if (excluded) {
+                    this._excluded.add(filename);
+                } else {
+                    this._excluded.delete(filename);
+                }
+
+                // Dispatch event for cross-tab sync
+                window.dispatchEvent(new CustomEvent('exclusionChanged', {
+                    detail: {
+                        filename,
+                        excluded,
+                        allExcluded: Array.from(this._excluded)
+                    }
+                }));
+
+                return true;
+            }
+            return false;
+        } catch (error) {
+            console.error('Failed to toggle exclusion:', error);
+            return false;
+        }
+    },
+
+    // Reset for new project
+    reset() {
+        this._excluded = new Set();
+        this._projectId = null;
+        this._initialized = false;
+    }
+};
+
 // Export utilities
 window.PyPotteryUtils = {
     apiRequest,
@@ -336,5 +451,6 @@ window.PyPotteryUtils = {
     formatFileSize,
     validateInput,
     imageToCanvas,
-    downloadFile
+    downloadFile,
+    exclusionManager
 };

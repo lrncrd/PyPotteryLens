@@ -26,16 +26,21 @@ from utils import (
     TabularProcessor,
     SecondStepProcessor,
     ExportProcessor,
+    MetadataExtractor,
     PDFConfig,
     ModelConfig,
     MaskExtractionConfig,
     AnnotationConfig,
     TabularConfig,
     SecondStepConfig,
-    ExportConfig
+    ExportConfig,
+    MetadataExtractionConfig
 )
 
 from project_manager import ProjectManager
+from settings_manager import get_settings_manager
+from scale_detector import ScaleBarDetector, ScaleBarConfig
+from ai_extractor import get_extractor, image_to_base64, detect_image_media_type, BatchExtractor
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'pypotterylens-secret-key-2024'
@@ -632,6 +637,81 @@ def extract_project_masks(project_id):
         
     except Exception as e:
         clear_operation_progress()
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/metadata/extract', methods=['POST'])
+def extract_project_metadata(project_id):
+    """Extract metadata (captions, figure numbers, pottery IDs) from project"""
+    try:
+        project_metadata = project_manager.get_project(project_id)
+        if not project_metadata:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        data = request.json or {}
+        reference_pdf_path = data.get('reference_pdf_path')  # Optional: PDF with period info
+
+        project_path = project_manager.get_project_path(project_id)
+        config = MetadataExtractionConfig(project_path=project_path)
+        extractor = MetadataExtractor(config)
+
+        # Extract period mappings from reference PDF if provided
+        period_mappings = {}
+        if reference_pdf_path:
+            ref_path = Path(reference_pdf_path)
+            if ref_path.exists():
+                print(f"Extracting period mappings from: {ref_path}")
+                period_mappings = extractor.extract_period_mappings_from_pdf(ref_path)
+
+        result = extractor.process_project(project_id, project_manager, period_mappings)
+
+        return jsonify({'message': result, 'success': True})
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/metadata/extract-periods', methods=['POST'])
+def extract_period_mappings(project_id):
+    """Extract pottery->period mappings from a reference PDF"""
+    try:
+        project_metadata = project_manager.get_project(project_id)
+        if not project_metadata:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        data = request.json
+        reference_pdf_path = data.get('reference_pdf_path')
+
+        if not reference_pdf_path:
+            return jsonify({'error': 'reference_pdf_path is required', 'success': False}), 400
+
+        ref_path = Path(reference_pdf_path)
+        if not ref_path.exists():
+            return jsonify({'error': f'PDF not found: {reference_pdf_path}', 'success': False}), 404
+
+        project_path = project_manager.get_project_path(project_id)
+        config = MetadataExtractionConfig(project_path=project_path)
+        extractor = MetadataExtractor(config)
+
+        mappings = extractor.extract_period_mappings_from_pdf(ref_path)
+
+        # Save mappings to project
+        mappings_path = project_path / 'period_mappings.json'
+        import json
+        with open(mappings_path, 'w', encoding='utf-8') as f:
+            json.dump(mappings, f, indent=2, ensure_ascii=False)
+
+        return jsonify({
+            'message': f'Extracted {len(mappings)} period mappings',
+            'mappings': mappings,
+            'success': True
+        })
+
+    except Exception as e:
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e), 'success': False}), 500
@@ -1396,21 +1476,76 @@ def load_project_tabular_data(project_id):
         
     # Prepare table data from mask_info
         df_subset = df_info[df_info['file'] == current_image_name].copy()
-        
+
         if not df_subset.empty:
             # Add ID column
             df_subset['ID'] = df_subset['mask_file'].apply(
                 lambda x: x.split('layer_')[1] if isinstance(x, str) and 'layer_' in x else '0')
-            
+
             # Drop internal columns
             drop_cols = [col for col in ['mask_file', 'file'] if col in df_subset.columns]
             if drop_cols:
                 df_subset = df_subset.drop(columns=drop_cols)
-            
+
+            # Check for AI extraction results and merge
+            exports_path = project_manager.get_project_path(project_id, 'exports')
+            if exports_path:
+                ai_csv_path = exports_path / 'card_data.csv'
+                if ai_csv_path.exists() and ai_csv_path.stat().st_size > 10:
+                    try:
+                        df_ai = pd.read_csv(ai_csv_path).fillna('')
+                        print(f"[Tabular] Loaded AI data with {len(df_ai)} rows, columns: {df_ai.columns.tolist()}")
+                        # Match AI data to current image's cards
+                        ai_matches_found = 0
+                        for idx, row in df_subset.iterrows():
+                            mask_id = str(row.get('ID', '')).replace('.png', '').replace('.jpg', '')
+                            # Try multiple matching patterns
+                            patterns = [
+                                f"{current_image_name}_mask_layer_{mask_id}.png",
+                                f"{current_image_name}_mask_layer_{mask_id}.jpg",
+                                f"{current_image_name}_layer_{mask_id}.png",
+                                f"{current_image_name}_{mask_id}.png",
+                            ]
+                            ai_match = pd.DataFrame()
+                            for pattern in patterns:
+                                ai_match = df_ai[df_ai['filename'] == pattern]
+                                if not ai_match.empty:
+                                    break
+                            # If no exact match, try partial match
+                            if ai_match.empty and 'filename' in df_ai.columns:
+                                search_term = f"layer_{mask_id}"
+                                matches = df_ai[df_ai['filename'].str.contains(current_image_name, na=False) &
+                                               df_ai['filename'].str.contains(search_term, na=False)]
+                                if not matches.empty:
+                                    ai_match = matches.head(1)
+
+                            if not ai_match.empty:
+                                ai_matches_found += 1
+                                ai_row = ai_match.iloc[0]
+                                # Add AI columns to the row
+                                if ai_row.get('ai_figure_number'):
+                                    df_subset.at[idx, 'AI Fig#'] = ai_row['ai_figure_number']
+                                if ai_row.get('ai_pottery_id'):
+                                    df_subset.at[idx, 'AI Pottery ID'] = ai_row['ai_pottery_id']
+                                if ai_row.get('ai_period'):
+                                    df_subset.at[idx, 'AI Period'] = ai_row['ai_period']
+                                if ai_row.get('ai_original_period'):
+                                    df_subset.at[idx, 'AI Original Period'] = ai_row['ai_original_period']
+                                if ai_row.get('ai_confidence'):
+                                    df_subset.at[idx, 'AI Confidence'] = f"{float(ai_row['ai_confidence']):.0%}"
+                        print(f"[Tabular] Matched {ai_matches_found}/{len(df_subset)} rows with AI data for {current_image_name}")
+                    except Exception as e:
+                        print(f"Error loading AI data: {e}")
+                        import traceback
+                        traceback.print_exc()
+
             # Reorder with ID first
             columns_order = ['ID'] + [col for col in df_subset.columns if col != 'ID']
             df_subset = df_subset[columns_order]
-            
+
+            # Replace NaN with empty string to ensure valid JSON (NaN is not valid JSON)
+            df_subset = df_subset.fillna('')
+
             table_data = df_subset.to_dict('records')
             columns = list(df_subset.columns)
         else:
@@ -2088,6 +2223,325 @@ def merge_project_annotations(project_id):
         return jsonify({'error': str(e), 'success': False}), 500
 
 
+@app.route('/api/projects/<project_id>/cards/exclude', methods=['POST'])
+def toggle_card_exclusion(project_id):
+    """Toggle exclusion status of a card image."""
+    try:
+        # Verify project exists
+        project_metadata = project_manager.get_project(project_id)
+        if not project_metadata:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        data = request.json
+        filename = data.get('filename')
+        excluded = data.get('excluded', False)
+
+        if not filename:
+            return jsonify({'error': 'Filename is required', 'success': False}), 400
+
+        # Get cards path and exclusions file
+        cards_path = project_manager.get_project_path(project_id, 'cards')
+        if not cards_path or not cards_path.exists():
+            return jsonify({'error': 'Cards folder not found', 'success': False}), 404
+
+        exclusions_path = cards_path / '.exclusions.json'
+
+        # Load existing exclusions
+        exclusions = {}
+        if exclusions_path.exists():
+            try:
+                with open(exclusions_path, 'r') as f:
+                    exclusions = json.load(f)
+            except json.JSONDecodeError:
+                exclusions = {}
+
+        # Update exclusion status
+        if excluded:
+            exclusions[filename] = True
+        else:
+            exclusions.pop(filename, None)
+
+        # Save exclusions
+        with open(exclusions_path, 'w') as f:
+            json.dump(exclusions, f, indent=2)
+
+        return jsonify({
+            'success': True,
+            'filename': filename,
+            'excluded': excluded,
+            'total_excluded': len([k for k, v in exclusions.items() if v])
+        })
+
+    except Exception as e:
+        print(f"Error toggling exclusion: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/cards/exclusions', methods=['GET'])
+def get_card_exclusions(project_id):
+    """Get all excluded cards for a project."""
+    try:
+        # Verify project exists
+        project_metadata = project_manager.get_project(project_id)
+        if not project_metadata:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        cards_path = project_manager.get_project_path(project_id, 'cards')
+        if not cards_path:
+            return jsonify({'excluded': [], 'success': True})
+
+        exclusions_path = cards_path / '.exclusions.json'
+
+        exclusions = {}
+        if exclusions_path.exists():
+            try:
+                with open(exclusions_path, 'r') as f:
+                    exclusions = json.load(f)
+            except json.JSONDecodeError:
+                exclusions = {}
+
+        # Return list of excluded filenames
+        excluded_list = [k for k, v in exclusions.items() if v]
+
+        return jsonify({
+            'success': True,
+            'excluded': excluded_list,
+            'total': len(excluded_list)
+        })
+
+    except Exception as e:
+        print(f"Error getting exclusions: {e}")
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/cards/crop', methods=['POST'])
+def crop_card(project_id):
+    """Crop a card image (auto or manual)."""
+    try:
+        # Verify project exists
+        project_metadata = project_manager.get_project(project_id)
+        if not project_metadata:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        data = request.json
+        filename = data.get('filename')
+        mode = data.get('mode', 'manual')  # 'auto', 'manual', or 'content'
+        rect = data.get('rect')  # For manual mode: {x, y, width, height}
+        keep_side = data.get('keep_side', 'auto')  # For auto mode: 'auto', 'left', 'right'
+
+        if not filename:
+            return jsonify({'error': 'Filename is required', 'success': False}), 400
+
+        # Get paths
+        cards_path = project_manager.get_project_path(project_id, 'cards')
+        cards_modified_path = project_manager.get_project_path(project_id, 'cards_modified')
+
+        if not cards_path or not cards_path.exists():
+            return jsonify({'error': 'Cards folder not found', 'success': False}), 404
+
+        # Find source image (prefer modified, fallback to original)
+        source_path = None
+        if cards_modified_path and (cards_modified_path / filename).exists():
+            source_path = cards_modified_path / filename
+        elif (cards_path / filename).exists():
+            source_path = cards_path / filename
+        else:
+            return jsonify({'error': f'Image not found: {filename}', 'success': False}), 404
+
+        # Import crop processor and PIL
+        from crop_processor import CropProcessor
+        from PIL import Image
+
+        # Load image
+        img = Image.open(source_path)
+        img_array = np.array(img)
+
+        crop_processor = CropProcessor()
+        metadata = {}
+
+        if mode == 'auto':
+            cropped, metadata = crop_processor.auto_remove_section(img_array, keep_side=keep_side)
+        elif mode == 'content':
+            cropped, metadata = crop_processor.crop_to_content(img_array)
+        elif mode == 'manual':
+            if not rect:
+                return jsonify({'error': 'Rectangle required for manual mode', 'success': False}), 400
+            cropped = crop_processor.manual_crop(img_array, rect)
+            metadata = {'rect': rect}
+        else:
+            return jsonify({'error': f'Unknown crop mode: {mode}', 'success': False}), 400
+
+        # Ensure cards_modified exists
+        if not cards_modified_path:
+            cards_modified_path = cards_path.parent / 'cards_modified'
+        cards_modified_path.mkdir(parents=True, exist_ok=True)
+
+        # Save cropped image
+        output_path = cards_modified_path / filename
+        Image.fromarray(cropped).save(output_path)
+
+        # Generate base64 preview
+        from io import BytesIO
+        buffer = BytesIO()
+        Image.fromarray(cropped).save(buffer, format='PNG')
+        cropped_b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+        return jsonify({
+            'success': True,
+            'filename': filename,
+            'mode': mode,
+            'output_path': str(output_path),
+            'cropped_size': [int(cropped.shape[1]), int(cropped.shape[0])],
+            'cropped_image': f'data:image/png;base64,{cropped_b64}',
+            'metadata': metadata
+        })
+
+    except Exception as e:
+        print(f"Error cropping image: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/cards/crop-preview', methods=['POST'])
+def preview_crop(project_id):
+    """Preview auto-crop without applying it - shows both halves."""
+    try:
+        # Verify project exists
+        project_metadata = project_manager.get_project(project_id)
+        if not project_metadata:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        data = request.json
+        filename = data.get('filename')
+
+        if not filename:
+            return jsonify({'error': 'Filename is required', 'success': False}), 400
+
+        # Get paths
+        cards_path = project_manager.get_project_path(project_id, 'cards')
+        cards_modified_path = project_manager.get_project_path(project_id, 'cards_modified')
+
+        if not cards_path or not cards_path.exists():
+            return jsonify({'error': 'Cards folder not found', 'success': False}), 404
+
+        # Find source image
+        source_path = None
+        if cards_modified_path and (cards_modified_path / filename).exists():
+            source_path = cards_modified_path / filename
+        elif (cards_path / filename).exists():
+            source_path = cards_path / filename
+        else:
+            return jsonify({'error': f'Image not found: {filename}', 'success': False}), 404
+
+        # Import crop processor and PIL
+        from crop_processor import CropProcessor
+        from PIL import Image
+
+        # Load image
+        img = Image.open(source_path)
+        img_array = np.array(img)
+
+        crop_processor = CropProcessor()
+        preview_data = crop_processor.auto_remove_section_preview(img_array)
+
+        return jsonify({
+            'success': True,
+            'filename': filename,
+            **preview_data
+        })
+
+    except Exception as e:
+        print(f"Error generating crop preview: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/cards/crop-freehand', methods=['POST'])
+def freehand_crop_card(project_id):
+    """Crop a card image using freehand/polygon selection."""
+    try:
+        # Verify project exists
+        project_metadata = project_manager.get_project(project_id)
+        if not project_metadata:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        data = request.json
+        filename = data.get('filename')
+        points = data.get('points', [])  # List of [x, y] coordinates
+        smoothing = data.get('smoothing', 3)
+
+        if not filename:
+            return jsonify({'error': 'Filename is required', 'success': False}), 400
+
+        if not points or len(points) < 3:
+            return jsonify({'error': 'At least 3 points are required', 'success': False}), 400
+
+        # Convert points to tuples
+        points = [(int(p[0]), int(p[1])) for p in points]
+
+        # Get paths
+        cards_path = project_manager.get_project_path(project_id, 'cards')
+        cards_modified_path = project_manager.get_project_path(project_id, 'cards_modified')
+
+        if not cards_path or not cards_path.exists():
+            return jsonify({'error': 'Cards folder not found', 'success': False}), 404
+
+        # Find source image
+        source_path = None
+        if cards_modified_path and (cards_modified_path / filename).exists():
+            source_path = cards_modified_path / filename
+        elif (cards_path / filename).exists():
+            source_path = cards_path / filename
+        else:
+            return jsonify({'error': f'Image not found: {filename}', 'success': False}), 404
+
+        # Import crop processor and PIL
+        from crop_processor import CropProcessor
+        from PIL import Image
+
+        # Load image
+        img = Image.open(source_path)
+        img_array = np.array(img)
+
+        crop_processor = CropProcessor()
+        cropped, metadata = crop_processor.freehand_crop(img_array, points, smoothing=smoothing)
+
+        # Ensure cards_modified exists
+        if not cards_modified_path:
+            cards_modified_path = cards_path.parent / 'cards_modified'
+        cards_modified_path.mkdir(parents=True, exist_ok=True)
+
+        # Save cropped image
+        output_path = cards_modified_path / filename
+        Image.fromarray(cropped).save(output_path)
+
+        # Generate base64 preview
+        from io import BytesIO
+        buffer = BytesIO()
+        Image.fromarray(cropped).save(buffer, format='PNG')
+        cropped_b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+        return jsonify({
+            'success': True,
+            'filename': filename,
+            'mode': 'freehand',
+            'output_path': str(output_path),
+            'cropped_size': [int(cropped.shape[1]), int(cropped.shape[0])],
+            'cropped_image': f'data:image/png;base64,{cropped_b64}',
+            'metadata': metadata
+        })
+
+    except Exception as e:
+        print(f"Error freehand cropping: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
 @app.route('/api/projects/<project_id>/export', methods=['POST'])
 def export_project_results(project_id):
     """Export final results for a project (with auto-merge if CSV exists)"""
@@ -2111,12 +2565,28 @@ def export_project_results(project_id):
         cards_path = project_manager.get_project_path(project_id, 'cards')
         cards_modified_path = project_manager.get_project_path(project_id, 'cards_modified')
         project_path = project_manager.get_project_path(project_id)
-        
+        exports_path = project_manager.get_project_path(project_id, 'exports')
+
         if not cards_path or not cards_path.exists():
             return jsonify({'error': 'No cards folder found', 'success': False}), 404
         
-        # Auto-merge: check if combined CSV exists in project root
+        # Auto-merge: check if combined CSV exists in project root, or use mask_info.csv from cards
         combined_csv_path = project_path / f"{project_id}_mask_info.csv"
+        cards_mask_info_path = cards_path / 'mask_info.csv'
+
+        # Prefer cards/mask_info.csv if it has metadata columns (page_num, figure_num, pottery_id, period)
+        # This ensures metadata extraction results are used even if user didn't export tabular CSV
+        if cards_mask_info_path.exists():
+            try:
+                cards_df = pd.read_csv(cards_mask_info_path)
+                has_metadata = any(col in cards_df.columns for col in ['page_num', 'figure_num', 'pottery_id', 'period'])
+                if has_metadata:
+                    print(f"Using cards/mask_info.csv with metadata columns: {list(cards_df.columns)}")
+                    # Copy to project root for consistency
+                    cards_df.to_csv(combined_csv_path, index=False)
+            except Exception as e:
+                print(f"Warning: Could not check cards/mask_info.csv: {e}")
+
         if combined_csv_path.exists():
             print(f"Found combined CSV, merging with classifications...")
             try:
@@ -2211,14 +2681,38 @@ def export_project_results(project_id):
         # Create ZIP in temporary location
         import tempfile
         import zipfile
-        
+
         temp_dir = tempfile.mkdtemp()
         zip_path = Path(temp_dir) / f"{acronym}.zip"
-        
+
+        # Load AI extraction data if available
+        ai_df = None
+        ai_csv_path = exports_path / 'card_data.csv' if exports_path else None
+        if ai_csv_path and ai_csv_path.exists() and ai_csv_path.stat().st_size > 10:
+            try:
+                ai_df = pd.read_csv(ai_csv_path).fillna('')
+                print(f"[Export] Loaded AI data with {len(ai_df)} rows")
+            except Exception as e:
+                print(f"[Export] Warning: Could not load AI data: {e}")
+
         try:
             # Get all card images sorted
             card_images = sorted([f for f in export_folder.iterdir() if f.suffix.lower() in ['.png', '.jpg', '.jpeg']])
-            print(f"Found {len(card_images)} card images to export")
+            print(f"Found {len(card_images)} card images before exclusion filter")
+
+            # Filter out excluded images
+            exclusions_path = cards_path / '.exclusions.json'
+            exclusions = {}
+            if exclusions_path.exists():
+                try:
+                    with open(exclusions_path, 'r') as f:
+                        exclusions = json.load(f)
+                except json.JSONDecodeError:
+                    exclusions = {}
+
+            if exclusions:
+                card_images = [f for f in card_images if not exclusions.get(f.name, False)]
+                print(f"After exclusion filter: {len(card_images)} images (excluded {len(exclusions)} images)")
             
             # Prepare final metadata with new IDs
             final_metadata = []
@@ -2270,16 +2764,42 @@ def export_project_results(project_id):
                                     row_data['type'] = class_row['type']
                                     print(f"Added type '{class_row['type']}' for {img_file.name}")
                                 break
-                
+
+                # Merge AI extraction data if available
+                if ai_df is not None and 'filename' in ai_df.columns:
+                    ai_match = ai_df[ai_df['filename'] == img_file.name]
+                    if not ai_match.empty:
+                        ai_row = ai_match.iloc[0]
+                        # Add AI columns and use them to fill empty original columns
+                        if ai_row.get('ai_figure_number'):
+                            row_data['ai_figure_num'] = ai_row['ai_figure_number']
+                            # Use AI figure_num if original is empty
+                            if not row_data.get('figure_num') or str(row_data.get('figure_num', '')).strip() in ['', 'nan', 'None']:
+                                row_data['figure_num'] = ai_row['ai_figure_number']
+                        if ai_row.get('ai_pottery_id'):
+                            row_data['ai_pottery_id'] = ai_row['ai_pottery_id']
+                            # Use AI pottery_id if original is empty
+                            if not row_data.get('pottery_id') or str(row_data.get('pottery_id', '')).strip() in ['', 'nan', 'None']:
+                                row_data['pottery_id'] = ai_row['ai_pottery_id']
+                        if ai_row.get('ai_period'):
+                            row_data['ai_period'] = ai_row['ai_period']
+                            # Use AI period if original is empty
+                            if not row_data.get('period') or str(row_data.get('period', '')).strip() in ['', 'nan', 'None']:
+                                row_data['period'] = ai_row['ai_period']
+                        if ai_row.get('ai_original_period'):
+                            row_data['ai_original_period'] = ai_row['ai_original_period']
+                        if ai_row.get('ai_confidence'):
+                            row_data['ai_confidence'] = ai_row['ai_confidence']
+                        print(f"[Export] Merged AI data for {img_file.name}: period={ai_row.get('ai_period', '')}")
+
                 final_metadata.append(row_data)
             
             # Create final metadata DataFrame
             final_df = pd.DataFrame(final_metadata)
             
-            # Reorder columns: id first, then type (if present), then others alphabetically
-            cols = ['id']
-            if 'type' in final_df.columns:
-                cols.append('type')
+            # Reorder columns: important ones first, then others alphabetically
+            priority_cols = ['id', 'type', 'period', 'ai_period', 'ai_original_period', 'figure_num', 'ai_figure_num', 'page_num', 'pottery_id', 'ai_pottery_id', 'ai_confidence', 'folder', 'image_path']
+            cols = [c for c in priority_cols if c in final_df.columns]
             # Add remaining columns alphabetically
             remaining = sorted([col for col in final_df.columns if col not in cols])
             cols.extend(remaining)
@@ -2290,17 +2810,129 @@ def export_project_results(project_id):
             final_df.to_csv(metadata_temp_path, index=False)
             print(f"Created final metadata with {len(final_df)} rows and columns: {list(final_df.columns)}")
             
-            # Create ZIP
+            # Create ZIP with subfolders organized by figure_num/page_num
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                # Add images with new names
+                # Add images with new names, organized by figure/page
                 for idx, img_file in enumerate(card_images, 1):
-                    new_name = f"{acronym}_{idx}{img_file.suffix}"
-                    zipf.write(img_file, new_name)
-                    print(f"Added {img_file.name} as {new_name}")
-                
-                # Add metadata
+                    # Get metadata for this image to determine folder and name
+                    subfolder = ""
+                    pottery_id_suffix = ""
+
+                    if not final_metadata[idx-1] is None:
+                        row = final_metadata[idx-1]
+
+                        # Determine period folder (primary level)
+                        period = row.get('period', '') or row.get('ai_period', '')
+                        period_folder = ""
+                        if period and str(period).strip() and str(period).strip().lower() not in ['nan', 'none', '']:
+                            # Sanitize period for folder name
+                            period_folder = str(period).strip().replace(' ', '_').replace('/', '-').replace('\\', '-')
+                        else:
+                            period_folder = "Unknown_Period"
+
+                        # Determine figure folder (secondary level)
+                        figure_num = row.get('figure_num', '')
+                        page_num = row.get('page_num', '')
+                        figure_folder = ""
+
+                        if figure_num and str(figure_num).strip() and str(figure_num).strip().lower() not in ['nan', 'none', '']:
+                            # Sanitize figure_num for folder name
+                            figure_folder = str(figure_num).strip().replace(' ', '_').replace('/', '-').replace('\\', '-')
+                        elif page_num and str(page_num).strip() and str(page_num) not in ['-1', 'nan', 'None']:
+                            figure_folder = f"page_{page_num}"
+
+                        # Build hierarchical subfolder: Period/Figure
+                        if figure_folder:
+                            subfolder = f"{period_folder}/{figure_folder}"
+                        else:
+                            subfolder = period_folder
+
+                        # Add pottery_id to filename if available (check for NaN)
+                        pottery_id = row.get('pottery_id', '')
+                        if pottery_id and str(pottery_id).strip() and str(pottery_id).lower() not in ['nan', 'none', '']:
+                            # Clean pottery_id for filename - take only first ID if multiple
+                            pottery_id_str = str(pottery_id).strip()
+                            first_id = pottery_id_str.split(',')[0].strip() if ',' in pottery_id_str else pottery_id_str
+                            pottery_id_clean = first_id.replace(' ', '_').replace('/', '-')
+                            pottery_id_suffix = f"_{pottery_id_clean}"
+
+                    # Build new filename
+                    new_name = f"{acronym}_{idx}{pottery_id_suffix}{img_file.suffix}"
+
+                    # Build path with subfolder
+                    if subfolder:
+                        zip_path_in_archive = f"{subfolder}/{new_name}"
+                    else:
+                        zip_path_in_archive = new_name
+
+                    zipf.write(img_file, zip_path_in_archive)
+                    print(f"Added {img_file.name} as {zip_path_in_archive}")
+
+                    # Update final_df with the new organized path
+                    final_df.loc[idx-1, 'id'] = new_name
+                    if subfolder:
+                        final_df.loc[idx-1, 'folder'] = subfolder
+
+                    # Add image path (relative path in ZIP - works after extraction)
+                    final_df.loc[idx-1, 'image_path'] = zip_path_in_archive
+
+                # Re-save metadata with updated paths
+                final_df.to_csv(metadata_temp_path, index=False)
+
+                # Create Excel file with clickable hyperlinks
+                excel_temp_path = Path(temp_dir) / f"{acronym}_metadata.xlsx"
+                try:
+                    from openpyxl import Workbook
+                    from openpyxl.styles import Font
+
+                    wb = Workbook()
+                    ws = wb.active
+                    ws.title = "Metadata"
+
+                    # Write header
+                    for col_idx, col_name in enumerate(final_df.columns, 1):
+                        ws.cell(row=1, column=col_idx, value=col_name)
+                        ws.cell(row=1, column=col_idx).font = Font(bold=True)
+
+                    # Write data with hyperlinks for image_path
+                    image_path_col = list(final_df.columns).index('image_path') + 1 if 'image_path' in final_df.columns else None
+
+                    for row_idx, row in enumerate(final_df.itertuples(index=False), 2):
+                        for col_idx, value in enumerate(row, 1):
+                            cell = ws.cell(row=row_idx, column=col_idx)
+
+                            # Make image_path a clickable hyperlink
+                            if col_idx == image_path_col and value and str(value).strip():
+                                # Relative path works when Excel is in same folder as extracted images
+                                cell.value = str(value)
+                                cell.hyperlink = str(value)
+                                cell.font = Font(color="0000FF", underline="single")
+                            else:
+                                cell.value = value if not pd.isna(value) else ""
+
+                    # Auto-adjust column widths
+                    for col in ws.columns:
+                        max_length = 0
+                        column = col[0].column_letter
+                        for cell in col:
+                            try:
+                                if cell.value:
+                                    max_length = max(max_length, len(str(cell.value)))
+                            except:
+                                pass
+                        ws.column_dimensions[column].width = min(max_length + 2, 50)
+
+                    wb.save(excel_temp_path)
+                    print(f"Created Excel file with hyperlinks")
+                except Exception as excel_err:
+                    print(f"Warning: Could not create Excel file: {excel_err}")
+                    excel_temp_path = None
+
+                # Add metadata files to ZIP
                 zipf.write(metadata_temp_path, f"{acronym}_metadata.csv")
-                print(f"Added metadata CSV")
+                if excel_temp_path and excel_temp_path.exists():
+                    zipf.write(excel_temp_path, f"{acronym}_metadata.xlsx")
+                print(f"Added metadata files")
         
             # Send the ZIP file
             return send_file(
@@ -2331,6 +2963,21 @@ def not_found(e):
 @app.errorhandler(500)
 def server_error(e):
     return jsonify({'error': 'Internal server error', 'success': False}), 500
+
+
+@app.errorhandler(400)
+def bad_request(e):
+    return jsonify({'error': 'Bad request', 'success': False}), 400
+
+
+@app.errorhandler(405)
+def method_not_allowed(e):
+    return jsonify({'error': 'Method not allowed', 'success': False}), 405
+
+
+@app.errorhandler(415)
+def unsupported_media_type(e):
+    return jsonify({'error': 'Unsupported media type', 'success': False}), 415
 
 
 @app.route('/api/projects/<project_id>/thumbnail/<filename>')
@@ -2367,6 +3014,471 @@ def serve_project_thumbnail(project_id, filename):
             
     except Exception as e:
         return jsonify({'error': str(e), 'success': False}), 500
+
+
+# ============================================================================
+# Settings API Endpoints
+# ============================================================================
+
+@app.route('/api/settings', methods=['GET'])
+def get_app_settings():
+    """Get application settings (API keys masked for security)"""
+    try:
+        settings_manager = get_settings_manager()
+        settings = settings_manager.get_settings()
+
+        # Mask API keys for security
+        masked_settings = {
+            'anthropic_api_key': settings_manager.get_masked_key('anthropic'),
+            'openai_api_key': settings_manager.get_masked_key('openai'),
+            'has_anthropic_key': settings_manager.has_api_key('anthropic'),
+            'has_openai_key': settings_manager.has_api_key('openai'),
+            'default_ai_provider': settings.get('default_ai_provider', 'anthropic'),
+            'calibration': settings.get('calibration', {})
+        }
+
+        return jsonify({'settings': masked_settings, 'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/settings/api-key', methods=['POST'])
+def update_api_key():
+    """Update an API key"""
+    try:
+        data = request.json
+        provider = data.get('provider')
+        key = data.get('key', '').strip()
+
+        if provider not in ['anthropic', 'openai']:
+            return jsonify({'error': 'Invalid provider. Must be "anthropic" or "openai"', 'success': False}), 400
+
+        if not key:
+            return jsonify({'error': 'API key cannot be empty', 'success': False}), 400
+
+        settings_manager = get_settings_manager()
+        success = settings_manager.set_api_key(provider, key)
+
+        if success:
+            return jsonify({
+                'success': True,
+                'message': f'{provider.capitalize()} API key saved successfully',
+                'masked_key': settings_manager.get_masked_key(provider)
+            })
+        else:
+            return jsonify({'error': 'Failed to save API key', 'success': False}), 500
+
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/settings/api-key/<provider>', methods=['DELETE'])
+def delete_api_key(provider):
+    """Delete an API key"""
+    try:
+        if provider not in ['anthropic', 'openai']:
+            return jsonify({'error': 'Invalid provider', 'success': False}), 400
+
+        settings_manager = get_settings_manager()
+        success = settings_manager.delete_api_key(provider)
+
+        if success:
+            return jsonify({'success': True, 'message': f'{provider.capitalize()} API key deleted'})
+        else:
+            return jsonify({'error': 'Failed to delete API key', 'success': False}), 500
+
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/settings/default-provider', methods=['POST'])
+def set_default_provider():
+    """Set the default AI provider"""
+    try:
+        data = request.json
+        provider = data.get('provider')
+
+        if provider not in ['anthropic', 'openai']:
+            return jsonify({'error': 'Invalid provider', 'success': False}), 400
+
+        settings_manager = get_settings_manager()
+        success = settings_manager.set_default_provider(provider)
+
+        if success:
+            return jsonify({'success': True, 'message': f'Default provider set to {provider}'})
+        else:
+            return jsonify({'error': 'Failed to set default provider', 'success': False}), 500
+
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/settings/calibration', methods=['POST'])
+def set_calibration():
+    """Set calibration for project or specific image"""
+    try:
+        data = request.json
+        pixels_per_cm = data.get('pixels_per_cm')
+        image_name = data.get('image_name')  # None for default
+
+        if pixels_per_cm is None or pixels_per_cm <= 0:
+            return jsonify({'error': 'Invalid pixels_per_cm value', 'success': False}), 400
+
+        settings_manager = get_settings_manager()
+        success = settings_manager.set_calibration(pixels_per_cm, image_name)
+
+        if success:
+            msg = f'Calibration set for {image_name}' if image_name else 'Default calibration set'
+            return jsonify({'success': True, 'message': msg})
+        else:
+            return jsonify({'error': 'Failed to set calibration', 'success': False}), 500
+
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+# ============================================================================
+# Scale Bar Detection Endpoints
+# ============================================================================
+
+@app.route('/api/projects/<project_id>/scale-bar/detect', methods=['POST'])
+def detect_scale_bar(project_id):
+    """Auto-detect scale bar in an image"""
+    try:
+        import cv2
+
+        data = request.json
+        image_name = data.get('image_name')
+
+        if not image_name:
+            return jsonify({'error': 'No image specified', 'success': False}), 400
+
+        # Get image path
+        images_path = project_manager.get_project_path(project_id, 'images')
+        if not images_path:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        image_path = images_path / image_name
+        if not image_path.exists():
+            return jsonify({'error': 'Image not found', 'success': False}), 404
+
+        # Detect scale bar
+        image = cv2.imread(str(image_path))
+        if image is None:
+            return jsonify({'error': 'Failed to load image', 'success': False}), 500
+
+        detector = ScaleBarDetector(ScaleBarConfig())
+        result = detector.detect(image)
+
+        if result.detected:
+            return jsonify({
+                'success': True,
+                'result': {
+                    'pixels': result.pixels,
+                    'cm': result.cm,
+                    'unit_text': result.unit_text,
+                    'confidence': result.confidence,
+                    'pixels_per_cm': result.pixels_per_cm
+                }
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'result': None,
+                'message': 'No scale bar detected'
+            })
+
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+# ============================================================================
+# AI Metadata Extraction Endpoints
+# ============================================================================
+
+@app.route('/api/projects/<project_id>/metadata/ai-extract', methods=['POST'])
+def ai_extract_metadata(project_id):
+    """AI-powered metadata extraction using Claude or GPT - TWO-PASS approach"""
+    try:
+        from ai_extractor import DocumentStructureAnalyzer
+
+        data = request.json
+        provider = data.get('provider', 'anthropic')
+
+        if provider not in ['anthropic', 'openai']:
+            return jsonify({'error': 'Invalid provider', 'success': False}), 400
+
+        # Get API key from settings
+        settings_manager = get_settings_manager()
+        api_key = settings_manager.get_api_key(provider)
+
+        if not api_key:
+            return jsonify({
+                'error': f'No {provider} API key configured. Please add your API key in the settings.',
+                'success': False
+            }), 400
+
+        # Get project cards
+        cards_path = project_manager.get_project_path(project_id, 'cards')
+        if not cards_path or not cards_path.exists():
+            return jsonify({'error': 'No cards found for this project', 'success': False}), 404
+
+        # Get card images
+        card_files = sorted([
+            f for f in cards_path.iterdir()
+            if f.suffix.lower() in ['.jpg', '.jpeg', '.png']
+        ])
+
+        if not card_files:
+            return jsonify({'error': 'No card images found', 'success': False}), 404
+
+        # Get PDF context - first check user-provided path, then project pdf_source
+        pdf_context = ""
+        pdf_path = data.get('pdf_path', '')  # User-provided PDF path from widget
+
+        # Try user-provided path first
+        if pdf_path and Path(pdf_path).exists():
+            try:
+                import fitz  # PyMuPDF
+                doc = fitz.open(pdf_path)
+                print(f"[AI Extract] Reading PDF from user path: {pdf_path} ({len(doc)} pages)")
+                for page_num in range(len(doc)):  # Read ALL pages for full context
+                    pdf_context += doc[page_num].get_text()
+                doc.close()
+                print(f"[AI Extract] Extracted {len(pdf_context)} chars from PDF")
+            except Exception as e:
+                print(f"Warning: Could not read user PDF: {e}")
+
+        # Fall back to project pdf_source if no user PDF
+        if not pdf_context:
+            pdf_source_path = project_manager.get_project_path(project_id, 'pdf_source')
+            if pdf_source_path and pdf_source_path.exists():
+                pdf_files = list(pdf_source_path.glob('*.pdf'))
+                if pdf_files:
+                    try:
+                        import fitz  # PyMuPDF
+                        doc = fitz.open(str(pdf_files[0]))
+                        print(f"[AI Extract] Reading PDF from project: {pdf_files[0]} ({len(doc)} pages)")
+                        for page_num in range(len(doc)):  # Read ALL pages
+                            pdf_context += doc[page_num].get_text()
+                        doc.close()
+                        print(f"[AI Extract] Extracted {len(pdf_context)} chars from PDF")
+                    except Exception as e:
+                        print(f"Warning: Could not extract PDF context: {e}")
+
+        # Initialize extractor
+        extractor = get_extractor(provider, api_key)
+
+        # ========================================================================
+        # PASS 1: Analyze Document Structure
+        # ========================================================================
+        document_structure = None
+        if pdf_context:
+            update_operation_progress('ai_extract', 0, len(card_files), 'Analyzing document structure...')
+            print("[AI Extract] PASS 1: Analyzing document structure")
+
+            try:
+                structure_analyzer = DocumentStructureAnalyzer(extractor)
+                document_structure = structure_analyzer.analyze_document(pdf_context)
+
+                if document_structure.analyzed:
+                    print(f"[AI Extract] Document structure analyzed:")
+                    print(f"  - Tafel/Period mappings: {len(document_structure.tafel_period_map)}")
+                    print(f"  - Figure ranges: {len(document_structure.figure_ranges)}")
+                    print(f"  - Catalog entries: {len(document_structure.catalog_entries)}")
+                    print(f"  - Language: {document_structure.language}")
+                    for tafel, period in list(document_structure.tafel_period_map.items())[:5]:
+                        print(f"    {tafel} -> {period}")
+                else:
+                    print(f"[AI Extract] Document structure analysis failed: {document_structure.error}")
+            except Exception as e:
+                print(f"[AI Extract] Warning: Could not analyze document structure: {e}")
+
+        # ========================================================================
+        # Process cards with progress updates
+        # ========================================================================
+        results = []
+        total = len(card_files)
+
+        # Store page-specific context if PDF was loaded
+        page_contexts = {}
+        pdf_to_use = pdf_path if pdf_path and Path(pdf_path).exists() else None
+
+        # If no user PDF, try to use project's PDF
+        if not pdf_to_use:
+            pdf_source_path = project_manager.get_project_path(project_id, 'pdf_source')
+            if pdf_source_path and pdf_source_path.exists():
+                pdf_files = list(pdf_source_path.glob('*.pdf'))
+                if pdf_files:
+                    pdf_to_use = str(pdf_files[0])
+                    print(f"[AI Extract] Using project PDF: {pdf_to_use}")
+
+        if pdf_to_use:
+            try:
+                import fitz
+                doc = fitz.open(pdf_to_use)
+                print(f"[AI Extract] Building page contexts from {len(doc)} pages")
+                for page_num in range(len(doc)):
+                    page_contexts[page_num + 1] = doc[page_num].get_text()  # 1-indexed
+                doc.close()
+                print(f"[AI Extract] Built {len(page_contexts)} page contexts")
+            except Exception as e:
+                print(f"Warning: Could not extract page contexts: {e}")
+
+        # ========================================================================
+        # PASS 2: Extract Metadata Per-Image with Structure Support
+        # ========================================================================
+        print("[AI Extract] PASS 2: Extracting metadata per image")
+
+        for i, card_path in enumerate(card_files):
+            update_operation_progress('ai_extract', i + 1, total, f'Processing {card_path.name}')
+
+            try:
+                image_b64 = image_to_base64(str(card_path))
+                media_type = detect_image_media_type(str(card_path))
+
+                # Extract page number from filename (e.g., "dopper_page_185_mask_layer_0.png")
+                import re
+                page_match = re.search(r'page_(\d+)', card_path.name)
+                page_num = int(page_match.group(1)) if page_match else None
+
+                # Build context: page-specific + surrounding pages + general context
+                context_parts = []
+
+                if page_num and page_contexts:
+                    # Add context from the specific page and surrounding pages
+                    for p in range(max(1, page_num - 1), min(len(page_contexts) + 1, page_num + 2)):
+                        if p in page_contexts:
+                            context_parts.append(f"=== PAGE {p} ===\n{page_contexts[p][:4000]}")
+
+                # Add general PDF context if no page-specific
+                if not context_parts and pdf_context:
+                    context_parts.append(pdf_context[:12000])
+
+                full_context = "\n\n".join(context_parts)
+
+                # Pass document structure to extractor
+                result = extractor.extract_metadata(
+                    image_b64,
+                    full_context[:16000],
+                    media_type,
+                    document_structure=document_structure
+                )
+
+                # Fallback: use document structure to look up period if AI didn't find one
+                period = result.period
+                if not period and document_structure and document_structure.analyzed:
+                    looked_up_period = document_structure.lookup_period(
+                        result.figure_number,
+                        result.pottery_id
+                    )
+                    if looked_up_period:
+                        period = looked_up_period
+                        print(f"[AI Extract] Period lookup for {card_path.name}: {result.figure_number} -> {period}")
+
+                results.append({
+                    'card': card_path.name,
+                    'success': result.success,
+                    'figure_number': result.figure_number,
+                    'pottery_id': result.pottery_id,
+                    'period': period,
+                    'original_period': result.original_period,
+                    'confidence': result.confidence,
+                    'error': result.error if not result.success else ''
+                })
+
+            except Exception as e:
+                results.append({
+                    'card': card_path.name,
+                    'success': False,
+                    'error': str(e)
+                })
+
+        clear_operation_progress()
+
+        # Save results to project tabular data
+        try:
+            _save_ai_results_to_tabular(project_id, results)
+        except Exception as e:
+            print(f"Warning: Could not save AI results to tabular: {e}")
+
+        successful = sum(1 for r in results if r.get('success', False))
+
+        return jsonify({
+            'success': True,
+            'processed': total,
+            'successful': successful,
+            'results': results
+        })
+
+    except Exception as e:
+        clear_operation_progress()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+def _save_ai_results_to_tabular(project_id: str, results: list):
+    """Save AI extraction results to the project's tabular data."""
+    import pandas as pd
+
+    exports_path = project_manager.get_project_path(project_id, 'exports')
+    if not exports_path:
+        return
+
+    exports_path.mkdir(parents=True, exist_ok=True)
+    csv_path = exports_path / 'card_data.csv'
+
+    # Load existing data or create new
+    if csv_path.exists() and csv_path.stat().st_size > 10:  # Check file has content
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception:
+            df = pd.DataFrame()
+    else:
+        df = pd.DataFrame()
+
+    # Update with AI results
+    for result in results:
+        if not result.get('success'):
+            continue
+
+        card_name = result.get('card', '')
+        if not card_name:
+            continue
+
+        # Find or create row for this card
+        if 'filename' in df.columns and card_name in df['filename'].values:
+            idx = df[df['filename'] == card_name].index[0]
+        else:
+            idx = len(df)
+            df.loc[idx, 'filename'] = card_name
+
+        # Update fields (don't overwrite if AI result is empty)
+        if result.get('figure_number'):
+            df.loc[idx, 'ai_figure_number'] = result['figure_number']
+        if result.get('pottery_id'):
+            df.loc[idx, 'ai_pottery_id'] = result['pottery_id']
+        if result.get('period'):
+            df.loc[idx, 'ai_period'] = result['period']
+        if result.get('original_period'):
+            df.loc[idx, 'ai_original_period'] = result['original_period']
+        if result.get('confidence'):
+            df.loc[idx, 'ai_confidence'] = result['confidence']
+
+    # Save updated data
+    df.to_csv(csv_path, index=False)
+
+
+# ============================================================================
+# Operation Progress Endpoint
+# ============================================================================
+
+@app.route('/api/operation-progress', methods=['GET'])
+def get_operation_progress():
+    """Get current operation progress for frontend polling"""
+    return jsonify({
+        'success': True,
+        'progress': operation_progress
+    })
 
 
 if __name__ == '__main__':

@@ -347,6 +347,12 @@
                             <h3>📁 No project selected</h3>
                             <p>Select a project to preview its images</p>
                         </div>
+                        <!-- Selection Controls -->
+                        <div class="selection-controls" id="model-selection-controls" style="display: none;">
+                            <button class="btn btn-secondary" id="select-all-btn" title="Select all images for exclusion">☑ Select All</button>
+                            <button class="btn btn-secondary" id="deselect-all-btn" title="Deselect all images (include all)">☐ Deselect All</button>
+                            <span class="selection-info" id="selection-info">0 images excluded</span>
+                        </div>
                         <div id="model-gallery" class="image-gallery" style="display: none;"></div>
                     </div>
                 </div>
@@ -425,7 +431,7 @@
                 <div class="tabular-layout">
                     <!-- Image List Sidebar -->
                     <div class="tabular-sidebar">
-                        <h3>📋 Images</h3>
+                        <h3>📋 Images <span id="tabular-excluded-count" class="excluded-count"></span></h3>
                         <div id="tabular-image-list" class="tabular-image-list"></div>
                     </div>
                     
@@ -441,6 +447,12 @@
                     <div class="tabular-table">
                         <div class="form-row">
                             <button class="btn btn-success" id="tabular-mark-reviewed-btn">👁️ Mark as Reviewed</button>
+                            <button class="btn btn-info" id="extract-metadata-btn" title="Extract captions, figure numbers, and pottery IDs from PDF">🔍 Extract Metadata</button>
+                            <div class="input-with-button">
+                                <input type="text" id="reference-pdf-path" placeholder="Optional: Path to reference PDF for periods..." class="form-control" style="min-width: 280px;" title="Full path to PDF with period/chronology info (e.g., /path/to/chapters.pdf)">
+                                <button class="btn btn-icon" id="browse-pdf-btn" title="Browse for PDF file">📁</button>
+                                <input type="file" id="pdf-file-input" accept=".pdf" style="display: none;">
+                            </div>
                             <input type="text" id="new-column-name" placeholder="New column name..." class="form-control">
                             <button class="btn btn-secondary" id="add-column-btn">➕ Add Column</button>
                             <button class="btn btn-primary" id="export-csv-btn">📊 Export Combined CSV</button>
@@ -455,6 +467,89 @@
                 </div>
 
                 <div id="tabular-status" class="status-message"></div>
+
+                <!-- AI Settings Panel -->
+                <div class="ai-settings-panel" id="ai-settings-panel">
+                    <div class="ai-settings-header" onclick="toggleAISettings()">
+                        <h3>🤖 AI Metadata Extraction Settings</h3>
+                        <span class="toggle-icon" id="ai-settings-toggle">▼</span>
+                    </div>
+                    <div class="ai-settings-content" id="ai-settings-content">
+                        <!-- AI Provider Selection -->
+                        <div class="form-group">
+                            <label for="ai-provider-select">AI Provider:</label>
+                            <select id="ai-provider-select" class="form-control">
+                                <option value="anthropic">Claude Sonnet 4.5 (Anthropic)</option>
+                                <option value="openai">GPT-4.1 (OpenAI)</option>
+                            </select>
+                        </div>
+
+                        <!-- API Keys Configuration -->
+                        <div class="api-keys-section">
+                            <h4>🔑 API Keys</h4>
+
+                            <div class="form-group">
+                                <label for="anthropic-api-key">Anthropic API Key (Claude):</label>
+                                <div class="input-with-button">
+                                    <input type="password" id="anthropic-api-key" placeholder="sk-ant-..." class="form-control">
+                                    <button class="btn btn-secondary btn-sm" id="save-anthropic-key" title="Save key">💾</button>
+                                    <button class="btn btn-secondary btn-sm" id="toggle-anthropic-key" title="Show/Hide">👁️</button>
+                                </div>
+                                <small class="key-status" id="anthropic-key-status"></small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="openai-api-key">OpenAI API Key (GPT):</label>
+                                <div class="input-with-button">
+                                    <input type="password" id="openai-api-key" placeholder="sk-..." class="form-control">
+                                    <button class="btn btn-secondary btn-sm" id="save-openai-key" title="Save key">💾</button>
+                                    <button class="btn btn-secondary btn-sm" id="toggle-openai-key" title="Show/Hide">👁️</button>
+                                </div>
+                                <small class="key-status" id="openai-key-status"></small>
+                            </div>
+                        </div>
+
+                        <!-- AI Extraction Button -->
+                        <div class="form-group">
+                            <button class="btn btn-primary" id="ai-extract-metadata-btn" title="Use AI to extract metadata from images">
+                                🧠 AI Extract Metadata
+                            </button>
+                            <small class="help-text">Uses selected AI provider to extract figure numbers, pottery IDs, periods, and translate to English</small>
+                        </div>
+
+                        <!-- AI Extraction Progress -->
+                        <div class="ai-progress-container" id="ai-progress-container" style="display: none;">
+                            <div class="ai-progress-header">
+                                <span class="ai-progress-title" id="ai-progress-title">Processing...</span>
+                                <span class="ai-progress-percent" id="ai-progress-percent">0%</span>
+                            </div>
+                            <div class="progress-bar-wrapper">
+                                <div class="progress-bar" id="ai-progress-bar" style="width: 0%;"></div>
+                            </div>
+                            <div class="ai-progress-message" id="ai-progress-message"></div>
+                        </div>
+
+                        <!-- Calibration Settings -->
+                        <div class="calibration-section">
+                            <h4>📏 Scale Calibration</h4>
+
+                            <div class="form-group">
+                                <label for="calibration-pixels-per-cm">Pixels per cm:</label>
+                                <div class="input-with-button">
+                                    <input type="number" id="calibration-pixels-per-cm" placeholder="e.g., 100" class="form-control" step="0.1" min="1">
+                                    <button class="btn btn-secondary btn-sm" id="set-project-calibration" title="Set as project default">Set Default</button>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <button class="btn btn-info btn-sm" id="detect-scale-bar-btn" title="Auto-detect scale bar in current image">
+                                    🔍 Auto-Detect Scale Bar
+                                </button>
+                                <span id="scale-detection-status" class="detection-status"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- Post Processing Tab -->
@@ -472,9 +567,9 @@
                 <div class="postprocess-layout">
                     <!-- Left: Image List -->
                     <div class="postprocess-sidebar">
-                        <h3>🖼️ Cards (<span id="postprocess-image-count">0</span>)</h3>
+                        <h3>🖼️ Cards (<span id="postprocess-image-count">0</span>) <span id="postprocess-excluded-count" class="excluded-count"></span></h3>
                         <div id="postprocess-image-list" class="postprocess-image-list"></div>
-                        
+
                         <!-- Processing Options -->
                         <div class="postprocess-options">
                             <h4>⚙️ Options</h4>
@@ -519,6 +614,59 @@
                                     <button class="btn btn-tool" id="flip-vertical-btn">↕️ Flip Vertical</button>
                                     <button class="btn btn-tool" id="flip-horizontal-btn">↔️ Flip Horizontal</button>
                                 </div>
+
+                                <!-- Crop Tools -->
+                                <div class="crop-tools">
+                                    <h5>Crop Tools</h5>
+                                    <div class="button-group">
+                                        <button class="btn btn-secondary" id="auto-crop-preview-btn" title="Preview auto section removal">
+                                            👁️ Preview Split
+                                        </button>
+                                        <button class="btn btn-secondary" id="crop-to-content-btn" title="Crop to content, removing white borders">
+                                            🔲 Crop to Content
+                                        </button>
+                                    </div>
+                                    <div class="button-group" style="margin-top: 0.5rem;">
+                                        <button class="btn btn-secondary" id="manual-crop-btn" title="Draw rectangle to crop">
+                                            📐 Rectangle
+                                        </button>
+                                        <button class="btn btn-secondary" id="freehand-crop-btn" title="Draw freehand selection">
+                                            ✏️ Freehand
+                                        </button>
+                                    </div>
+                                    <div class="button-group crop-actions" style="margin-top: 0.5rem; display: none;">
+                                        <button class="btn btn-success" id="apply-crop-btn" title="Apply crop">
+                                            ✅ Apply
+                                        </button>
+                                        <button class="btn btn-warning" id="cancel-crop-btn" title="Cancel">
+                                            ❌ Cancel
+                                        </button>
+                                    </div>
+                                    <div id="crop-status" class="crop-status"></div>
+                                </div>
+
+                                <!-- Section Preview Modal -->
+                                <div id="section-preview-modal" class="crop-preview-modal" style="display: none;">
+                                    <div class="crop-preview-content">
+                                        <h4>🔍 Section Split Preview</h4>
+                                        <p class="preview-info">Select which side to keep:</p>
+                                        <div class="preview-halves">
+                                            <div class="preview-half" data-side="left">
+                                                <img id="preview-left" alt="Left half">
+                                                <div class="half-label">Left <span id="left-complexity"></span></div>
+                                                <button class="btn btn-primary btn-sm" id="keep-left-btn">Keep Left</button>
+                                            </div>
+                                            <div class="preview-half" data-side="right">
+                                                <img id="preview-right" alt="Right half">
+                                                <div class="half-label">Right <span id="right-complexity"></span></div>
+                                                <button class="btn btn-primary btn-sm" id="keep-right-btn">Keep Right</button>
+                                            </div>
+                                        </div>
+                                        <p id="recommended-side" class="recommended-text"></p>
+                                        <button class="btn btn-secondary btn-sm" id="cancel-preview-btn">Cancel</button>
+                                    </div>
+                                </div>
+
                                 <div class="form-group">
                                     <label>Type</label>
                                     <select id="type-select" class="form-control">
@@ -577,13 +725,13 @@
     </div> <!-- Close main-container -->
 
     <!-- Scripts -->
-    <script src="/static/js/utils.js?v=20251024163500"></script>
-    <script src="/static/js/project-tab.js?v=20251024163500"></script>
-    <script src="/static/js/pdf-tab.js?v=20251024163500"></script>
-    <script src="/static/js/model-tab.js?v=20251024163500"></script>
-    <script src="/static/js/annotation-tab.js?v=20251024163500"></script>
-    <script src="/static/js/tabular-tab.js?v=20251024163500"></script>
-    <script src="/static/js/postprocess-tab.js?v=20251024163500"></script>
-    <script src="/static/js/main.js?v=20251024163500"></script>
+    <script src="/static/js/utils.js?v=20251227160000"></script>
+    <script src="/static/js/project-tab.js?v=20251227160000"></script>
+    <script src="/static/js/pdf-tab.js?v=20251227160000"></script>
+    <script src="/static/js/model-tab.js?v=20251227160000"></script>
+    <script src="/static/js/annotation-tab.js?v=20251227160000"></script>
+    <script src="/static/js/tabular-tab.js?v=20251227160000"></script>
+    <script src="/static/js/postprocess-tab.js?v=20251227160000"></script>
+    <script src="/static/js/main.js?v=20251227160000"></script>
 </body>
 </html>
