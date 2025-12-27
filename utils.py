@@ -1492,6 +1492,109 @@ from reportlab.lib import pagesizes
 from reportlab.pdfgen import canvas
 import numpy as np
 
+
+@dataclass
+class MetadataExtractionConfig:
+    """Configuration for AI metadata extraction"""
+    project_path: Path
+    api_key: str = ""
+    model: str = "gpt-4o-mini"
+    context_pages: int = 1  # Pages before/after current page for context
+
+
+class MetadataExtractor:
+    """Handles AI-based metadata extraction from pottery images"""
+
+    def __init__(self, config: MetadataExtractionConfig):
+        self.config = config
+        self.project_path = config.project_path
+
+    def extract_period_mappings_from_pdf(self, pdf_path: Path) -> Dict[str, str]:
+        """
+        Extract Tafel/Figure -> Period mappings from a reference PDF.
+
+        Args:
+            pdf_path: Path to the PDF file
+
+        Returns:
+            Dictionary mapping figure references to periods
+        """
+        mappings = {}
+
+        try:
+            # Try to use ai_extractor if available
+            from ai_extractor import DocumentStructureAnalyzer
+            analyzer = DocumentStructureAnalyzer()
+
+            doc = fitz.open(str(pdf_path))
+            full_text = ""
+            for page in doc:
+                full_text += page.get_text()
+            doc.close()
+
+            # Analyze document structure
+            structure = analyzer.analyze_document_structure(full_text)
+            if structure and hasattr(structure, 'tafel_period_map'):
+                mappings = structure.tafel_period_map
+
+        except ImportError:
+            print("ai_extractor not available, using basic extraction")
+        except Exception as e:
+            print(f"Error extracting period mappings: {e}")
+
+        return mappings
+
+    def process_project(self, project_id: str, project_manager, period_mappings: Dict[str, str] = None) -> str:
+        """
+        Process all images in a project to extract metadata.
+
+        Args:
+            project_id: The project identifier
+            project_manager: ProjectManager instance
+            period_mappings: Optional pre-extracted period mappings
+
+        Returns:
+            Status message
+        """
+        try:
+            cards_path = project_manager.get_project_path(project_id, 'cards')
+            if not cards_path or not cards_path.exists():
+                return "No cards folder found"
+
+            # Get all card images
+            card_images = [f for f in cards_path.iterdir()
+                         if f.suffix.lower() in ['.png', '.jpg', '.jpeg']]
+
+            if not card_images:
+                return "No card images found"
+
+            # Try to use AI extractor if available
+            try:
+                from ai_extractor import AIMetadataExtractor
+                extractor = AIMetadataExtractor()
+
+                results = []
+                for img_path in card_images:
+                    metadata = extractor.extract_metadata_from_image(img_path, period_mappings)
+                    results.append(metadata)
+
+                # Save results
+                if results:
+                    import pandas as pd
+                    df = pd.DataFrame(results)
+                    output_path = self.project_path / f"{project_id}_ai_metadata.csv"
+                    df.to_csv(output_path, index=False)
+                    return f"Extracted metadata for {len(results)} images"
+
+            except ImportError:
+                return "AI extractor not available"
+            except Exception as e:
+                return f"Error during extraction: {str(e)}"
+
+        except Exception as e:
+            return f"Error processing project: {str(e)}"
+
+
 class LayoutNode:
     """Tree node representing available space in the layout"""
     def __init__(self, x: float, y: float, width: float, height: float):
