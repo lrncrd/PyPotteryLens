@@ -479,8 +479,17 @@
                         <div class="form-group">
                             <label for="ai-provider-select">AI Provider:</label>
                             <select id="ai-provider-select" class="form-control">
-                                <option value="anthropic">Claude Sonnet 4.5 (Anthropic)</option>
-                                <option value="openai">GPT-4.1 (OpenAI)</option>
+                                <optgroup label="Cloud Providers (API Key Required)">
+                                    <option value="anthropic">Claude Sonnet 4.5 (Anthropic)</option>
+                                    <option value="openai">GPT-4.1 (OpenAI)</option>
+                                    <option value="gemini">Gemini 2.0 Flash (Google)</option>
+                                    <option value="deepseek">DeepSeek Chat</option>
+                                    <option value="together">Together AI (LLaVA Free)</option>
+                                </optgroup>
+                                <optgroup label="Local Providers (Free)">
+                                    <option value="lmstudio">LM Studio (Local)</option>
+                                    <option value="ollama">Ollama (Local)</option>
+                                </optgroup>
                             </select>
                         </div>
 
@@ -488,7 +497,7 @@
                         <div class="api-keys-section">
                             <h4>🔑 API Keys</h4>
 
-                            <div class="form-group">
+                            <div class="form-group api-key-group" data-provider="anthropic">
                                 <label for="anthropic-api-key">Anthropic API Key (Claude):</label>
                                 <div class="input-with-button">
                                     <input type="password" id="anthropic-api-key" placeholder="sk-ant-..." class="form-control">
@@ -498,7 +507,7 @@
                                 <small class="key-status" id="anthropic-key-status"></small>
                             </div>
 
-                            <div class="form-group">
+                            <div class="form-group api-key-group" data-provider="openai">
                                 <label for="openai-api-key">OpenAI API Key (GPT):</label>
                                 <div class="input-with-button">
                                     <input type="password" id="openai-api-key" placeholder="sk-..." class="form-control">
@@ -506,6 +515,64 @@
                                     <button class="btn btn-secondary btn-sm" id="toggle-openai-key" title="Show/Hide">👁️</button>
                                 </div>
                                 <small class="key-status" id="openai-key-status"></small>
+                            </div>
+
+                            <div class="form-group api-key-group" data-provider="gemini">
+                                <label for="gemini-api-key">Google AI API Key (Gemini):</label>
+                                <div class="input-with-button">
+                                    <input type="password" id="gemini-api-key" placeholder="AIza..." class="form-control">
+                                    <button class="btn btn-secondary btn-sm" id="save-gemini-key" title="Save key">💾</button>
+                                    <button class="btn btn-secondary btn-sm" id="toggle-gemini-key" title="Show/Hide">👁️</button>
+                                </div>
+                                <small class="key-status" id="gemini-key-status"></small>
+                            </div>
+
+                            <div class="form-group api-key-group" data-provider="deepseek">
+                                <label for="deepseek-api-key">DeepSeek API Key:</label>
+                                <div class="input-with-button">
+                                    <input type="password" id="deepseek-api-key" placeholder="sk-..." class="form-control">
+                                    <button class="btn btn-secondary btn-sm" id="save-deepseek-key" title="Save key">💾</button>
+                                    <button class="btn btn-secondary btn-sm" id="toggle-deepseek-key" title="Show/Hide">👁️</button>
+                                </div>
+                                <small class="key-status" id="deepseek-key-status"></small>
+                            </div>
+
+                            <div class="form-group api-key-group" data-provider="together">
+                                <label for="together-api-key">Together AI API Key:</label>
+                                <div class="input-with-button">
+                                    <input type="password" id="together-api-key" placeholder="..." class="form-control">
+                                    <button class="btn btn-secondary btn-sm" id="save-together-key" title="Save key">💾</button>
+                                    <button class="btn btn-secondary btn-sm" id="toggle-together-key" title="Show/Hide">👁️</button>
+                                </div>
+                                <small class="key-status" id="together-key-status"></small>
+                                <small class="help-text">Get free API key at <a href="https://together.ai" target="_blank">together.ai</a></small>
+                            </div>
+                        </div>
+
+                        <!-- Local Provider Settings -->
+                        <div class="local-provider-section" id="local-provider-section" style="display: none;">
+                            <h4>🖥️ Local Provider Settings</h4>
+
+                            <div class="form-group local-settings" data-provider="lmstudio">
+                                <label for="lmstudio-base-url">LM Studio URL:</label>
+                                <div class="input-with-button">
+                                    <input type="text" id="lmstudio-base-url" value="http://localhost:1234/v1" class="form-control">
+                                    <button class="btn btn-secondary btn-sm" id="save-lmstudio-settings" title="Save">💾</button>
+                                </div>
+                                <small class="help-text">Start LM Studio and load a model first. Uses OpenAI-compatible API.</small>
+                            </div>
+
+                            <div class="form-group local-settings" data-provider="ollama">
+                                <label for="ollama-base-url">Ollama URL:</label>
+                                <div class="input-with-button">
+                                    <input type="text" id="ollama-base-url" value="http://localhost:11434" class="form-control">
+                                </div>
+                                <label for="ollama-model">Model:</label>
+                                <div class="input-with-button">
+                                    <input type="text" id="ollama-model" value="llava" class="form-control" placeholder="llava, bakllava, etc.">
+                                    <button class="btn btn-secondary btn-sm" id="save-ollama-settings" title="Save">💾</button>
+                                </div>
+                                <small class="help-text">Run: ollama pull llava (for vision) or other model.</small>
                             </div>
                         </div>
 

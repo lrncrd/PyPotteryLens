@@ -1495,7 +1495,7 @@ import numpy as np
 
 @dataclass
 class MetadataExtractionConfig:
-    """Configuration for AI metadata extraction"""
+    """Configuration for metadata extraction"""
     project_path: Path
     api_key: str = ""
     model: str = "gpt-4o-mini"
@@ -1503,15 +1503,98 @@ class MetadataExtractionConfig:
 
 
 class MetadataExtractor:
-    """Handles AI-based metadata extraction from pottery images"""
+    """Handles metadata extraction from pottery images - basic extraction without AI"""
 
     def __init__(self, config: MetadataExtractionConfig):
         self.config = config
         self.project_path = config.project_path
 
+    def parse_caption_text(self, caption_text: str) -> Dict[str, any]:
+        """
+        Parse caption text to extract structured metadata.
+
+        Extracts:
+        - figure_num: Figure/Tafel/Tav number (e.g., "Fig. 37", "Tafel 5")
+        - pottery_ids: List of pottery IDs found in caption
+
+        Args:
+            caption_text: Raw caption text from PDF
+
+        Returns:
+            Dictionary with extracted metadata
+        """
+        import re
+
+        result = {
+            'figure_num': None,
+            'pottery_ids': []
+        }
+
+        if not caption_text:
+            return result
+
+        # Extract figure number patterns
+        # Patterns: Fig. XX, Figure XX, Tafel XX, Tav. XX, Abb. XX, Planche XX
+        fig_patterns = [
+            r'(Fig\.?\s*\d+[a-zA-Z]?(?:\.\d+)?)',
+            r'(Figure\s*\d+[a-zA-Z]?)',
+            r'(Tafel\s*\d+[a-zA-Z]?)',
+            r'(Tav\.?\s*\d+[a-zA-Z]?)',
+            r'(Abb\.?\s*\d+[a-zA-Z]?)',
+            r'(Planche\s*\d+[a-zA-Z]?)',
+            r'(Chapitre\s*\d+\s*figure\s*\d+)',
+        ]
+
+        for pattern in fig_patterns:
+            match = re.search(pattern, caption_text, re.IGNORECASE)
+            if match:
+                result['figure_num'] = match.group(1).strip()
+                break
+
+        # Extract pottery IDs - numbers that appear at start or isolated
+        # Common patterns: "1 2 3" at start, or "n. 1-5", or standalone numbers
+        # Look for isolated numbers at the beginning (pottery numbering in figures)
+        num_match = re.match(r'^[\s]*(\d+(?:\s+\d+)*)', caption_text)
+        if num_match:
+            numbers = num_match.group(1).split()
+            result['pottery_ids'] = [int(n) for n in numbers if n.isdigit()]
+
+        return result
+
+    def extract_basic_metadata_from_filename(self, filename: str) -> Dict[str, any]:
+        """
+        Extract basic metadata from filename patterns.
+
+        Args:
+            filename: The image filename
+
+        Returns:
+            Dictionary with extracted metadata
+        """
+        import re
+
+        metadata = {
+            'filename': filename,
+            'page_num': None,
+            'layer_id': None
+        }
+
+        # Extract page number: _page_XXX_
+        page_match = re.search(r'_page_(\d+)_', filename, re.IGNORECASE)
+        if page_match:
+            metadata['page_num'] = int(page_match.group(1))
+
+        # Extract layer ID: _layer_XXX or _mask_layer_XXX
+        layer_match = re.search(r'_(?:mask_)?layer_(\d+)', filename, re.IGNORECASE)
+        if layer_match:
+            metadata['layer_id'] = int(layer_match.group(1))
+
+        return metadata
+
     def extract_period_mappings_from_pdf(self, pdf_path: Path) -> Dict[str, str]:
         """
         Extract Tafel/Figure -> Period mappings from a reference PDF.
+        This requires AI and will return empty dict if no AI is available.
 
         Args:
             pdf_path: Path to the PDF file
@@ -1538,60 +1621,151 @@ class MetadataExtractor:
                 mappings = structure.tafel_period_map
 
         except ImportError:
-            print("ai_extractor not available, using basic extraction")
+            print("ai_extractor not available for period extraction")
         except Exception as e:
             print(f"Error extracting period mappings: {e}")
 
         return mappings
 
-    def process_project(self, project_id: str, project_manager, period_mappings: Dict[str, str] = None) -> str:
+    def process_project(self, project_id: str, project_manager, period_mappings: Dict[str, str] = None, pdf_path: Path = None) -> str:
         """
-        Process all images in a project to extract metadata.
+        Process all images in a project to extract BASIC metadata (no AI required).
+        Reads PDF text, associates it with masks via page numbers, and parses captions.
 
         Args:
             project_id: The project identifier
             project_manager: ProjectManager instance
-            period_mappings: Optional pre-extracted period mappings
+            period_mappings: Optional pre-extracted period mappings (from AI)
+            pdf_path: Optional path to source PDF for text extraction
 
         Returns:
             Status message
         """
         try:
+            import re
+            import pandas as pd
+
             cards_path = project_manager.get_project_path(project_id, 'cards')
             if not cards_path or not cards_path.exists():
                 return "No cards folder found"
 
-            # Get all card images
-            card_images = [f for f in cards_path.iterdir()
-                         if f.suffix.lower() in ['.png', '.jpg', '.jpeg']]
+            # Check for existing mask_info.csv
+            mask_info_path = cards_path / 'mask_info.csv'
+            if not mask_info_path.exists():
+                return "No mask_info.csv found. Run mask extraction first."
 
-            if not card_images:
-                return "No card images found"
+            mask_df = pd.read_csv(mask_info_path)
+            print(f"Loaded mask_info.csv with {len(mask_df)} rows")
 
-            # Try to use AI extractor if available
-            try:
-                from ai_extractor import AIMetadataExtractor
-                extractor = AIMetadataExtractor()
+            # Extract page texts from PDF if provided
+            page_texts = {}
+            if pdf_path and Path(pdf_path).exists():
+                try:
+                    import fitz
+                    doc = fitz.open(str(pdf_path))
+                    for page_num in range(len(doc)):
+                        # Store text with 0-indexed page number
+                        page_texts[page_num] = doc[page_num].get_text()
+                    doc.close()
+                    print(f"Extracted text from {len(page_texts)} pages of PDF")
+                except Exception as e:
+                    print(f"Warning: Could not extract PDF text: {e}")
+            else:
+                # Try to find PDF in project
+                project_path = project_manager.get_project_path(project_id)
+                if project_path:
+                    pdf_files = list(project_path.glob('*.pdf'))
+                    if pdf_files:
+                        try:
+                            import fitz
+                            doc = fitz.open(str(pdf_files[0]))
+                            for page_num in range(len(doc)):
+                                page_texts[page_num] = doc[page_num].get_text()
+                            doc.close()
+                            print(f"Extracted text from {len(page_texts)} pages of {pdf_files[0].name}")
+                        except Exception as e:
+                            print(f"Warning: Could not extract PDF text: {e}")
 
-                results = []
-                for img_path in card_images:
-                    metadata = extractor.extract_metadata_from_image(img_path, period_mappings)
-                    results.append(metadata)
+            # Ensure required columns exist
+            if 'caption_text' not in mask_df.columns:
+                mask_df['caption_text'] = ''
+            if 'page_num' not in mask_df.columns:
+                mask_df['page_num'] = ''
+            if 'figure_num' not in mask_df.columns:
+                mask_df['figure_num'] = ''
+            if 'pottery_id' not in mask_df.columns:
+                mask_df['pottery_id'] = ''
+            if 'period' not in mask_df.columns:
+                mask_df['period'] = ''
 
-                # Save results
-                if results:
-                    import pandas as pd
-                    df = pd.DataFrame(results)
-                    output_path = self.project_path / f"{project_id}_ai_metadata.csv"
-                    df.to_csv(output_path, index=False)
-                    return f"Extracted metadata for {len(results)} images"
+            updated_count = 0
+            caption_count = 0
 
-            except ImportError:
-                return "AI extractor not available"
-            except Exception as e:
-                return f"Error during extraction: {str(e)}"
+            for idx, row in mask_df.iterrows():
+                # Get filename and extract page number
+                filename = row.get('mask_file', '') or row.get('file', '')
+                file_meta = self.extract_basic_metadata_from_filename(str(filename))
+                page_num = file_meta.get('page_num')
+
+                # Update page_num if extracted
+                if page_num is not None:
+                    current_page = row.get('page_num', '')
+                    if pd.isna(current_page) or str(current_page).strip() == '':
+                        mask_df.at[idx, 'page_num'] = page_num
+
+                # Get or extract caption text
+                caption_text = row.get('caption_text', '')
+                if pd.isna(caption_text) or str(caption_text).strip() == '':
+                    # Try to get caption from PDF page text
+                    if page_num is not None and page_num in page_texts:
+                        caption_text = page_texts[page_num]
+                        mask_df.at[idx, 'caption_text'] = caption_text[:2000]  # Limit size
+                        caption_count += 1
+
+                # Parse caption to extract figure_num and pottery_ids
+                parsed = self.parse_caption_text(str(caption_text))
+
+                # Update figure_num if not already set or empty
+                current_fig = row.get('figure_num', '')
+                if pd.isna(current_fig) or str(current_fig).strip() == '':
+                    if parsed['figure_num']:
+                        mask_df.at[idx, 'figure_num'] = parsed['figure_num']
+                        updated_count += 1
+
+                # Update pottery_id if not already set
+                current_pottery_id = row.get('pottery_id', '')
+                if pd.isna(current_pottery_id) or str(current_pottery_id).strip() == '':
+                    if parsed['pottery_ids']:
+                        layer_id = file_meta.get('layer_id')
+                        # If layer_id matches a pottery_id index, use it
+                        if layer_id is not None and layer_id < len(parsed['pottery_ids']):
+                            mask_df.at[idx, 'pottery_id'] = parsed['pottery_ids'][layer_id]
+                        elif parsed['pottery_ids']:
+                            # Use first pottery_id as fallback
+                            mask_df.at[idx, 'pottery_id'] = parsed['pottery_ids'][0]
+
+                # Update period from mappings if available
+                fig_num = mask_df.at[idx, 'figure_num'] if 'figure_num' in mask_df.columns else None
+                if period_mappings and fig_num and not pd.isna(fig_num):
+                    fig_key = str(fig_num).strip()
+                    if fig_key in period_mappings:
+                        current_period = row.get('period', '')
+                        if pd.isna(current_period) or str(current_period).strip() == '':
+                            mask_df.at[idx, 'period'] = period_mappings[fig_key]
+
+            # Save updated mask_info.csv
+            mask_df.to_csv(mask_info_path, index=False)
+            print(f"Updated mask_info.csv: {caption_count} captions, {updated_count} figure numbers")
+
+            # Also save a separate metadata CSV
+            output_path = self.project_path / f"{project_id}_metadata.csv"
+            mask_df.to_csv(output_path, index=False)
+
+            return f"Extracted metadata for {len(mask_df)} images ({updated_count} figure numbers, {caption_count} captions extracted)"
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return f"Error processing project: {str(e)}"
 
 

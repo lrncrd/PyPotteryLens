@@ -4,13 +4,18 @@
 let modelState = {
     currentProject: null,
     images: [],
-    excludedImages: new Set()
+    excludedImages: new Set(),
+    // Drag selection state
+    isDragging: false,
+    dragStartX: 0,
+    dragStartY: 0,
+    selectionBox: null
 };
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     console.log('Model tab initialized (project-aware)');
-    
+
     if (!window.PyPotteryUtils) {
         console.error('PyPotteryUtils not loaded!');
         return;
@@ -19,26 +24,40 @@ document.addEventListener('DOMContentLoaded', () => {
     // Confidence slider
     const confidenceSlider = document.getElementById('confidence');
     const confidenceValue = document.getElementById('confidence-value');
-    
+
     if (confidenceSlider && confidenceValue) {
         confidenceSlider.addEventListener('input', (e) => {
             confidenceValue.textContent = parseFloat(e.target.value).toFixed(2);
         });
         confidenceValue.textContent = parseFloat(confidenceSlider.value).toFixed(2);
     }
-    
+
     // Apply model button
     const applyBtn = document.getElementById('apply-model-btn');
     if (applyBtn) {
         applyBtn.addEventListener('click', handleApplyModel);
     }
-    
+
+    // Selection buttons
+    const selectAllBtn = document.getElementById('select-all-btn');
+    const deselectAllBtn = document.getElementById('deselect-all-btn');
+
+    if (selectAllBtn) {
+        selectAllBtn.addEventListener('click', handleSelectAll);
+    }
+    if (deselectAllBtn) {
+        deselectAllBtn.addEventListener('click', handleDeselectAll);
+    }
+
+    // Setup drag selection
+    setupDragSelection();
+
     // Image modal
     setupImageModal();
-    
+
     // Load current project
     loadCurrentProject();
-    
+
     // Listen for project changes
     window.addEventListener('projectChanged', (e) => {
         console.log('[Model] Project changed event:', e.detail);
@@ -164,41 +183,45 @@ function displayGallery(images) {
         const itemDiv = document.createElement('div');
         itemDiv.className = 'gallery-item';
         itemDiv.dataset.imageUrl = imageUrl;
-        
+
         // Check if this image is excluded
         const isExcluded = modelState.excludedImages.has(imageUrl);
         if (isExcluded) {
             itemDiv.classList.add('excluded');
         }
-        
+
         const img = document.createElement('img');
         // Use thumbnail for gallery display
         const thumbnailUrl = imageUrl.replace('/image/', '/thumbnail/');
         img.src = thumbnailUrl;
         img.alt = imageUrl.split('/').pop();
         img.title = imageUrl.split('/').pop() + ' (click to view full size)';
-        
+
         img.addEventListener('click', (e) => {
             e.stopPropagation();
             showImageModal(imageUrl);  // Still show full-size in modal
         });
-        
+
         const deleteBtn = document.createElement('button');
         deleteBtn.className = 'delete-btn';
         deleteBtn.innerHTML = isExcluded ? '✓' : '×';
         deleteBtn.title = isExcluded ? 'Include in processing' : 'Exclude from processing';
-        
+
         deleteBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             toggleImageExclusion(imageUrl, itemDiv, deleteBtn);
         });
-        
+
         itemDiv.appendChild(img);
         itemDiv.appendChild(deleteBtn);
         gallery.appendChild(itemDiv);
     });
-    
+
     console.log('[Model] Gallery rendered with', gallery.children.length, 'items');
+
+    // Show selection controls and update info
+    showSelectionControls(true);
+    updateSelectionInfo();
 }
 
 function toggleImageExclusion(imageUrl, itemDiv, deleteBtn) {
@@ -220,11 +243,11 @@ function toggleImageExclusion(imageUrl, itemDiv, deleteBtn) {
 
 async function saveExcludedImages() {
     if (!modelState.currentProject || !modelState.currentProject.project_id) return;
-    
+
     try {
         const excludedArray = Array.from(modelState.excludedImages);
         console.log('[Model] Saving excluded images:', excludedArray);
-        
+
         await window.PyPotteryUtils.apiRequest(
             `/api/projects/${modelState.currentProject.project_id}/excluded-images`,
             {
@@ -234,10 +257,270 @@ async function saveExcludedImages() {
                 })
             }
         );
-        
+
         console.log('[Model] Excluded images saved successfully');
     } catch (error) {
         console.error('[Model] Error saving excluded images:', error);
+    }
+}
+
+// Select All - exclude all images
+function handleSelectAll() {
+    const gallery = document.getElementById('model-gallery');
+    if (!gallery) return;
+
+    const items = gallery.querySelectorAll('.gallery-item');
+    items.forEach(item => {
+        const imageUrl = item.dataset.imageUrl;
+        if (imageUrl && !modelState.excludedImages.has(imageUrl)) {
+            modelState.excludedImages.add(imageUrl);
+            item.classList.add('excluded');
+            const btn = item.querySelector('.delete-btn');
+            if (btn) {
+                btn.innerHTML = '✓';
+                btn.title = 'Include in processing';
+            }
+        }
+    });
+
+    updateSelectionInfo();
+    saveExcludedImages();
+}
+
+// Deselect All - include all images
+function handleDeselectAll() {
+    const gallery = document.getElementById('model-gallery');
+    if (!gallery) return;
+
+    const items = gallery.querySelectorAll('.gallery-item');
+    items.forEach(item => {
+        const imageUrl = item.dataset.imageUrl;
+        if (imageUrl && modelState.excludedImages.has(imageUrl)) {
+            modelState.excludedImages.delete(imageUrl);
+            item.classList.remove('excluded');
+            const btn = item.querySelector('.delete-btn');
+            if (btn) {
+                btn.innerHTML = '×';
+                btn.title = 'Exclude from processing';
+            }
+        }
+    });
+
+    updateSelectionInfo();
+    saveExcludedImages();
+}
+
+// Update selection info text
+function updateSelectionInfo() {
+    const infoSpan = document.getElementById('selection-info');
+    if (infoSpan) {
+        const count = modelState.excludedImages.size;
+        infoSpan.textContent = `${count} image${count !== 1 ? 's' : ''} excluded`;
+    }
+}
+
+// Show/hide selection controls
+function showSelectionControls(show) {
+    const controls = document.getElementById('model-selection-controls');
+    if (controls) {
+        controls.style.display = show ? 'flex' : 'none';
+    }
+}
+
+// Setup drag selection on gallery
+function setupDragSelection() {
+    const gallery = document.getElementById('model-gallery');
+    if (!gallery) return;
+
+    // Create selection box element
+    const selectionBox = document.createElement('div');
+    selectionBox.className = 'selection-box';
+    selectionBox.style.cssText = `
+        position: absolute;
+        border: 2px dashed #007bff;
+        background: rgba(0, 123, 255, 0.1);
+        pointer-events: none;
+        display: none;
+        z-index: 1000;
+    `;
+    gallery.style.position = 'relative';
+    gallery.appendChild(selectionBox);
+    modelState.selectionBox = selectionBox;
+
+    // Mouse down - start drag
+    gallery.addEventListener('mousedown', (e) => {
+        // Only start drag if clicking on gallery background, not on items
+        if (e.target === gallery || e.target.classList.contains('selection-box')) {
+            modelState.isDragging = true;
+            const rect = gallery.getBoundingClientRect();
+            modelState.dragStartX = e.clientX - rect.left + gallery.scrollLeft;
+            modelState.dragStartY = e.clientY - rect.top + gallery.scrollTop;
+
+            selectionBox.style.left = modelState.dragStartX + 'px';
+            selectionBox.style.top = modelState.dragStartY + 'px';
+            selectionBox.style.width = '0px';
+            selectionBox.style.height = '0px';
+            selectionBox.style.display = 'block';
+
+            e.preventDefault();
+        }
+    });
+
+    // Mouse move - update selection box
+    gallery.addEventListener('mousemove', (e) => {
+        if (!modelState.isDragging) return;
+
+        const rect = gallery.getBoundingClientRect();
+        const currentX = e.clientX - rect.left + gallery.scrollLeft;
+        const currentY = e.clientY - rect.top + gallery.scrollTop;
+
+        const left = Math.min(modelState.dragStartX, currentX);
+        const top = Math.min(modelState.dragStartY, currentY);
+        const width = Math.abs(currentX - modelState.dragStartX);
+        const height = Math.abs(currentY - modelState.dragStartY);
+
+        selectionBox.style.left = left + 'px';
+        selectionBox.style.top = top + 'px';
+        selectionBox.style.width = width + 'px';
+        selectionBox.style.height = height + 'px';
+
+        // Highlight items that intersect with selection box
+        highlightSelectedItems(left, top, width, height);
+    });
+
+    // Mouse up - finish selection
+    gallery.addEventListener('mouseup', (e) => {
+        if (!modelState.isDragging) return;
+
+        const rect = gallery.getBoundingClientRect();
+        const currentX = e.clientX - rect.left + gallery.scrollLeft;
+        const currentY = e.clientY - rect.top + gallery.scrollTop;
+
+        const left = Math.min(modelState.dragStartX, currentX);
+        const top = Math.min(modelState.dragStartY, currentY);
+        const width = Math.abs(currentX - modelState.dragStartX);
+        const height = Math.abs(currentY - modelState.dragStartY);
+
+        // Only process if we actually dragged (not just clicked)
+        if (width > 10 && height > 10) {
+            selectItemsInBox(left, top, width, height, e.shiftKey);
+        }
+
+        modelState.isDragging = false;
+        selectionBox.style.display = 'none';
+
+        // Remove temporary highlights
+        gallery.querySelectorAll('.gallery-item.drag-hover').forEach(item => {
+            item.classList.remove('drag-hover');
+        });
+    });
+
+    // Mouse leave - cancel drag
+    gallery.addEventListener('mouseleave', () => {
+        if (modelState.isDragging) {
+            modelState.isDragging = false;
+            selectionBox.style.display = 'none';
+            gallery.querySelectorAll('.gallery-item.drag-hover').forEach(item => {
+                item.classList.remove('drag-hover');
+            });
+        }
+    });
+}
+
+// Highlight items during drag
+function highlightSelectedItems(boxLeft, boxTop, boxWidth, boxHeight) {
+    const gallery = document.getElementById('model-gallery');
+    if (!gallery) return;
+
+    const items = gallery.querySelectorAll('.gallery-item');
+    items.forEach(item => {
+        const itemRect = item.getBoundingClientRect();
+        const galleryRect = gallery.getBoundingClientRect();
+
+        // Convert to gallery-relative coordinates
+        const itemLeft = itemRect.left - galleryRect.left + gallery.scrollLeft;
+        const itemTop = itemRect.top - galleryRect.top + gallery.scrollTop;
+        const itemRight = itemLeft + itemRect.width;
+        const itemBottom = itemTop + itemRect.height;
+
+        const boxRight = boxLeft + boxWidth;
+        const boxBottom = boxTop + boxHeight;
+
+        // Check intersection
+        const intersects = !(itemRight < boxLeft || itemLeft > boxRight ||
+                           itemBottom < boxTop || itemTop > boxBottom);
+
+        if (intersects) {
+            item.classList.add('drag-hover');
+        } else {
+            item.classList.remove('drag-hover');
+        }
+    });
+}
+
+// Select/toggle items in selection box
+function selectItemsInBox(boxLeft, boxTop, boxWidth, boxHeight, addToSelection) {
+    const gallery = document.getElementById('model-gallery');
+    if (!gallery) return;
+
+    const items = gallery.querySelectorAll('.gallery-item');
+    let changed = false;
+
+    items.forEach(item => {
+        const itemRect = item.getBoundingClientRect();
+        const galleryRect = gallery.getBoundingClientRect();
+
+        const itemLeft = itemRect.left - galleryRect.left + gallery.scrollLeft;
+        const itemTop = itemRect.top - galleryRect.top + gallery.scrollTop;
+        const itemRight = itemLeft + itemRect.width;
+        const itemBottom = itemTop + itemRect.height;
+
+        const boxRight = boxLeft + boxWidth;
+        const boxBottom = boxTop + boxHeight;
+
+        const intersects = !(itemRight < boxLeft || itemLeft > boxRight ||
+                           itemBottom < boxTop || itemTop > boxBottom);
+
+        if (intersects) {
+            const imageUrl = item.dataset.imageUrl;
+            const btn = item.querySelector('.delete-btn');
+
+            if (addToSelection) {
+                // Shift+drag: add to exclusion
+                if (!modelState.excludedImages.has(imageUrl)) {
+                    modelState.excludedImages.add(imageUrl);
+                    item.classList.add('excluded');
+                    if (btn) {
+                        btn.innerHTML = '✓';
+                        btn.title = 'Include in processing';
+                    }
+                    changed = true;
+                }
+            } else {
+                // Normal drag: toggle
+                if (modelState.excludedImages.has(imageUrl)) {
+                    modelState.excludedImages.delete(imageUrl);
+                    item.classList.remove('excluded');
+                    if (btn) {
+                        btn.innerHTML = '×';
+                        btn.title = 'Exclude from processing';
+                    }
+                } else {
+                    modelState.excludedImages.add(imageUrl);
+                    item.classList.add('excluded');
+                    if (btn) {
+                        btn.innerHTML = '✓';
+                        btn.title = 'Include in processing';
+                    }
+                }
+                changed = true;
+            }
+        }
+    });
+
+    if (changed) {
+        updateSelectionInfo();
+        saveExcludedImages();
     }
 }
 

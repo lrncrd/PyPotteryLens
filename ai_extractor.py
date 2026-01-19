@@ -15,18 +15,40 @@ from pathlib import Path
 @dataclass
 class AIExtractionConfig:
     """Configuration for AI extraction."""
-    provider: str = "anthropic"  # 'anthropic' or 'openai'
+    provider: str = "anthropic"  # 'anthropic', 'openai', 'gemini', 'lmstudio', 'ollama', 'deepseek', 'together'
     model: str = ""  # Will be set based on provider
     max_tokens: int = 2048
     temperature: float = 0.1
     api_key: str = ""
+    base_url: str = ""  # For LM Studio/Ollama custom endpoints
 
     def __post_init__(self):
         if not self.model:
             if self.provider == "anthropic":
                 self.model = "claude-sonnet-4-20250514"
-            else:
+            elif self.provider == "openai":
                 self.model = "gpt-4.1-2025-04-14"
+            elif self.provider == "gemini":
+                self.model = "gemini-2.0-flash"
+            elif self.provider == "lmstudio":
+                self.model = "local-model"  # LM Studio uses whatever model is loaded
+            elif self.provider == "ollama":
+                self.model = "llava"  # Default vision model for Ollama
+            elif self.provider == "deepseek":
+                self.model = "deepseek-chat"  # Default DeepSeek model
+            elif self.provider == "together":
+                self.model = "meta-llama/Llama-Vision-Free"  # Free vision model on Together AI
+
+        # Set default base URLs for local providers
+        if not self.base_url:
+            if self.provider == "lmstudio":
+                self.base_url = "http://localhost:1234/v1"
+            elif self.provider == "ollama":
+                self.base_url = "http://localhost:11434"
+            elif self.provider == "deepseek":
+                self.base_url = "https://api.deepseek.com"
+            elif self.provider == "together":
+                self.base_url = "https://api.together.xyz/v1"
 
 
 @dataclass
@@ -224,8 +246,12 @@ Return ONLY valid JSON in this exact format:
             # Use the extractor's underlying API to analyze the document
             if isinstance(self.extractor, ClaudeExtractor):
                 response = self._analyze_with_claude(text_to_analyze)
-            elif isinstance(self.extractor, OpenAIExtractor):
-                response = self._analyze_with_openai(text_to_analyze)
+            elif isinstance(self.extractor, (OpenAIExtractor, LMStudioExtractor, DeepSeekExtractor)):
+                response = self._analyze_with_openai_compatible(text_to_analyze)
+            elif isinstance(self.extractor, GeminiExtractor):
+                response = self._analyze_with_gemini(text_to_analyze)
+            elif isinstance(self.extractor, OllamaExtractor):
+                response = self._analyze_with_ollama(text_to_analyze)
             else:
                 result.error = "Unknown extractor type"
                 return result
@@ -308,8 +334,8 @@ Return ONLY valid JSON in this exact format:
 
         return response.content[0].text
 
-    def _analyze_with_openai(self, text: str) -> str:
-        """Analyze document structure using OpenAI."""
+    def _analyze_with_openai_compatible(self, text: str) -> str:
+        """Analyze document structure using OpenAI-compatible API (OpenAI, LM Studio, DeepSeek)."""
         client = self.extractor._get_client()
 
         response = client.chat.completions.create(
@@ -323,6 +349,41 @@ Return ONLY valid JSON in this exact format:
         )
 
         return response.choices[0].message.content
+
+    def _analyze_with_gemini(self, text: str) -> str:
+        """Analyze document structure using Gemini."""
+        import google.generativeai as genai
+
+        model = self.extractor._get_client()
+
+        prompt = self.STRUCTURE_PROMPT + f"\n\nAnalyze this archaeological document and extract the structure:\n\n{text}"
+
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                max_output_tokens=4096,
+                temperature=0.1
+            )
+        )
+
+        return response.text
+
+    def _analyze_with_ollama(self, text: str) -> str:
+        """Analyze document structure using Ollama."""
+        prompt = self.STRUCTURE_PROMPT + f"\n\nAnalyze this archaeological document and extract the structure:\n\n{text}"
+
+        data = {
+            "model": self.extractor.config.model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": 0.1,
+                "num_predict": 4096
+            }
+        }
+
+        response = self.extractor._make_request("/api/generate", data)
+        return response.get("response", "")
 
 
 class AIMetadataExtractor(ABC):
@@ -716,28 +777,725 @@ Response format:
             return {}
 
 
-def get_extractor(provider: str, api_key: str) -> AIMetadataExtractor:
+class GeminiExtractor(AIMetadataExtractor):
+    """Metadata extractor using Google's Gemini API."""
+
+    def __init__(self, config: AIExtractionConfig):
+        super().__init__(config)
+        self.client = None
+
+    def _get_client(self):
+        """Lazy load the Gemini client."""
+        if self.client is None:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=self.config.api_key)
+                self.client = genai.GenerativeModel(self.config.model)
+            except ImportError:
+                raise ImportError("google-generativeai package not installed. Run: pip install google-generativeai")
+        return self.client
+
+    def extract_metadata(self, image_base64: str, context: str = "",
+                        media_type: str = "image/png",
+                        document_structure: Optional['DocumentStructure'] = None) -> ExtractionResult:
+        """Extract metadata using Gemini's vision capabilities."""
+        try:
+            import google.generativeai as genai
+            from PIL import Image
+            import io
+
+            model = self._get_client()
+
+            # Convert base64 to PIL Image
+            image_data = base64.b64decode(image_base64)
+            image = Image.open(io.BytesIO(image_data))
+
+            # Build prompt
+            prompt = self.SYSTEM_PROMPT + "\n\nAnalyze this archaeological pottery image and extract metadata."
+
+            # Add document structure mappings if available
+            if document_structure and document_structure.analyzed:
+                prompt += "\n\n=== PRE-ANALYZED DOCUMENT STRUCTURE ===\n"
+                prompt += "Use these mappings to determine the period:\n"
+
+                if document_structure.tafel_period_map:
+                    prompt += "\nFigure/Tafel to Period mappings:\n"
+                    for tafel, period in list(document_structure.tafel_period_map.items())[:20]:
+                        prompt += f"  {tafel} -> {period}\n"
+
+                if document_structure.figure_ranges:
+                    prompt += "\nFigure ranges by context:\n"
+                    for ctx, info in document_structure.figure_ranges.items():
+                        prompt += f"  {ctx}: Figures {info.get('start')}-{info.get('end')} = {info.get('period')}\n"
+
+            if context:
+                prompt += f"\n\n=== PDF DOCUMENT CONTEXT ===\n{context[:8000]}"
+
+            # Make API call
+            response = model.generate_content(
+                [prompt, image],
+                generation_config=genai.GenerationConfig(
+                    max_output_tokens=self.config.max_tokens,
+                    temperature=self.config.temperature
+                )
+            )
+
+            # Parse response
+            response_text = response.text
+            result = self._parse_response(response_text)
+
+            # If AI didn't find period but we have document structure, try lookup
+            if result.success and not result.period and document_structure:
+                looked_up_period = document_structure.lookup_period(
+                    figure_ref=result.figure_number,
+                    pottery_id=result.pottery_id
+                )
+                if looked_up_period:
+                    result.period = looked_up_period
+                    result.original_period = looked_up_period
+
+            return result
+
+        except Exception as e:
+            return ExtractionResult(
+                success=False,
+                error=f"Gemini API error: {str(e)}"
+            )
+
+    def extract_periods_from_pdf(self, pdf_text: str) -> Dict[str, str]:
+        """Extract period mappings from PDF text using Gemini."""
+        try:
+            import google.generativeai as genai
+
+            model = self._get_client()
+
+            prompt = f"""Analyze this archaeological document text and extract a mapping of pottery IDs to their chronological periods.
+
+Document text (truncated):
+{pdf_text[:8000]}
+
+Return a JSON object where keys are pottery IDs (e.g., "M5-12", "SU 53") and values are their periods in English.
+Only include entries where you can clearly identify both the ID and period.
+
+Response format:
+{{"M5-12": "Late Bronze Age", "SU 53": "Iron Age II", ...}}"""
+
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.GenerationConfig(
+                    max_output_tokens=4096,
+                    temperature=0.1
+                )
+            )
+
+            response_text = response.text
+
+            # Extract JSON
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if json_match:
+                return json.loads(json_match.group())
+
+            return {}
+
+        except Exception as e:
+            print(f"Error extracting periods: {e}")
+            return {}
+
+
+class LMStudioExtractor(AIMetadataExtractor):
+    """
+    Metadata extractor using LM Studio's OpenAI-compatible API.
+    LM Studio runs local models and exposes them via an OpenAI-compatible endpoint.
+    """
+
+    def __init__(self, config: AIExtractionConfig):
+        super().__init__(config)
+        self.client = None
+
+    def _get_client(self):
+        """Lazy load the OpenAI client configured for LM Studio."""
+        if self.client is None:
+            try:
+                import openai
+                self.client = openai.OpenAI(
+                    base_url=self.config.base_url,
+                    api_key="lm-studio"  # LM Studio doesn't require a real API key
+                )
+            except ImportError:
+                raise ImportError("openai package not installed. Run: pip install openai")
+        return self.client
+
+    def extract_metadata(self, image_base64: str, context: str = "",
+                        media_type: str = "image/png",
+                        document_structure: Optional['DocumentStructure'] = None) -> ExtractionResult:
+        """Extract metadata using LM Studio's vision capabilities (if model supports it)."""
+        try:
+            client = self._get_client()
+
+            # Build prompt
+            prompt = "Analyze this archaeological pottery image and extract metadata."
+
+            # Add document structure mappings if available
+            if document_structure and document_structure.analyzed:
+                prompt += "\n\n=== PRE-ANALYZED DOCUMENT STRUCTURE ===\n"
+                prompt += "Use these mappings to determine the period:\n"
+
+                if document_structure.tafel_period_map:
+                    prompt += "\nFigure/Tafel to Period mappings:\n"
+                    for tafel, period in list(document_structure.tafel_period_map.items())[:20]:
+                        prompt += f"  {tafel} -> {period}\n"
+
+                if document_structure.figure_ranges:
+                    prompt += "\nFigure ranges by context:\n"
+                    for ctx, info in document_structure.figure_ranges.items():
+                        prompt += f"  {ctx}: Figures {info.get('start')}-{info.get('end')} = {info.get('period')}\n"
+
+            if context:
+                prompt += f"\n\nAdditional context from the source document:\n{context[:2000]}"
+
+            # Try vision API first (for multimodal models like LLaVA)
+            try:
+                user_content = [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{media_type};base64,{image_base64}"
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt
+                    }
+                ]
+
+                response = client.chat.completions.create(
+                    model=self.config.model,
+                    max_tokens=self.config.max_tokens,
+                    temperature=self.config.temperature,
+                    messages=[
+                        {"role": "system", "content": self.SYSTEM_PROMPT},
+                        {"role": "user", "content": user_content}
+                    ]
+                )
+            except Exception as vision_error:
+                # Fallback to text-only if vision not supported
+                print(f"Vision not supported, falling back to text-only: {vision_error}")
+                response = client.chat.completions.create(
+                    model=self.config.model,
+                    max_tokens=self.config.max_tokens,
+                    temperature=self.config.temperature,
+                    messages=[
+                        {"role": "system", "content": self.SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt + "\n\n[Image analysis not available - please infer from context]"}
+                    ]
+                )
+
+            # Parse response
+            response_text = response.choices[0].message.content
+            result = self._parse_response(response_text)
+
+            # If AI didn't find period but we have document structure, try lookup
+            if result.success and not result.period and document_structure:
+                looked_up_period = document_structure.lookup_period(
+                    figure_ref=result.figure_number,
+                    pottery_id=result.pottery_id
+                )
+                if looked_up_period:
+                    result.period = looked_up_period
+                    result.original_period = looked_up_period
+
+            return result
+
+        except Exception as e:
+            return ExtractionResult(
+                success=False,
+                error=f"LM Studio API error: {str(e)}"
+            )
+
+    def extract_periods_from_pdf(self, pdf_text: str) -> Dict[str, str]:
+        """Extract period mappings from PDF text using LM Studio."""
+        try:
+            client = self._get_client()
+
+            prompt = f"""Analyze this archaeological document text and extract a mapping of pottery IDs to their chronological periods.
+
+Document text (truncated):
+{pdf_text[:8000]}
+
+Return a JSON object where keys are pottery IDs (e.g., "M5-12", "SU 53") and values are their periods in English.
+Only include entries where you can clearly identify both the ID and period.
+
+Response format:
+{{"M5-12": "Late Bronze Age", "SU 53": "Iron Age II", ...}}"""
+
+            response = client.chat.completions.create(
+                model=self.config.model,
+                max_tokens=4096,
+                temperature=0.1,
+                messages=[{
+                    "role": "user",
+                    "content": prompt
+                }]
+            )
+
+            response_text = response.choices[0].message.content
+
+            # Extract JSON
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if json_match:
+                return json.loads(json_match.group())
+
+            return {}
+
+        except Exception as e:
+            print(f"Error extracting periods: {e}")
+            return {}
+
+
+class OllamaExtractor(AIMetadataExtractor):
+    """
+    Metadata extractor using Ollama's local LLM API.
+    Ollama runs local models and provides a REST API.
+    """
+
+    def __init__(self, config: AIExtractionConfig):
+        super().__init__(config)
+
+    def _make_request(self, endpoint: str, data: dict) -> dict:
+        """Make a request to Ollama API."""
+        import urllib.request
+        import urllib.error
+
+        url = f"{self.config.base_url}{endpoint}"
+        headers = {"Content-Type": "application/json"}
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(data).encode('utf-8'),
+            headers=headers,
+            method='POST'
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=120) as response:
+                return json.loads(response.read().decode('utf-8'))
+        except urllib.error.URLError as e:
+            raise ConnectionError(f"Cannot connect to Ollama at {self.config.base_url}: {e}")
+
+    def extract_metadata(self, image_base64: str, context: str = "",
+                        media_type: str = "image/png",
+                        document_structure: Optional['DocumentStructure'] = None) -> ExtractionResult:
+        """Extract metadata using Ollama's vision capabilities (llava, bakllava, etc.)."""
+        try:
+            # Build prompt
+            prompt = self.SYSTEM_PROMPT + "\n\nAnalyze this archaeological pottery image and extract metadata."
+
+            # Add document structure mappings if available
+            if document_structure and document_structure.analyzed:
+                prompt += "\n\n=== PRE-ANALYZED DOCUMENT STRUCTURE ===\n"
+                prompt += "Use these mappings to determine the period:\n"
+
+                if document_structure.tafel_period_map:
+                    prompt += "\nFigure/Tafel to Period mappings:\n"
+                    for tafel, period in list(document_structure.tafel_period_map.items())[:20]:
+                        prompt += f"  {tafel} -> {period}\n"
+
+                if document_structure.figure_ranges:
+                    prompt += "\nFigure ranges by context:\n"
+                    for ctx, info in document_structure.figure_ranges.items():
+                        prompt += f"  {ctx}: Figures {info.get('start')}-{info.get('end')} = {info.get('period')}\n"
+
+            if context:
+                prompt += f"\n\n=== PDF DOCUMENT CONTEXT ===\n{context[:4000]}"
+
+            # Use Ollama's generate API with image
+            data = {
+                "model": self.config.model,
+                "prompt": prompt,
+                "images": [image_base64],  # Ollama expects base64 images in array
+                "stream": False,
+                "options": {
+                    "temperature": self.config.temperature,
+                    "num_predict": self.config.max_tokens
+                }
+            }
+
+            response = self._make_request("/api/generate", data)
+
+            # Parse response
+            response_text = response.get("response", "")
+            result = self._parse_response(response_text)
+
+            # If AI didn't find period but we have document structure, try lookup
+            if result.success and not result.period and document_structure:
+                looked_up_period = document_structure.lookup_period(
+                    figure_ref=result.figure_number,
+                    pottery_id=result.pottery_id
+                )
+                if looked_up_period:
+                    result.period = looked_up_period
+                    result.original_period = looked_up_period
+
+            return result
+
+        except Exception as e:
+            return ExtractionResult(
+                success=False,
+                error=f"Ollama API error: {str(e)}"
+            )
+
+    def extract_periods_from_pdf(self, pdf_text: str) -> Dict[str, str]:
+        """Extract period mappings from PDF text using Ollama."""
+        try:
+            prompt = f"""Analyze this archaeological document text and extract a mapping of pottery IDs to their chronological periods.
+
+Document text (truncated):
+{pdf_text[:8000]}
+
+Return a JSON object where keys are pottery IDs (e.g., "M5-12", "SU 53") and values are their periods in English.
+Only include entries where you can clearly identify both the ID and period.
+
+Response format:
+{{"M5-12": "Late Bronze Age", "SU 53": "Iron Age II", ...}}"""
+
+            data = {
+                "model": self.config.model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.1,
+                    "num_predict": 4096
+                }
+            }
+
+            response = self._make_request("/api/generate", data)
+            response_text = response.get("response", "")
+
+            # Extract JSON
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if json_match:
+                return json.loads(json_match.group())
+
+            return {}
+
+        except Exception as e:
+            print(f"Error extracting periods: {e}")
+            return {}
+
+
+class DeepSeekExtractor(AIMetadataExtractor):
+    """
+    Metadata extractor using DeepSeek's API.
+    DeepSeek provides an OpenAI-compatible API.
+    """
+
+    def __init__(self, config: AIExtractionConfig):
+        super().__init__(config)
+        self.client = None
+
+    def _get_client(self):
+        """Lazy load the OpenAI client configured for DeepSeek."""
+        if self.client is None:
+            try:
+                import openai
+                self.client = openai.OpenAI(
+                    base_url=self.config.base_url,
+                    api_key=self.config.api_key
+                )
+            except ImportError:
+                raise ImportError("openai package not installed. Run: pip install openai")
+        return self.client
+
+    def extract_metadata(self, image_base64: str, context: str = "",
+                        media_type: str = "image/png",
+                        document_structure: Optional['DocumentStructure'] = None) -> ExtractionResult:
+        """Extract metadata using DeepSeek (text-based, uses context heavily)."""
+        try:
+            client = self._get_client()
+
+            # Build prompt - DeepSeek is text-focused so we rely on context
+            prompt = "Analyze the following archaeological pottery information and extract metadata."
+
+            # Add document structure mappings if available
+            if document_structure and document_structure.analyzed:
+                prompt += "\n\n=== PRE-ANALYZED DOCUMENT STRUCTURE ===\n"
+                prompt += "Use these mappings to determine the period:\n"
+
+                if document_structure.tafel_period_map:
+                    prompt += "\nFigure/Tafel to Period mappings:\n"
+                    for tafel, period in list(document_structure.tafel_period_map.items())[:20]:
+                        prompt += f"  {tafel} -> {period}\n"
+
+                if document_structure.figure_ranges:
+                    prompt += "\nFigure ranges by context:\n"
+                    for ctx, info in document_structure.figure_ranges.items():
+                        prompt += f"  {ctx}: Figures {info.get('start')}-{info.get('end')} = {info.get('period')}\n"
+
+                if document_structure.catalog_entries:
+                    prompt += "\nCatalog ID to Period mappings:\n"
+                    for cat_id, period in list(document_structure.catalog_entries.items())[:20]:
+                        prompt += f"  {cat_id} -> {period}\n"
+
+            if context:
+                prompt += f"\n\n=== PDF DOCUMENT CONTEXT ===\n{context[:6000]}"
+
+            prompt += "\n\nBased on the above context, extract metadata for the pottery item."
+
+            # DeepSeek uses chat completions API
+            response = client.chat.completions.create(
+                model=self.config.model,
+                max_tokens=self.config.max_tokens,
+                temperature=self.config.temperature,
+                messages=[
+                    {"role": "system", "content": self.SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+
+            # Parse response
+            response_text = response.choices[0].message.content
+            result = self._parse_response(response_text)
+
+            # If AI didn't find period but we have document structure, try lookup
+            if result.success and not result.period and document_structure:
+                looked_up_period = document_structure.lookup_period(
+                    figure_ref=result.figure_number,
+                    pottery_id=result.pottery_id
+                )
+                if looked_up_period:
+                    result.period = looked_up_period
+                    result.original_period = looked_up_period
+
+            return result
+
+        except Exception as e:
+            return ExtractionResult(
+                success=False,
+                error=f"DeepSeek API error: {str(e)}"
+            )
+
+    def extract_periods_from_pdf(self, pdf_text: str) -> Dict[str, str]:
+        """Extract period mappings from PDF text using DeepSeek."""
+        try:
+            client = self._get_client()
+
+            prompt = f"""Analyze this archaeological document text and extract a mapping of pottery IDs to their chronological periods.
+
+Document text (truncated):
+{pdf_text[:8000]}
+
+Return a JSON object where keys are pottery IDs (e.g., "M5-12", "SU 53") and values are their periods in English.
+Only include entries where you can clearly identify both the ID and period.
+
+Response format:
+{{"M5-12": "Late Bronze Age", "SU 53": "Iron Age II", ...}}"""
+
+            response = client.chat.completions.create(
+                model=self.config.model,
+                max_tokens=4096,
+                temperature=0.1,
+                messages=[{
+                    "role": "user",
+                    "content": prompt
+                }]
+            )
+
+            response_text = response.choices[0].message.content
+
+            # Extract JSON
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if json_match:
+                return json.loads(json_match.group())
+
+            return {}
+
+        except Exception as e:
+            print(f"Error extracting periods: {e}")
+            return {}
+
+
+class TogetherExtractor(AIMetadataExtractor):
+    """
+    Metadata extractor using Together AI's API.
+    Together AI hosts open-source models including vision models like LLaVA.
+    Uses OpenAI-compatible API at https://api.together.xyz/v1
+    """
+
+    def __init__(self, config: AIExtractionConfig):
+        super().__init__(config)
+        self.client = None
+
+    def _get_client(self):
+        """Lazy load the OpenAI client configured for Together AI."""
+        if self.client is None:
+            try:
+                import openai
+                self.client = openai.OpenAI(
+                    base_url=self.config.base_url,
+                    api_key=self.config.api_key
+                )
+            except ImportError:
+                raise ImportError("openai package not installed. Run: pip install openai")
+        return self.client
+
+    def extract_metadata(self, image_base64: str, context: str = "",
+                        media_type: str = "image/png",
+                        document_structure: Optional['DocumentStructure'] = None) -> ExtractionResult:
+        """Extract metadata using Together AI with vision models."""
+        try:
+            client = self._get_client()
+
+            # Build prompt with document structure if available
+            prompt = "Analyze this archaeological pottery image and extract metadata."
+
+            # Add document structure mappings if available
+            if document_structure and document_structure.analyzed:
+                prompt += "\n\n=== PRE-ANALYZED DOCUMENT STRUCTURE ===\n"
+                prompt += "Use these mappings to determine the period:\n"
+
+                if document_structure.tafel_period_map:
+                    prompt += "\nFigure/Tafel to Period mappings:\n"
+                    for tafel, period in list(document_structure.tafel_period_map.items())[:20]:
+                        prompt += f"  {tafel} -> {period}\n"
+
+                if document_structure.figure_ranges:
+                    prompt += "\nFigure ranges by context:\n"
+                    for ctx, info in document_structure.figure_ranges.items():
+                        prompt += f"  {ctx}: Figures {info.get('start')}-{info.get('end')} = {info.get('period')}\n"
+
+                if document_structure.catalog_entries:
+                    prompt += "\nCatalog ID to Period mappings:\n"
+                    for cat_id, period in list(document_structure.catalog_entries.items())[:20]:
+                        prompt += f"  {cat_id} -> {period}\n"
+
+            if context:
+                prompt += f"\n\n=== PDF DOCUMENT CONTEXT ===\n{context[:6000]}"
+
+            # Together AI vision models use OpenAI-compatible format
+            messages = [
+                {"role": "system", "content": self.SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{media_type};base64,{image_base64}"
+                            }
+                        }
+                    ]
+                }
+            ]
+
+            response = client.chat.completions.create(
+                model=self.config.model,
+                max_tokens=self.config.max_tokens,
+                temperature=self.config.temperature,
+                messages=messages
+            )
+
+            # Parse response
+            response_text = response.choices[0].message.content
+            result = self._parse_response(response_text)
+
+            # If AI didn't find period but we have document structure, try lookup
+            if result.success and not result.period and document_structure:
+                looked_up_period = document_structure.lookup_period(
+                    figure_ref=result.figure_number,
+                    pottery_id=result.pottery_id
+                )
+                if looked_up_period:
+                    result.period = looked_up_period
+                    result.original_period = looked_up_period
+
+            return result
+
+        except Exception as e:
+            return ExtractionResult(
+                success=False,
+                error=f"Together AI API error: {str(e)}"
+            )
+
+    def extract_periods_from_pdf(self, pdf_text: str) -> Dict[str, str]:
+        """Extract period mappings from PDF text using Together AI."""
+        try:
+            client = self._get_client()
+
+            prompt = f"""Analyze this archaeological document text and extract a mapping of pottery IDs to their chronological periods.
+
+Document text (truncated):
+{pdf_text[:8000]}
+
+Return a JSON object where keys are pottery IDs (e.g., "M5-12", "SU 53") and values are their periods in English.
+Only include entries where you can clearly identify both the ID and period.
+
+Response format:
+{{"M5-12": "Late Bronze Age", "SU 53": "Iron Age II", ...}}"""
+
+            response = client.chat.completions.create(
+                model=self.config.model,
+                max_tokens=4096,
+                temperature=0.1,
+                messages=[{
+                    "role": "user",
+                    "content": prompt
+                }]
+            )
+
+            response_text = response.choices[0].message.content
+
+            # Extract JSON
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if json_match:
+                return json.loads(json_match.group())
+
+            return {}
+
+        except Exception as e:
+            print(f"Error extracting periods: {e}")
+            return {}
+
+
+def get_extractor(provider: str, api_key: str = "", base_url: str = "", model: str = "") -> AIMetadataExtractor:
     """
     Factory function to get the appropriate extractor.
 
     Args:
-        provider: 'anthropic' or 'openai'
-        api_key: API key for the provider
+        provider: 'anthropic', 'openai', 'gemini', 'lmstudio', or 'ollama'
+        api_key: API key for the provider (not needed for local providers)
+        base_url: Custom base URL (for lmstudio/ollama)
+        model: Optional model override
 
     Returns:
         Configured AIMetadataExtractor instance
     """
     config = AIExtractionConfig(
         provider=provider,
-        api_key=api_key
+        api_key=api_key,
+        base_url=base_url
     )
+
+    # Override model if provided
+    if model:
+        config.model = model
 
     if provider == "anthropic":
         return ClaudeExtractor(config)
     elif provider == "openai":
         return OpenAIExtractor(config)
+    elif provider == "gemini":
+        return GeminiExtractor(config)
+    elif provider == "lmstudio":
+        return LMStudioExtractor(config)
+    elif provider == "ollama":
+        return OllamaExtractor(config)
+    elif provider == "deepseek":
+        return DeepSeekExtractor(config)
+    elif provider == "together":
+        return TogetherExtractor(config)
     else:
-        raise ValueError(f"Unknown provider: {provider}")
+        raise ValueError(f"Unknown provider: {provider}. Supported: anthropic, openai, gemini, lmstudio, ollama, deepseek, together")
 
 
 def detect_image_media_type(image_path: str) -> str:

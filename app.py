@@ -652,10 +652,27 @@ def extract_project_metadata(project_id):
 
         data = request.json or {}
         reference_pdf_path = data.get('reference_pdf_path')  # Optional: PDF with period info
+        pdf_path = data.get('pdf_path')  # Source PDF for text extraction
 
         project_path = project_manager.get_project_path(project_id)
         config = MetadataExtractionConfig(project_path=project_path)
         extractor = MetadataExtractor(config)
+
+        # Try to find source PDF if not provided
+        if not pdf_path:
+            # Look in pdf_source folder first
+            pdf_source_path = project_manager.get_project_path(project_id, 'pdf_source')
+            if pdf_source_path and pdf_source_path.exists():
+                pdf_files = list(pdf_source_path.glob('*.pdf'))
+                if pdf_files:
+                    pdf_path = str(pdf_files[0])
+                    print(f"Found PDF in pdf_source: {pdf_path}")
+            # Fallback to project root folder
+            if not pdf_path:
+                pdf_files = list(project_path.glob('*.pdf'))
+                if pdf_files:
+                    pdf_path = str(pdf_files[0])
+                    print(f"Found PDF in project root: {pdf_path}")
 
         # Extract period mappings from reference PDF if provided
         period_mappings = {}
@@ -665,7 +682,7 @@ def extract_project_metadata(project_id):
                 print(f"Extracting period mappings from: {ref_path}")
                 period_mappings = extractor.extract_period_mappings_from_pdf(ref_path)
 
-        result = extractor.process_project(project_id, project_manager, period_mappings)
+        result = extractor.process_project(project_id, project_manager, period_mappings, pdf_path=Path(pdf_path) if pdf_path else None)
 
         return jsonify({'message': result, 'success': True})
 
@@ -3027,14 +3044,25 @@ def get_app_settings():
         settings_manager = get_settings_manager()
         settings = settings_manager.get_settings()
 
-        # Mask API keys for security
+        # Mask API keys for security - cloud providers
         masked_settings = {
             'anthropic_api_key': settings_manager.get_masked_key('anthropic'),
             'openai_api_key': settings_manager.get_masked_key('openai'),
+            'gemini_api_key': settings_manager.get_masked_key('gemini'),
+            'deepseek_api_key': settings_manager.get_masked_key('deepseek'),
+            'together_api_key': settings_manager.get_masked_key('together'),
             'has_anthropic_key': settings_manager.has_api_key('anthropic'),
             'has_openai_key': settings_manager.has_api_key('openai'),
+            'has_gemini_key': settings_manager.has_api_key('gemini'),
+            'has_deepseek_key': settings_manager.has_api_key('deepseek'),
+            'has_together_key': settings_manager.has_api_key('together'),
             'default_ai_provider': settings.get('default_ai_provider', 'anthropic'),
-            'calibration': settings.get('calibration', {})
+            'calibration': settings.get('calibration', {}),
+            # Local provider settings
+            'lmstudio_base_url': settings.get('lmstudio_base_url', 'http://localhost:1234/v1'),
+            'lmstudio_model': settings.get('lmstudio_model', ''),
+            'ollama_base_url': settings.get('ollama_base_url', 'http://localhost:11434'),
+            'ollama_model': settings.get('ollama_model', 'llava')
         }
 
         return jsonify({'settings': masked_settings, 'success': True})
@@ -3050,8 +3078,9 @@ def update_api_key():
         provider = data.get('provider')
         key = data.get('key', '').strip()
 
-        if provider not in ['anthropic', 'openai']:
-            return jsonify({'error': 'Invalid provider. Must be "anthropic" or "openai"', 'success': False}), 400
+        valid_providers = ['anthropic', 'openai', 'gemini', 'deepseek', 'together']
+        if provider not in valid_providers:
+            return jsonify({'error': f'Invalid provider. Must be one of: {valid_providers}', 'success': False}), 400
 
         if not key:
             return jsonify({'error': 'API key cannot be empty', 'success': False}), 400
@@ -3076,8 +3105,9 @@ def update_api_key():
 def delete_api_key(provider):
     """Delete an API key"""
     try:
-        if provider not in ['anthropic', 'openai']:
-            return jsonify({'error': 'Invalid provider', 'success': False}), 400
+        valid_providers = ['anthropic', 'openai', 'gemini', 'deepseek', 'together']
+        if provider not in valid_providers:
+            return jsonify({'error': f'Invalid provider. Must be one of: {valid_providers}', 'success': False}), 400
 
         settings_manager = get_settings_manager()
         success = settings_manager.delete_api_key(provider)
@@ -3091,6 +3121,33 @@ def delete_api_key(provider):
         return jsonify({'error': str(e), 'success': False}), 500
 
 
+@app.route('/api/settings/local-provider', methods=['POST'])
+def update_local_provider():
+    """Update local provider settings (LM Studio, Ollama)"""
+    try:
+        data = request.json
+        provider = data.get('provider')
+        base_url = data.get('base_url')
+        model = data.get('model')
+
+        if provider not in ['lmstudio', 'ollama']:
+            return jsonify({'error': 'Invalid local provider. Must be "lmstudio" or "ollama"', 'success': False}), 400
+
+        settings_manager = get_settings_manager()
+        success = settings_manager.set_local_provider_settings(provider, base_url=base_url, model=model)
+
+        if success:
+            return jsonify({
+                'success': True,
+                'message': f'{provider} settings saved successfully'
+            })
+        else:
+            return jsonify({'error': 'Failed to save settings', 'success': False}), 500
+
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
 @app.route('/api/settings/default-provider', methods=['POST'])
 def set_default_provider():
     """Set the default AI provider"""
@@ -3098,8 +3155,9 @@ def set_default_provider():
         data = request.json
         provider = data.get('provider')
 
-        if provider not in ['anthropic', 'openai']:
-            return jsonify({'error': 'Invalid provider', 'success': False}), 400
+        valid_providers = ['anthropic', 'openai', 'gemini', 'deepseek', 'together', 'lmstudio', 'ollama']
+        if provider not in valid_providers:
+            return jsonify({'error': f'Invalid provider. Must be one of: {valid_providers}', 'success': False}), 400
 
         settings_manager = get_settings_manager()
         success = settings_manager.set_default_provider(provider)
@@ -3198,25 +3256,37 @@ def detect_scale_bar(project_id):
 
 @app.route('/api/projects/<project_id>/metadata/ai-extract', methods=['POST'])
 def ai_extract_metadata(project_id):
-    """AI-powered metadata extraction using Claude or GPT - TWO-PASS approach"""
+    """AI-powered metadata extraction using various AI providers - TWO-PASS approach"""
     try:
         from ai_extractor import DocumentStructureAnalyzer
 
         data = request.json
         provider = data.get('provider', 'anthropic')
 
-        if provider not in ['anthropic', 'openai']:
-            return jsonify({'error': 'Invalid provider', 'success': False}), 400
+        valid_providers = ['anthropic', 'openai', 'gemini', 'deepseek', 'together', 'lmstudio', 'ollama']
+        if provider not in valid_providers:
+            return jsonify({'error': f'Invalid provider. Must be one of: {valid_providers}', 'success': False}), 400
 
-        # Get API key from settings
+        # Get API key and settings from settings manager
         settings_manager = get_settings_manager()
-        api_key = settings_manager.get_api_key(provider)
 
-        if not api_key:
-            return jsonify({
-                'error': f'No {provider} API key configured. Please add your API key in the settings.',
-                'success': False
-            }), 400
+        # Cloud providers need API keys
+        api_key = ""
+        base_url = ""
+        model = ""
+
+        if provider in ['anthropic', 'openai', 'gemini', 'deepseek', 'together']:
+            api_key = settings_manager.get_api_key(provider)
+            if not api_key:
+                return jsonify({
+                    'error': f'No {provider} API key configured. Please add your API key in the settings.',
+                    'success': False
+                }), 400
+        elif provider in ['lmstudio', 'ollama']:
+            # Local providers - get base_url and model from settings
+            local_settings = settings_manager.get_local_provider_settings(provider)
+            base_url = local_settings.get('base_url', '')
+            model = local_settings.get('model', '')
 
         # Get project cards
         cards_path = project_manager.get_project_path(project_id, 'cards')
@@ -3267,7 +3337,7 @@ def ai_extract_metadata(project_id):
                         print(f"Warning: Could not extract PDF context: {e}")
 
         # Initialize extractor
-        extractor = get_extractor(provider, api_key)
+        extractor = get_extractor(provider, api_key=api_key, base_url=base_url, model=model)
 
         # ========================================================================
         # PASS 1: Analyze Document Structure

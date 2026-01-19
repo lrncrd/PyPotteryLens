@@ -37,6 +37,13 @@ class SettingsManager:
         return {
             'anthropic_api_key': None,
             'openai_api_key': None,
+            'gemini_api_key': None,
+            'deepseek_api_key': None,
+            'together_api_key': None,
+            'lmstudio_base_url': 'http://localhost:1234/v1',
+            'lmstudio_model': '',
+            'ollama_base_url': 'http://localhost:11434',
+            'ollama_model': 'llava',
             'default_ai_provider': 'anthropic',
             'created_at': datetime.now().isoformat(),
             'last_modified': datetime.now().isoformat()
@@ -89,13 +96,14 @@ class SettingsManager:
         Get API key for specified provider.
 
         Args:
-            provider: 'anthropic' or 'openai'
+            provider: 'anthropic', 'openai', 'gemini', or 'deepseek'
 
         Returns:
             API key string or None if not set.
         """
-        if provider not in ['anthropic', 'openai']:
-            raise ValueError(f"Invalid provider: {provider}. Must be 'anthropic' or 'openai'")
+        valid_providers = ['anthropic', 'openai', 'gemini', 'deepseek', 'together']
+        if provider not in valid_providers:
+            raise ValueError(f"Invalid provider: {provider}. Must be one of {valid_providers}")
 
         settings = self.get_settings()
         return settings.get(f'{provider}_api_key')
@@ -105,14 +113,15 @@ class SettingsManager:
         Set API key for specified provider.
 
         Args:
-            provider: 'anthropic' or 'openai'
+            provider: 'anthropic', 'openai', 'gemini', or 'deepseek'
             key: The API key to store
 
         Returns:
             True if successful, False otherwise.
         """
-        if provider not in ['anthropic', 'openai']:
-            raise ValueError(f"Invalid provider: {provider}. Must be 'anthropic' or 'openai'")
+        valid_providers = ['anthropic', 'openai', 'gemini', 'deepseek', 'together']
+        if provider not in valid_providers:
+            raise ValueError(f"Invalid provider: {provider}. Must be one of {valid_providers}")
 
         settings = self.get_settings()
         settings[f'{provider}_api_key'] = key
@@ -123,7 +132,7 @@ class SettingsManager:
         Get the default AI provider.
 
         Returns:
-            Provider name ('anthropic' or 'openai').
+            Provider name.
         """
         settings = self.get_settings()
         return settings.get('default_ai_provider', 'anthropic')
@@ -133,13 +142,14 @@ class SettingsManager:
         Set the default AI provider.
 
         Args:
-            provider: 'anthropic' or 'openai'
+            provider: 'anthropic', 'openai', 'gemini', 'deepseek', 'lmstudio', or 'ollama'
 
         Returns:
             True if successful, False otherwise.
         """
-        if provider not in ['anthropic', 'openai']:
-            raise ValueError(f"Invalid provider: {provider}. Must be 'anthropic' or 'openai'")
+        valid_providers = ['anthropic', 'openai', 'gemini', 'deepseek', 'together', 'lmstudio', 'ollama']
+        if provider not in valid_providers:
+            raise ValueError(f"Invalid provider: {provider}. Must be one of {valid_providers}")
 
         settings = self.get_settings()
         settings['default_ai_provider'] = provider
@@ -150,11 +160,14 @@ class SettingsManager:
         Check if an API key is configured for the provider.
 
         Args:
-            provider: 'anthropic' or 'openai'
+            provider: 'anthropic', 'openai', 'gemini', or 'deepseek'
 
         Returns:
             True if key exists and is not empty.
         """
+        # Local providers don't need API keys
+        if provider in ['lmstudio', 'ollama']:
+            return True
         key = self.get_api_key(provider)
         return key is not None and len(key) > 0
 
@@ -163,11 +176,14 @@ class SettingsManager:
         Get a masked version of the API key for display.
 
         Args:
-            provider: 'anthropic' or 'openai'
+            provider: 'anthropic', 'openai', 'gemini', or 'deepseek'
 
         Returns:
             Masked key string (e.g., '***abcd') or None.
         """
+        # Local providers don't have API keys
+        if provider in ['lmstudio', 'ollama']:
+            return '[Local - No API Key]'
         key = self.get_api_key(provider)
         if not key:
             return None
@@ -182,16 +198,58 @@ class SettingsManager:
         Remove API key for specified provider.
 
         Args:
-            provider: 'anthropic' or 'openai'
+            provider: 'anthropic', 'openai', 'gemini', or 'deepseek'
 
         Returns:
             True if successful, False otherwise.
         """
-        if provider not in ['anthropic', 'openai']:
-            raise ValueError(f"Invalid provider: {provider}. Must be 'anthropic' or 'openai'")
+        valid_providers = ['anthropic', 'openai', 'gemini', 'deepseek', 'together']
+        if provider not in valid_providers:
+            raise ValueError(f"Invalid provider: {provider}. Must be one of {valid_providers}")
 
         settings = self.get_settings()
         settings[f'{provider}_api_key'] = None
+        return self.save_settings(settings)
+
+    def get_local_provider_settings(self, provider: str) -> Dict[str, Any]:
+        """
+        Get settings for local AI providers (LM Studio, Ollama).
+
+        Args:
+            provider: 'lmstudio' or 'ollama'
+
+        Returns:
+            Dictionary with base_url and model settings.
+        """
+        if provider not in ['lmstudio', 'ollama']:
+            raise ValueError(f"Invalid local provider: {provider}. Must be 'lmstudio' or 'ollama'")
+
+        settings = self.get_settings()
+        return {
+            'base_url': settings.get(f'{provider}_base_url', ''),
+            'model': settings.get(f'{provider}_model', '')
+        }
+
+    def set_local_provider_settings(self, provider: str, base_url: str = None, model: str = None) -> bool:
+        """
+        Set settings for local AI providers (LM Studio, Ollama).
+
+        Args:
+            provider: 'lmstudio' or 'ollama'
+            base_url: The API endpoint URL
+            model: The model name to use
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        if provider not in ['lmstudio', 'ollama']:
+            raise ValueError(f"Invalid local provider: {provider}. Must be 'lmstudio' or 'ollama'")
+
+        settings = self.get_settings()
+        if base_url is not None:
+            settings[f'{provider}_base_url'] = base_url
+        if model is not None:
+            settings[f'{provider}_model'] = model
         return self.save_settings(settings)
 
     def get_calibration_settings(self) -> Dict[str, Any]:

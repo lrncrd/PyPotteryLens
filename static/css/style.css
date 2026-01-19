@@ -1895,6 +1895,13 @@ body {
     box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.3);
 }
 
+.gallery-item.drag-hover {
+    border-color: var(--warning-color);
+    box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.4);
+    transform: scale(1.02);
+    transition: all 0.1s ease;
+}
+
 /* Select All / Deselect All Button Group */
 .selection-controls {
     display: flex;

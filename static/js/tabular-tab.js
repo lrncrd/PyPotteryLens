@@ -134,23 +134,27 @@ function setupAISettings() {
         }
     };
 
-    // Save Anthropic key
-    document.getElementById('save-anthropic-key')?.addEventListener('click', () => {
-        saveAPIKey('anthropic');
+    // Save API keys for all providers
+    ['anthropic', 'openai', 'gemini', 'deepseek', 'together'].forEach(provider => {
+        document.getElementById(`save-${provider}-key`)?.addEventListener('click', () => {
+            saveAPIKey(provider);
+        });
+        document.getElementById(`toggle-${provider}-key`)?.addEventListener('click', () => {
+            toggleKeyVisibility(`${provider}-api-key`);
+        });
     });
 
-    // Save OpenAI key
-    document.getElementById('save-openai-key')?.addEventListener('click', () => {
-        saveAPIKey('openai');
+    // Local provider settings
+    document.getElementById('save-lmstudio-settings')?.addEventListener('click', () => {
+        saveLocalProviderSettings('lmstudio');
+    });
+    document.getElementById('save-ollama-settings')?.addEventListener('click', () => {
+        saveLocalProviderSettings('ollama');
     });
 
-    // Toggle key visibility
-    document.getElementById('toggle-anthropic-key')?.addEventListener('click', () => {
-        toggleKeyVisibility('anthropic-api-key');
-    });
-
-    document.getElementById('toggle-openai-key')?.addEventListener('click', () => {
-        toggleKeyVisibility('openai-api-key');
+    // Provider selection change - show/hide relevant settings
+    document.getElementById('ai-provider-select')?.addEventListener('change', (e) => {
+        handleProviderChange(e.target.value);
     });
 
     // AI Extract Metadata button
@@ -173,14 +177,101 @@ async function loadAISettings() {
             const providerSelect = document.getElementById('ai-provider-select');
             if (providerSelect && settings.default_ai_provider) {
                 providerSelect.value = settings.default_ai_provider;
+                handleProviderChange(settings.default_ai_provider);
             }
 
-            // Update key status indicators
+            // Update key status indicators for cloud providers
             updateKeyStatus('anthropic', settings.has_anthropic_key, settings.anthropic_api_key);
             updateKeyStatus('openai', settings.has_openai_key, settings.openai_api_key);
+            updateKeyStatus('gemini', settings.has_gemini_key, settings.gemini_api_key);
+            updateKeyStatus('deepseek', settings.has_deepseek_key, settings.deepseek_api_key);
+            updateKeyStatus('together', settings.has_together_key, settings.together_api_key);
+
+            // Update local provider settings
+            if (settings.lmstudio_base_url) {
+                const lmstudioUrl = document.getElementById('lmstudio-base-url');
+                if (lmstudioUrl) lmstudioUrl.value = settings.lmstudio_base_url;
+            }
+            if (settings.ollama_base_url) {
+                const ollamaUrl = document.getElementById('ollama-base-url');
+                if (ollamaUrl) ollamaUrl.value = settings.ollama_base_url;
+            }
+            if (settings.ollama_model) {
+                const ollamaModel = document.getElementById('ollama-model');
+                if (ollamaModel) ollamaModel.value = settings.ollama_model;
+            }
         }
     } catch (error) {
         console.error('Failed to load AI settings:', error);
+    }
+}
+
+function handleProviderChange(provider) {
+    const localSection = document.getElementById('local-provider-section');
+    const apiKeysSection = document.querySelector('.api-keys-section');
+
+    const isLocalProvider = ['lmstudio', 'ollama'].includes(provider);
+
+    // Show/hide local provider section
+    if (localSection) {
+        localSection.style.display = isLocalProvider ? 'block' : 'none';
+    }
+
+    // Show only relevant local settings
+    if (isLocalProvider) {
+        document.querySelectorAll('.local-settings').forEach(el => {
+            el.style.display = el.dataset.provider === provider ? 'block' : 'none';
+        });
+    }
+
+    // Dim API keys section for local providers
+    if (apiKeysSection) {
+        apiKeysSection.style.opacity = isLocalProvider ? '0.5' : '1';
+    }
+
+    // Save default provider
+    saveDefaultProvider(provider);
+}
+
+async function saveDefaultProvider(provider) {
+    try {
+        await fetch('/api/settings/default-provider', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider })
+        });
+    } catch (error) {
+        console.error('Failed to save default provider:', error);
+    }
+}
+
+async function saveLocalProviderSettings(provider) {
+    try {
+        let settings = {};
+
+        if (provider === 'lmstudio') {
+            settings.base_url = document.getElementById('lmstudio-base-url')?.value;
+        } else if (provider === 'ollama') {
+            settings.base_url = document.getElementById('ollama-base-url')?.value;
+            settings.model = document.getElementById('ollama-model')?.value;
+        }
+
+        const response = await fetch('/api/settings/local-provider', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider, ...settings })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            window.PyPotteryUtils.showStatus('tabular-status', `${provider} settings saved`, 'success');
+        } else {
+            window.PyPotteryUtils.showStatus('tabular-status', data.error || 'Failed to save settings', 'error');
+        }
+    } catch (error) {
+        console.error('Failed to save local provider settings:', error);
+        window.PyPotteryUtils.showStatus('tabular-status', 'Failed to save settings', 'error');
     }
 }
 
