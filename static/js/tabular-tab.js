@@ -52,6 +52,10 @@ function setupTabularListeners() {
     // Add column
     document.getElementById('add-column-btn')?.addEventListener('click', handleAddColumn);
     
+    // AI bibliographic extraction
+    document.getElementById('ai-bibliographic-btn')?.addEventListener('click', handleAiBibliographic);
+    document.getElementById('ai-bibliographic-batch-btn')?.addEventListener('click', handleAiBibliographicBatch);
+
     // Export to CSV - use combined export endpoint
     document.getElementById('export-csv-btn')?.addEventListener('click', exportCombinedCSV);
     
@@ -631,3 +635,226 @@ function setupMagnifyingGlass() {
 
 // Export for use by main.js
 window.refreshTabular = loadProjectCards;
+
+/* =========================================================
+ * GPU / download confirmation dialog
+ * ========================================================= */
+async function checkAiRequirements() {
+    const res = await window.PyPotteryUtils.apiRequest('/api/check-ai-requirements');
+    return res;
+}
+
+function showAiConfirmDialog(requirements, onConfirm) {
+    // Remove any existing dialog
+    document.getElementById('ai-requirements-dialog')?.remove();
+
+    const { cuda_available, vram_gb, gpu_name, model_cached, meets_requirements } = requirements;
+
+    const gpuLine = cuda_available
+        ? `<p>GPU detected: <strong>${gpu_name}</strong> (${vram_gb.toFixed(1)} GB VRAM)</p>`
+        : `<p style="color:#ef4444;">No CUDA GPU detected on this system.</p>`;
+
+    const downloadNote = model_cached
+        ? `<p style="color:#22c55e;">✅ Model already cached locally — no download needed.</p>`
+        : `<p style="color:#f59e0b;">⚠️ The Gemma 4 E2B model (~10 GB) will be downloaded the first time. Make sure you have a stable internet connection and enough disk space.</p>`;
+
+    const blocker = !meets_requirements
+        ? `<p style="color:#ef4444; font-weight:600;">This feature requires a CUDA GPU with at least 6 GB of VRAM. Your system does not meet this requirement.</p>`
+        : '';
+
+    const overlay = document.createElement('div');
+    overlay.id = 'ai-requirements-dialog';
+    overlay.style.cssText = `
+        position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:20000;
+        display:flex; align-items:center; justify-content:center;
+    `;
+    overlay.innerHTML = `
+        <div style="background:#1e293b; color:#e2e8f0; border-radius:12px; padding:2rem;
+                    max-width:480px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.5);">
+            <h3 style="margin:0 0 1rem; font-size:1.2rem;">🤖 AI Bibliographic Extraction</h3>
+            ${gpuLine}
+            ${downloadNote}
+            ${blocker}
+            <p style="color:#94a3b8; font-size:0.85rem; margin-top:0.5rem;">
+                The model uses the Gemma 4 E2B multimodal architecture from Google and runs
+                entirely on your local machine — no data is sent to the cloud.
+            </p>
+            <div style="display:flex; justify-content:flex-end; gap:0.75rem; margin-top:1.5rem;">
+                <button id="ai-dialog-cancel" class="btn btn-secondary">Cancel</button>
+                <button id="ai-dialog-confirm" class="btn btn-primary"
+                    ${meets_requirements ? '' : 'disabled'}>
+                    ${model_cached ? 'Run Extraction' : 'Download & Run'}
+                </button>
+            </div>
+            <div id="ai-download-progress-wrapper" style="display:none; margin-top:1rem;">
+                <p id="ai-download-progress-label" style="font-size:0.85rem; color:#94a3b8; margin:0 0 0.4rem;"></p>
+                <div style="background:#334155; border-radius:6px; overflow:hidden; height:12px;">
+                    <div id="ai-download-progress-bar"
+                         style="height:100%; background:#6366f1; transition:width 0.4s; width:0%"></div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    document.getElementById('ai-dialog-cancel').addEventListener('click', () => overlay.remove());
+    document.getElementById('ai-dialog-confirm').addEventListener('click', () => {
+        document.getElementById('ai-dialog-confirm').disabled = true;
+        document.getElementById('ai-dialog-cancel').disabled = true;
+        if (!requirements.model_cached) {
+            document.getElementById('ai-download-progress-wrapper').style.display = 'block';
+        }
+        onConfirm(overlay);
+    });
+}
+
+function startProgressPolling(labelEl, barEl, stopSignal) {
+    const interval = setInterval(async () => {
+        if (stopSignal.stopped) { clearInterval(interval); return; }
+        try {
+            const prog = await window.PyPotteryUtils.apiRequest('/api/progress');
+            if (prog && prog.active) {
+                labelEl.textContent = prog.message || '';
+                barEl.style.width = (prog.percent || 0) + '%';
+            }
+        } catch (_) { /* ignore polling errors */ }
+    }, 800);
+    return interval;
+}
+
+async function handleAiBibliographic() {
+    if (!tabularState.currentProject || !tabularState.currentProject.project_id) {
+        window.PyPotteryUtils.showToast('No project selected', 'warning');
+        return;
+    }
+
+    const statusEl = document.getElementById('ai-bibliographic-status');
+    const btn = document.getElementById('ai-bibliographic-btn');
+
+    // Check GPU requirements first
+    let requirements;
+    try {
+        requirements = await checkAiRequirements();
+    } catch (e) {
+        window.PyPotteryUtils.showToast('Could not check system requirements', 'error');
+        return;
+    }
+
+    showAiConfirmDialog(requirements, async (overlay) => {
+        const labelEl = document.getElementById('ai-download-progress-label');
+        const barEl = document.getElementById('ai-download-progress-bar');
+        const stopSignal = { stopped: false };
+        const pollInterval = startProgressPolling(labelEl, barEl, stopSignal);
+
+        btn.disabled = true;
+        if (statusEl) statusEl.textContent = '⏳ Loading model and analysing...';
+        window.PyPotteryUtils.showLoading('Extracting references with Gemma 4 AI...');
+
+        try {
+            const response = await window.PyPotteryUtils.apiRequest(
+                `/api/projects/${tabularState.currentProject.project_id}/tabular/ai-bibliographic`,
+                {
+                    method: 'POST',
+                    body: JSON.stringify({ img_num: tabularState.currentIndex })
+                }
+            );
+
+            stopSignal.stopped = true;
+            clearInterval(pollInterval);
+            window.PyPotteryUtils.hideLoading();
+            overlay.remove();
+
+            if (response.success) {
+                tabularState.tableData = response.table;
+                tabularState.columns = response.columns;
+                displayTable(response.table, response.columns);
+                if (statusEl) statusEl.textContent = '✅ References extracted successfully';
+                window.PyPotteryUtils.showToast('Bibliographic references extracted!', 'success');
+            } else {
+                if (statusEl) statusEl.textContent = '❌ Error: ' + (response.error || 'unknown');
+                window.PyPotteryUtils.showToast(response.error || 'AI Error', 'error');
+            }
+        } catch (error) {
+            stopSignal.stopped = true;
+            clearInterval(pollInterval);
+            window.PyPotteryUtils.hideLoading();
+            overlay.remove();
+            if (statusEl) statusEl.textContent = '❌ ' + error.message;
+            window.PyPotteryUtils.showToast(error.message, 'error');
+            console.error('[AI Bibliographic] Error:', error);
+        } finally {
+            btn.disabled = false;
+        }
+    });
+}
+
+async function handleAiBibliographicBatch() {
+    if (!tabularState.currentProject || !tabularState.currentProject.project_id) {
+        window.PyPotteryUtils.showToast('No project selected', 'warning');
+        return;
+    }
+
+    const statusEl = document.getElementById('ai-bibliographic-status');
+    const btn = document.getElementById('ai-bibliographic-batch-btn');
+
+    // Check GPU requirements first
+    let requirements;
+    try {
+        requirements = await checkAiRequirements();
+    } catch (e) {
+        window.PyPotteryUtils.showToast('Could not check system requirements', 'error');
+        return;
+    }
+
+    // Modify dialog title for batch mode
+    const originalTitle = '🤖 AI Bibliographic Extraction';
+    requirements._batchMode = true;
+
+    showAiConfirmDialog(requirements, async (overlay) => {
+        const labelEl = document.getElementById('ai-download-progress-label');
+        const barEl = document.getElementById('ai-download-progress-bar');
+        // Show progress wrapper for batch mode even if model is cached
+        document.getElementById('ai-download-progress-wrapper').style.display = 'block';
+        const stopSignal = { stopped: false };
+        const pollInterval = startProgressPolling(labelEl, barEl, stopSignal);
+
+        btn.disabled = true;
+        if (statusEl) statusEl.textContent = '⏳ Running batch extraction...';
+        window.PyPotteryUtils.showLoading('Batch AI extraction in progress...');
+
+        try {
+            const response = await window.PyPotteryUtils.apiRequest(
+                `/api/projects/${tabularState.currentProject.project_id}/tabular/ai-bibliographic-batch`,
+                { method: 'POST', body: JSON.stringify({}) }
+            );
+
+            stopSignal.stopped = true;
+            clearInterval(pollInterval);
+            window.PyPotteryUtils.hideLoading();
+            overlay.remove();
+
+            if (response.success) {
+                const errMsg = response.errors && response.errors.length
+                    ? ` (${response.errors.length} errors)` : '';
+                if (statusEl) statusEl.textContent = `✅ Batch complete: ${response.processed} images${errMsg}`;
+                window.PyPotteryUtils.showToast(`Batch extraction done: ${response.processed} images${errMsg}`, 'success');
+                // Reload current card to reflect new data
+                await loadTabularData(tabularState.currentIndex);
+            } else {
+                if (statusEl) statusEl.textContent = '❌ Batch error: ' + (response.error || 'unknown');
+                window.PyPotteryUtils.showToast(response.error || 'Batch AI Error', 'error');
+            }
+        } catch (error) {
+            stopSignal.stopped = true;
+            clearInterval(pollInterval);
+            window.PyPotteryUtils.hideLoading();
+            overlay.remove();
+            if (statusEl) statusEl.textContent = '❌ ' + error.message;
+            window.PyPotteryUtils.showToast(error.message, 'error');
+            console.error('[AI Batch] Error:', error);
+        } finally {
+            btn.disabled = false;
+        }
+    });
+}

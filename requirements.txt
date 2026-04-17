@@ -11,6 +11,8 @@ reportlab
 pandas
 numpy
 scipy
+transformers>=4.51.0
+accelerate
 # PyTorch with CUDA support (if available, otherwise CPU)
 --extra-index-url https://download.pytorch.org/whl/cu126
 torch

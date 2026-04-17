@@ -47,6 +47,42 @@ app.config['UPLOAD_FOLDER'].mkdir(exist_ok=True)
 # Initialize Project Manager
 project_manager = ProjectManager(projects_root="projects")
 
+# === Gemma 4 AI model (lazy loaded for bibliographic extraction) ===
+_gemma_model = None
+_gemma_processor = None
+_gemma_model_lock = threading.Lock()
+
+def load_gemma_model(hf_token=None):
+    """Lazy-load google/gemma-4-E2B-it for vision-based bibliographic extraction."""
+    global _gemma_model, _gemma_processor
+    with _gemma_model_lock:
+        if _gemma_model is None:
+            from transformers import AutoProcessor, AutoModelForMultimodalLM
+            model_id = "google/gemma-4-E2B-it"
+            token = hf_token or os.environ.get('HF_TOKEN', '') or None
+            cache_dir = Path("models_llm")
+            cache_dir.mkdir(exist_ok=True)
+            print(f"[AI] Loading {model_id} into {cache_dir}...")
+            _gemma_processor = AutoProcessor.from_pretrained(
+                model_id, token=token, cache_dir=cache_dir
+            )
+            if torch.cuda.is_available():
+                device_map = "auto"
+            else:
+                # MPS (Apple Silicon) has a max single-buffer limit (~4GB) that
+                # prevents loading Gemma 4 E2B (5.1B params). Use CPU instead.
+                device_map = {"": "cpu"}
+            _gemma_model = AutoModelForMultimodalLM.from_pretrained(
+                model_id,
+                token=token,
+                dtype="auto",
+                device_map=device_map,
+                cache_dir=cache_dir,
+                low_cpu_mem_usage=True
+            )
+            print(f"[AI] Gemma 4 E2B-it loaded (device_map={device_map})")
+    return _gemma_model, _gemma_processor
+
 # Initialization status tracking
 init_status = {
     'ready': False,
@@ -330,6 +366,41 @@ def get_system_info():
         return jsonify(system_info)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/check-ai-requirements')
+def check_ai_requirements():
+    """Check if the system meets requirements for AI bibliographic extraction:
+    - CUDA GPU with at least 6 GB VRAM
+    - Whether the Gemma model is already cached locally
+    """
+    try:
+        import torch
+        cuda_available = torch.cuda.is_available()
+        vram_gb = 0.0
+        gpu_name = ''
+        if cuda_available and torch.cuda.device_count() > 0:
+            props = torch.cuda.get_device_properties(0)
+            vram_gb = props.total_memory / (1024 ** 3)
+            gpu_name = props.name
+
+        # Check if model blobs exist in the local cache directory
+        model_cache_dir = Path("models_llm") / "models--google--gemma-4-E2B-it"
+        model_cached = model_cache_dir.exists() and any(model_cache_dir.rglob("*.safetensors"))
+
+        meets_requirements = cuda_available and vram_gb >= 6.0
+
+        return jsonify({
+            'cuda_available': cuda_available,
+            'vram_gb': round(vram_gb, 2),
+            'gpu_name': gpu_name,
+            'model_cached': model_cached,
+            'meets_requirements': meets_requirements
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'cuda_available': False,
+                        'vram_gb': 0, 'gpu_name': '', 'model_cached': False,
+                        'meets_requirements': False}), 500
+
 
 @app.route('/')
 def index():
@@ -1536,6 +1607,399 @@ def save_project_tabular_data(project_id):
     except Exception as e:
         import traceback
         traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/tabular/ai-bibliographic', methods=['POST'])
+def ai_extract_bibliographic(project_id):
+    """Use Gemma 4 E2B-it to extract bibliographic info (tavola, figura, numero)
+    from the original page image using bounding box coordinates."""
+    try:
+        import json as _json
+        import re as _re
+
+        project_metadata = project_manager.get_project(project_id)
+        if not project_metadata:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        data = request.json
+        img_num = int(data.get('img_num', 0))
+
+        cards_path = project_manager.get_project_path(project_id, 'cards')
+        images_path = project_manager.get_project_path(project_id, 'images')
+
+        mask_info_path = cards_path / 'mask_info.csv'
+        mask_info_annots_path = cards_path / 'mask_info_annots.csv'
+
+        if not mask_info_path.exists() or not mask_info_annots_path.exists():
+            return jsonify({'error': 'Annotation CSV files not found', 'success': False}), 404
+
+        df_info = pd.read_csv(mask_info_path).fillna('')
+        df_annots = pd.read_csv(mask_info_annots_path)
+
+        df_annots['image_name'] = df_annots['mask_file'].apply(
+            lambda x: x.split('_mask_layer_')[0] if isinstance(x, str) and '_mask_layer_' in x else '')
+        df_annots['ID'] = df_annots['mask_file'].apply(
+            lambda x: x.split('layer_')[1].replace('.png', '') if isinstance(x, str) and 'layer_' in x else '0')
+
+        unique_images = sorted(df_annots['image_name'].unique())
+        if not unique_images:
+            return jsonify({'error': 'No images found in annotations', 'success': False}), 404
+
+        img_num = max(0, min(img_num, len(unique_images) - 1))
+        current_image_name = unique_images[img_num]
+
+        # Find original image file
+        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp']
+        original_image_path = None
+        for ext in image_extensions:
+            candidate = images_path / f"{current_image_name}{ext}"
+            if candidate.exists():
+                original_image_path = candidate
+                break
+
+        if not original_image_path:
+            return jsonify({'error': f'Original image not found: {current_image_name}', 'success': False}), 404
+
+        # Load image at high resolution for OCR (max 2400px on longest side)
+        from PIL import Image as PILImage
+        with PILImage.open(original_image_path) as img:
+            orig_w, orig_h = img.size
+            img_copy = img.copy()
+            img_copy.thumbnail((2400, 2400), PILImage.LANCZOS)
+            scale_x = img_copy.size[0] / orig_w
+            scale_y = img_copy.size[1] / orig_h
+            page_image = img_copy.convert('RGB')
+
+        # Build bbox description for the prompt (scaled to OCR image size)
+        image_annots = df_annots[df_annots['image_name'] == current_image_name]
+        bbox_lines = []
+        for _, row in image_annots.iterrows():
+            try:
+                bbox_str = str(row.get('bbox', '')).strip('()')
+                coords = [int(x.strip()) for x in bbox_str.split(',')]
+                scaled = [
+                    int(coords[0] * scale_x), int(coords[1] * scale_y),
+                    int(coords[2] * scale_x), int(coords[3] * scale_y)
+                ]
+                bbox_lines.append(f"- ID {row['ID']}: [{scaled[0]}, {scaled[1]}, {scaled[2]}, {scaled[3]}]")
+            except Exception:
+                continue
+
+        if not bbox_lines:
+            return jsonify({'error': 'No valid annotations found for this page', 'success': False}), 404
+
+        id_list = [line.split(':')[0].replace('- ID ', '').strip() for line in bbox_lines]
+        id_list_str = ', '.join(id_list)
+        bbox_text = '\n'.join(bbox_lines)
+        img_w, img_h = page_image.size
+        prompt = (
+            "This is a page from an archaeological publication about pottery. "
+            f"The full image size is {img_w}x{img_h} pixels.\n"
+            f"There are {len(bbox_lines)} pottery drawings with these EXACT IDs and pixel bounding boxes [x1, y1, x2, y2]:\n"
+            f"{bbox_text}\n\n"
+            f"IMPORTANT: Your JSON response MUST use EXACTLY these keys: {id_list_str}\n"
+            "Do NOT invent sequential keys or rename IDs. Each key must match one of the IDs above.\n\n"
+            "For EACH drawing, extract:\n"
+            '- "page": the page number of the publication. '
+            'Look at the EDGES and EXTREMITIES of the full image '
+            '(top margin, bottom margin, corners) for a printed page number. '
+            'This value is the SAME for all drawings on the page.\n'
+            '- "plate": plate/table number (e.g. "Tav. III", "Pl. 12"). '
+            'Usually at the top or bottom edge of the image, shared by all drawings.\n'
+            '- "figure": figure number for the whole plate (e.g. "Fig. 3", "Abb. 5"). '
+            'Usually at top or bottom of the image.\n'
+            '- "number": the small reference number printed DIRECTLY NEXT TO or inside '
+            'the specific drawing at the given bounding box coordinates. '
+            'This is in a VARIABLE POSITION — examine carefully the area immediately '
+            'surrounding each bounding box for a small printed number or label.\n\n'
+            f"Respond ONLY with a valid JSON object using EXACTLY these keys: {id_list_str}\n"
+            "Example (replace <IDx> with the real IDs from above):\n"
+            '{\"<ID1>\": {\"page\": \"45\", \"plate\": \"Tav. III\", \"figure\": \"Fig. 5\", \"number\": \"1\"}, '
+            '\"<ID2>\": {\"page\": \"45\", \"plate\": \"Tav. III\", \"figure\": \"Fig. 5\", \"number\": \"2a\"}}\n'
+            "If a value is not found, use null."
+        )
+
+        # Load Gemma 4 E2B-it and run inference
+        model, processor = load_gemma_model()
+
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image", "image": page_image},
+                {"type": "text", "text": prompt}
+            ]
+        }]
+
+        text = processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+        )
+        inputs = processor(text=text, images=[page_image], return_tensors="pt").to(model.device)
+        input_len = inputs["input_ids"].shape[-1]
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=512,
+                temperature=1.0,
+                top_p=0.95,
+                top_k=64,
+                do_sample=True
+            )
+
+        raw_response = processor.decode(outputs[0][input_len:], skip_special_tokens=True)
+        print(f"[AI] Raw response: {raw_response[:300]}")
+
+        # Extract JSON block from the response
+        json_match = _re.search(r'\{.*\}', raw_response, _re.DOTALL)
+        if not json_match:
+            return jsonify({
+                'error': f'Model did not return valid JSON. Response: {raw_response[:500]}',
+                'success': False
+            }), 500
+
+        ai_result = _json.loads(json_match.group())
+
+        # Add missing columns to df_info if needed
+        for col in ['page', 'plate', 'figure', 'number']:
+            if col not in df_info.columns:
+                df_info[col] = ''
+
+        # Write extracted values into df_info rows for current image
+        # Use exact filename match to avoid partial-prefix collisions (e.g. ID "0" matching layer_01)
+        for mask_id, values in ai_result.items():
+            exact_mask_file = f"{current_image_name}_mask_layer_{mask_id}.png"
+            row_mask = df_info['mask_file'] == exact_mask_file
+            if not row_mask.any():
+                # Try without extension in case stored differently
+                exact_no_ext = f"{current_image_name}_mask_layer_{mask_id}"
+                row_mask = df_info['mask_file'].apply(
+                    lambda x: str(x).replace('.png', '') == exact_no_ext
+                )
+            if row_mask.any():
+                for col in ['page', 'plate', 'figure', 'number']:
+                    val = values.get(col)
+                    if val is not None:
+                        df_info.loc[row_mask, col] = str(val)
+            else:
+                print(f"[AI] Warning: no row found in df_info for mask_id={mask_id!r}, expected file={exact_mask_file!r}")
+
+        df_info.to_csv(mask_info_path, index=False)
+
+        # Return updated table for current image
+        df_subset = df_info[df_info['file'] == current_image_name].copy()
+        if not df_subset.empty:
+            df_subset['ID'] = df_subset['mask_file'].apply(
+                lambda x: x.split('layer_')[1] if isinstance(x, str) and 'layer_' in x else '0')
+            drop_cols = [col for col in ['mask_file', 'file'] if col in df_subset.columns]
+            if drop_cols:
+                df_subset = df_subset.drop(columns=drop_cols)
+            columns_order = ['ID'] + [col for col in df_subset.columns if col != 'ID']
+            df_subset = df_subset[columns_order]
+            table_data = df_subset.to_dict('records')
+            columns = list(df_subset.columns)
+        else:
+            table_data = []
+            columns = ['ID', 'page', 'plate', 'figure', 'number']
+
+        return jsonify({
+            'success': True,
+            'table': table_data,
+            'columns': columns,
+            'ai_result': ai_result
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/tabular/ai-bibliographic-batch', methods=['POST'])
+def ai_extract_bibliographic_batch(project_id):
+    """Run Gemma 4 E2B-it AI extraction on ALL images in the project (batch mode).
+    Progress is streamed via the global operation_progress dict so the frontend
+    can poll /api/progress."""
+    try:
+        import json as _json
+        import re as _re
+
+        project_metadata = project_manager.get_project(project_id)
+        if not project_metadata:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        cards_path = project_manager.get_project_path(project_id, 'cards')
+        images_path = project_manager.get_project_path(project_id, 'images')
+
+        mask_info_path = cards_path / 'mask_info.csv'
+        mask_info_annots_path = cards_path / 'mask_info_annots.csv'
+
+        if not mask_info_path.exists() or not mask_info_annots_path.exists():
+            return jsonify({'error': 'Annotation CSV files not found', 'success': False}), 404
+
+        df_info = pd.read_csv(mask_info_path).fillna('')
+        df_annots = pd.read_csv(mask_info_annots_path)
+
+        df_annots['image_name'] = df_annots['mask_file'].apply(
+            lambda x: x.split('_mask_layer_')[0] if isinstance(x, str) and '_mask_layer_' in x else '')
+        df_annots['ID'] = df_annots['mask_file'].apply(
+            lambda x: x.split('layer_')[1].replace('.png', '') if isinstance(x, str) and 'layer_' in x else '0')
+
+        unique_images = sorted(df_annots['image_name'].unique())
+        if not unique_images:
+            return jsonify({'error': 'No images found in annotations', 'success': False}), 404
+
+        # Ensure English columns exist
+        for col in ['page', 'plate', 'figure', 'number']:
+            if col not in df_info.columns:
+                df_info[col] = ''
+
+        total = len(unique_images)
+        update_operation_progress('ai_batch', 0, total, 'Loading AI model...')
+
+        # Load model once before the loop
+        model, processor = load_gemma_model()
+
+        errors = []
+        for idx, current_image_name in enumerate(unique_images):
+            update_operation_progress('ai_batch', idx, total,
+                                      f'Processing image {idx + 1}/{total}: {current_image_name}')
+
+            image_extensions = ['.jpg', '.jpeg', '.png', '.bmp']
+            original_image_path = None
+            for ext in image_extensions:
+                candidate = images_path / f"{current_image_name}{ext}"
+                if candidate.exists():
+                    original_image_path = candidate
+                    break
+
+            if not original_image_path:
+                errors.append(f'Image not found: {current_image_name}')
+                continue
+
+            from PIL import Image as PILImage
+            with PILImage.open(original_image_path) as img:
+                orig_w, orig_h = img.size
+                img_copy = img.copy()
+                img_copy.thumbnail((2400, 2400), PILImage.LANCZOS)
+                scale_x = img_copy.size[0] / orig_w
+                scale_y = img_copy.size[1] / orig_h
+                page_image = img_copy.convert('RGB')
+
+            image_annots = df_annots[df_annots['image_name'] == current_image_name]
+            bbox_lines = []
+            for _, row in image_annots.iterrows():
+                try:
+                    bbox_str = str(row.get('bbox', '')).strip('()')
+                    coords = [int(x.strip()) for x in bbox_str.split(',')]
+                    scaled = [
+                        int(coords[0] * scale_x), int(coords[1] * scale_y),
+                        int(coords[2] * scale_x), int(coords[3] * scale_y)
+                    ]
+                    bbox_lines.append(f"- ID {row['ID']}: [{scaled[0]}, {scaled[1]}, {scaled[2]}, {scaled[3]}]")
+                except Exception:
+                    continue
+
+            if not bbox_lines:
+                errors.append(f'No annotations for: {current_image_name}')
+                continue
+
+            id_list = [line.split(':')[0].replace('- ID ', '').strip() for line in bbox_lines]
+            id_list_str = ', '.join(id_list)
+            bbox_text = '\n'.join(bbox_lines)
+            img_w, img_h = page_image.size
+            prompt = (
+                "This is a page from an archaeological publication about pottery. "
+                f"The full image size is {img_w}x{img_h} pixels.\n"
+                f"There are {len(bbox_lines)} pottery drawings with these EXACT IDs and pixel bounding boxes [x1, y1, x2, y2]:\n"
+                f"{bbox_text}\n\n"
+                f"IMPORTANT: Your JSON response MUST use EXACTLY these keys: {id_list_str}\n"
+                "Do NOT invent sequential keys or rename IDs. Each key must match one of the IDs above.\n\n"
+                "For EACH drawing, extract:\n"
+                '- "page": the page number of the publication. '
+                'Look at the EDGES and EXTREMITIES of the full image '
+                '(top margin, bottom margin, corners) for a printed page number. '
+                'This value is the SAME for all drawings on the page.\n'
+                '- "plate": plate/table number (e.g. "Tav. III", "Pl. 12"). '
+                'Usually at the top or bottom edge of the image, shared by all drawings.\n'
+                '- "figure": figure number for the whole plate (e.g. "Fig. 3", "Abb. 5"). '
+                'Usually at top or bottom of the image.\n'
+                '- "number": the small reference number printed DIRECTLY NEXT TO or inside '
+                'the specific drawing at the given bounding box coordinates. '
+                'This is in a VARIABLE POSITION — examine carefully the area immediately '
+                'surrounding each bounding box for a small printed number or label.\n\n'
+                f"Respond ONLY with a valid JSON object using EXACTLY these keys: {id_list_str}\n"
+                "Example (replace <IDx> with the real IDs from above):\n"
+                '{\"<ID1>\": {\"page\": \"45\", \"plate\": \"Tav. III\", \"figure\": \"Fig. 5\", \"number\": \"1\"}, '
+                '\"<ID2>\": {\"page\": \"45\", \"plate\": \"Tav. III\", \"figure\": \"Fig. 5\", \"number\": \"2a\"}}\n'
+                "If a value is not found, use null."
+            )
+
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": page_image},
+                    {"type": "text", "text": prompt}
+                ]
+            }]
+
+            text = processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+            )
+            inputs = processor(text=text, images=[page_image], return_tensors="pt").to(model.device)
+            input_len = inputs["input_ids"].shape[-1]
+
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=512,
+                    temperature=1.0,
+                    top_p=0.95,
+                    top_k=64,
+                    do_sample=True
+                )
+
+            raw_response = processor.decode(outputs[0][input_len:], skip_special_tokens=True)
+            print(f"[AI Batch] {current_image_name} response: {raw_response[:200]}")
+
+            json_match = _re.search(r'\{.*\}', raw_response, _re.DOTALL)
+            if not json_match:
+                errors.append(f'No JSON from model for: {current_image_name}')
+                continue
+
+            try:
+                ai_result = _json.loads(json_match.group())
+            except _json.JSONDecodeError:
+                errors.append(f'Invalid JSON for: {current_image_name}')
+                continue
+
+            for mask_id, values in ai_result.items():
+                exact_mask_file = f"{current_image_name}_mask_layer_{mask_id}.png"
+                row_mask = df_info['mask_file'] == exact_mask_file
+                if not row_mask.any():
+                    exact_no_ext = f"{current_image_name}_mask_layer_{mask_id}"
+                    row_mask = df_info['mask_file'].apply(
+                        lambda x: str(x).replace('.png', '') == exact_no_ext
+                    )
+                if row_mask.any():
+                    for col in ['page', 'plate', 'figure', 'number']:
+                        val = values.get(col)
+                        if val is not None:
+                            df_info.loc[row_mask, col] = str(val)
+
+        df_info.to_csv(mask_info_path, index=False)
+        clear_operation_progress()
+
+        return jsonify({
+            'success': True,
+            'processed': total,
+            'errors': errors
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        clear_operation_progress()
         return jsonify({'error': str(e), 'success': False}), 500
 
 
