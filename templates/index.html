@@ -612,7 +612,40 @@
                                     title="Run AI bibliographic extraction on all images in the project (batch mode)">
                                     🔄 Extract All (Batch)
                                 </button>
+                                <button class="btn btn-secondary" id="ai-prompt-toggle-btn"
+                                    title="Customise the AI prompt with publication-specific context and examples"
+                                    style="padding:0.5rem 0.85rem; font-size:0.85rem;">
+                                    ✏️ Prompt
+                                </button>
                                 <span id="ai-bibliographic-status" style="font-size:0.8rem; color:#64748b;"></span>
+                            </div>
+
+                            <!-- Collapsible prompt customisation panel -->
+                            <div id="ai-prompt-panel" style="display:none; margin-top:0.75rem;
+                                 background:#1e293b; border:1px solid #334155; border-radius:8px;
+                                 padding:1rem; animation: fadeIn 0.2s ease;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
+                                    <span style="font-size:0.85rem; font-weight:600; color:#94a3b8;">
+                                        ✏️ Custom prompt context
+                                    </span>
+                                    <button id="ai-prompt-reset-btn" class="btn btn-secondary"
+                                            style="padding:0.25rem 0.65rem; font-size:0.75rem;">
+                                        ↺ Reset
+                                    </button>
+                                </div>
+                                <p style="font-size:0.78rem; color:#64748b; margin:0 0 0.5rem;">
+                                    Describe publication-specific conventions so the model can find
+                                    the right values. You can include examples like
+                                    <em>"Plate numbers are written as 'T. 12' at the bottom of the page"</em>.
+                                    Leave blank to use the default prompt.
+                                </p>
+                                <textarea id="ai-prompt-suffix"
+                                    placeholder="E.g.: Plate numbers appear as 'Tav. IV' at the top-left corner. Figure labels look like 'Fig. 3' in the bottom margin. Individual pottery numbers are small digits next to each drawing..."
+                                    rows="5"
+                                    style="width:100%; box-sizing:border-box; background:#0f172a;
+                                           color:#e2e8f0; border:1px solid #475569; border-radius:6px;
+                                           padding:0.6rem 0.75rem; font-size:0.82rem; resize:vertical;
+                                           font-family:inherit; line-height:1.5;"></textarea>
                             </div>
                             <div id="tabular-table-container">
                                 <table id="data-table" class="data-table">

@@ -63,9 +63,22 @@ def load_gemma_model(hf_token=None):
             cache_dir = Path("models_llm")
             cache_dir.mkdir(exist_ok=True)
             print(f"[AI] Loading {model_id} into {cache_dir}...")
+
+            # Signal download progress to frontend (indeterminate — HF Hub manages the actual download)
+            operation_progress['active'] = True
+            operation_progress['operation'] = 'model_download'
+            operation_progress['message'] = 'Downloading Gemma 4 E2B model (~10 GB) — this may take a while...'
+            operation_progress['percent'] = 0
+            operation_progress['current'] = 0
+            operation_progress['total'] = 1
+
             _gemma_processor = AutoProcessor.from_pretrained(
                 model_id, token=token, cache_dir=cache_dir
             )
+
+            operation_progress['message'] = 'Loading model weights into GPU memory...'
+            operation_progress['percent'] = 70
+
             if torch.cuda.is_available():
                 device_map = "auto"
             else:
@@ -80,10 +93,74 @@ def load_gemma_model(hf_token=None):
                 cache_dir=cache_dir,
                 low_cpu_mem_usage=True
             )
+            operation_progress['message'] = 'Model ready'
+            operation_progress['percent'] = 100
+            operation_progress['active'] = False
             print(f"[AI] Gemma 4 E2B-it loaded (device_map={device_map})")
     return _gemma_model, _gemma_processor
 
-# Initialization status tracking
+
+def _annotate_image_with_bboxes(image, bbox_data):
+    """Draw labeled bounding boxes on a PIL RGB image before sending to VLM.
+
+    bbox_data: list of (label, x1, y1, x2, y2) in image pixel coordinates.
+    Draws an orange rectangle for each box and a small filled label at its
+    top-left corner so the model can visually locate each drawing by ID.
+    Returns the mutated (in-place) PIL image.
+    """
+    from PIL import ImageDraw, ImageFont
+
+    draw = ImageDraw.Draw(image)
+    img_w, img_h = image.size
+
+    # Scale strokes and font to image size
+    line_width = max(2, int(min(img_w, img_h) / 350))
+    font_size  = max(14, int(min(img_w, img_h) / 55))
+
+    font = None
+    for font_path in [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ]:
+        try:
+            font = ImageFont.truetype(font_path, font_size)
+            break
+        except Exception:
+            pass
+    if font is None:
+        font = ImageFont.load_default()
+
+    BOX_COLOR = (255, 80, 0)    # vivid orange — visible on both light and dark bg
+    LABEL_BG  = (255, 80, 0)
+    LABEL_FG  = (255, 255, 255)
+    pad = max(3, line_width)
+
+    for label, x1, y1, x2, y2 in bbox_data:
+        # Bounding box rectangle
+        draw.rectangle([x1, y1, x2, y2], outline=BOX_COLOR, width=line_width)
+
+        # Measure label text
+        try:
+            bb = font.getbbox(str(label))
+            tw, th = bb[2] - bb[0], bb[3] - bb[1]
+        except Exception:
+            tw, th = font_size * len(str(label)), font_size
+
+        # Place label above the box; fall back to inside-top if it would go off-screen
+        lx = x1
+        ly = y1 - th - pad * 2
+        if ly < 0:
+            ly = y1 + pad
+
+        draw.rectangle([lx, ly, lx + tw + pad * 2, ly + th + pad * 2], fill=LABEL_BG)
+        draw.text((lx + pad, ly + pad), str(label), fill=LABEL_FG, font=font)
+
+    return image
+
+
+
 init_status = {
     'ready': False,
     'stage': 'starting',
@@ -336,6 +413,7 @@ def get_init_status():
     return jsonify(init_status)
 
 @app.route('/api/operation-progress')
+@app.route('/api/progress')  # alias kept for backwards compatibility
 def get_operation_progress():
     """Get current operation progress for frontend polling"""
     return jsonify(operation_progress)
@@ -1624,6 +1702,7 @@ def ai_extract_bibliographic(project_id):
 
         data = request.json
         img_num = int(data.get('img_num', 0))
+        prompt_suffix = str(data.get('prompt_suffix', '')).strip()
 
         cards_path = project_manager.get_project_path(project_id, 'cards')
         images_path = project_manager.get_project_path(project_id, 'images')
@@ -1671,52 +1750,67 @@ def ai_extract_bibliographic(project_id):
             scale_y = img_copy.size[1] / orig_h
             page_image = img_copy.convert('RGB')
 
-        # Build bbox description for the prompt (scaled to OCR image size)
+        # Build bbox list and visually annotate the image
         image_annots = df_annots[df_annots['image_name'] == current_image_name]
         bbox_lines = []
+        bbox_data  = []   # (label, x1, y1, x2, y2) for visual annotation
         for _, row in image_annots.iterrows():
             try:
                 bbox_str = str(row.get('bbox', '')).strip('()')
                 coords = [int(x.strip()) for x in bbox_str.split(',')]
-                scaled = [
-                    int(coords[0] * scale_x), int(coords[1] * scale_y),
-                    int(coords[2] * scale_x), int(coords[3] * scale_y)
-                ]
-                bbox_lines.append(f"- ID {row['ID']}: [{scaled[0]}, {scaled[1]}, {scaled[2]}, {scaled[3]}]")
+                sx1 = int(coords[0] * scale_x)
+                sy1 = int(coords[1] * scale_y)
+                sx2 = int(coords[2] * scale_x)
+                sy2 = int(coords[3] * scale_y)
+                bbox_lines.append(f"- ID {row['ID']}: [{sx1}, {sy1}, {sx2}, {sy2}]")
+                bbox_data.append((str(row['ID']), sx1, sy1, sx2, sy2))
             except Exception:
                 continue
 
         if not bbox_lines:
             return jsonify({'error': 'No valid annotations found for this page', 'success': False}), 404
 
-        id_list = [line.split(':')[0].replace('- ID ', '').strip() for line in bbox_lines]
-        id_list_str = ', '.join(id_list)
-        bbox_text = '\n'.join(bbox_lines)
-        img_w, img_h = page_image.size
+        # Use letter labels (A, B, C...) on drawn boxes so the model cannot
+        # confuse the annotation label with the publication's own catalogue number.
+        import string as _string
+        _LETTERS = _string.ascii_uppercase
+        letter_map = {}          # letter -> actual row ID string
+        letter_bbox_data = []
+        for _i, (_aid, _x1, _y1, _x2, _y2) in enumerate(bbox_data):
+            _lbl = _LETTERS[_i] if _i < len(_LETTERS) else f"Z{_i}"
+            letter_map[_lbl] = _aid
+            letter_bbox_data.append((_lbl, _x1, _y1, _x2, _y2))
+
+        page_image = _annotate_image_with_bboxes(page_image, letter_bbox_data)
+
+        letter_list_str = ', '.join(letter_map.keys())
         prompt = (
-            "This is a page from an archaeological publication about pottery. "
-            f"The full image size is {img_w}x{img_h} pixels.\n"
-            f"There are {len(bbox_lines)} pottery drawings with these EXACT IDs and pixel bounding boxes [x1, y1, x2, y2]:\n"
-            f"{bbox_text}\n\n"
-            f"IMPORTANT: Your JSON response MUST use EXACTLY these keys: {id_list_str}\n"
-            "Do NOT invent sequential keys or rename IDs. Each key must match one of the IDs above.\n\n"
+            "This is a page from an archaeological publication about pottery.\n"
+            f"There are {len(letter_bbox_data)} pottery drawings on this page. "
+            "Each drawing is VISUALLY MARKED with an ORANGE BOUNDING BOX. "
+            "The orange letter (A, B, C...) at the top of each box is a software "
+            "annotation only — it is NOT a number from the publication.\n\n"
+            f"Your JSON response MUST use EXACTLY these letter keys: {letter_list_str}\n"
+            "Do NOT use numbers as keys. Each key must be one of the letters listed above.\n\n"
             "For EACH drawing, extract:\n"
-            '- "page": the page number of the publication. '
-            'Look at the EDGES and EXTREMITIES of the full image '
-            '(top margin, bottom margin, corners) for a printed page number. '
-            'This value is the SAME for all drawings on the page.\n'
-            '- "plate": plate/table number (e.g. "Tav. III", "Pl. 12"). '
-            'Usually at the top or bottom edge of the image, shared by all drawings.\n'
-            '- "figure": figure number for the whole plate (e.g. "Fig. 3", "Abb. 5"). '
+            '- "page": the page number printed on the publication page. '
+            'Look at the edges and corners of the full image. Same for all drawings.\n'
+            '- "plate": plate/table identifier (e.g. "Tav. III", "Pl. 12"). '
+            'Usually at the top or bottom edge. Shared by all drawings.\n'
+            '- "figure": figure identifier for the plate (e.g. "Fig. 3", "Abb. 5"). '
             'Usually at top or bottom of the image.\n'
-            '- "number": the small reference number printed DIRECTLY NEXT TO or inside '
-            'the specific drawing at the given bounding box coordinates. '
-            'This is in a VARIABLE POSITION — examine carefully the area immediately '
-            'surrounding each bounding box for a small printed number or label.\n\n'
-            f"Respond ONLY with a valid JSON object using EXACTLY these keys: {id_list_str}\n"
-            "Example (replace <IDx> with the real IDs from above):\n"
-            '{\"<ID1>\": {\"page\": \"45\", \"plate\": \"Tav. III\", \"figure\": \"Fig. 5\", \"number\": \"1\"}, '
-            '\"<ID2>\": {\"page\": \"45\", \"plate\": \"Tav. III\", \"figure\": \"Fig. 5\", \"number\": \"2a\"}}\n'
+            '- "number": the small catalogue number PRINTED IN THE ORIGINAL PUBLICATION '
+            'near or inside the drawing inside the orange box. '
+            'It is a digit or short alphanumeric (e.g. "1", "3", "14", "2a", "7b") '
+            'that appears as part of the publication layout, NOT the orange letter label.\n\n'
+        )
+        if prompt_suffix:
+            prompt += f"Additional context from the user:\n{prompt_suffix}\n\n"
+        prompt += (
+            f"Respond ONLY with a valid JSON object using EXACTLY these letter keys: {letter_list_str}\n"
+            "Example for two drawings labelled A and B:\n"
+            '{"A": {"page": "45", "plate": "Tav. III", "figure": "Fig. 5", "number": "1"}, '
+            '"B": {"page": "45", "plate": "Tav. III", "figure": "Fig. 5", "number": "2a"}}\n'
             "If a value is not found, use null."
         )
 
@@ -1765,13 +1859,16 @@ def ai_extract_bibliographic(project_id):
             if col not in df_info.columns:
                 df_info[col] = ''
 
-        # Write extracted values into df_info rows for current image
-        # Use exact filename match to avoid partial-prefix collisions (e.g. ID "0" matching layer_01)
-        for mask_id, values in ai_result.items():
+        # Write extracted values into df_info rows for current image.
+        # Model response uses letter keys (A, B, C...); remap to actual row IDs.
+        for letter, values in ai_result.items():
+            mask_id = letter_map.get(letter)
+            if mask_id is None:
+                print(f"[AI] Warning: unexpected key {letter!r} in response, skipping")
+                continue
             exact_mask_file = f"{current_image_name}_mask_layer_{mask_id}.png"
             row_mask = df_info['mask_file'] == exact_mask_file
             if not row_mask.any():
-                # Try without extension in case stored differently
                 exact_no_ext = f"{current_image_name}_mask_layer_{mask_id}"
                 row_mask = df_info['mask_file'].apply(
                     lambda x: str(x).replace('.png', '') == exact_no_ext
@@ -1827,6 +1924,9 @@ def ai_extract_bibliographic_batch(project_id):
         project_metadata = project_manager.get_project(project_id)
         if not project_metadata:
             return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        data = request.json or {}
+        prompt_suffix = str(data.get('prompt_suffix', '')).strip()
 
         cards_path = project_manager.get_project_path(project_id, 'cards')
         images_path = project_manager.get_project_path(project_id, 'images')
@@ -1888,15 +1988,17 @@ def ai_extract_bibliographic_batch(project_id):
 
             image_annots = df_annots[df_annots['image_name'] == current_image_name]
             bbox_lines = []
+            bbox_data  = []   # (label, x1, y1, x2, y2) for visual annotation
             for _, row in image_annots.iterrows():
                 try:
                     bbox_str = str(row.get('bbox', '')).strip('()')
                     coords = [int(x.strip()) for x in bbox_str.split(',')]
-                    scaled = [
-                        int(coords[0] * scale_x), int(coords[1] * scale_y),
-                        int(coords[2] * scale_x), int(coords[3] * scale_y)
-                    ]
-                    bbox_lines.append(f"- ID {row['ID']}: [{scaled[0]}, {scaled[1]}, {scaled[2]}, {scaled[3]}]")
+                    sx1 = int(coords[0] * scale_x)
+                    sy1 = int(coords[1] * scale_y)
+                    sx2 = int(coords[2] * scale_x)
+                    sy2 = int(coords[3] * scale_y)
+                    bbox_lines.append(f"- ID {row['ID']}: [{sx1}, {sy1}, {sx2}, {sy2}]")
+                    bbox_data.append((str(row['ID']), sx1, sy1, sx2, sy2))
                 except Exception:
                     continue
 
@@ -1904,34 +2006,47 @@ def ai_extract_bibliographic_batch(project_id):
                 errors.append(f'No annotations for: {current_image_name}')
                 continue
 
-            id_list = [line.split(':')[0].replace('- ID ', '').strip() for line in bbox_lines]
-            id_list_str = ', '.join(id_list)
-            bbox_text = '\n'.join(bbox_lines)
-            img_w, img_h = page_image.size
+            # Use letter labels (A, B, C...) on drawn boxes so the model cannot
+            # confuse the annotation label with the publication's own catalogue number.
+            import string as _string
+            _LETTERS = _string.ascii_uppercase
+            letter_map = {}          # letter -> actual row ID string
+            letter_bbox_data = []
+            for _i, (_aid, _x1, _y1, _x2, _y2) in enumerate(bbox_data):
+                _lbl = _LETTERS[_i] if _i < len(_LETTERS) else f"Z{_i}"
+                letter_map[_lbl] = _aid
+                letter_bbox_data.append((_lbl, _x1, _y1, _x2, _y2))
+
+            page_image = _annotate_image_with_bboxes(page_image, letter_bbox_data)
+
+            letter_list_str = ', '.join(letter_map.keys())
             prompt = (
-                "This is a page from an archaeological publication about pottery. "
-                f"The full image size is {img_w}x{img_h} pixels.\n"
-                f"There are {len(bbox_lines)} pottery drawings with these EXACT IDs and pixel bounding boxes [x1, y1, x2, y2]:\n"
-                f"{bbox_text}\n\n"
-                f"IMPORTANT: Your JSON response MUST use EXACTLY these keys: {id_list_str}\n"
-                "Do NOT invent sequential keys or rename IDs. Each key must match one of the IDs above.\n\n"
+                "This is a page from an archaeological publication about pottery.\n"
+                f"There are {len(letter_bbox_data)} pottery drawings on this page. "
+                "Each drawing is VISUALLY MARKED with an ORANGE BOUNDING BOX. "
+                "The orange letter (A, B, C...) at the top of each box is a software "
+                "annotation only — it is NOT a number from the publication.\n\n"
+                f"Your JSON response MUST use EXACTLY these letter keys: {letter_list_str}\n"
+                "Do NOT use numbers as keys. Each key must be one of the letters listed above.\n\n"
                 "For EACH drawing, extract:\n"
-                '- "page": the page number of the publication. '
-                'Look at the EDGES and EXTREMITIES of the full image '
-                '(top margin, bottom margin, corners) for a printed page number. '
-                'This value is the SAME for all drawings on the page.\n'
-                '- "plate": plate/table number (e.g. "Tav. III", "Pl. 12"). '
-                'Usually at the top or bottom edge of the image, shared by all drawings.\n'
-                '- "figure": figure number for the whole plate (e.g. "Fig. 3", "Abb. 5"). '
+                '- "page": the page number printed on the publication page. '
+                'Look at the edges and corners of the full image. Same for all drawings.\n'
+                '- "plate": plate/table identifier (e.g. "Tav. III", "Pl. 12"). '
+                'Usually at the top or bottom edge. Shared by all drawings.\n'
+                '- "figure": figure identifier for the plate (e.g. "Fig. 3", "Abb. 5"). '
                 'Usually at top or bottom of the image.\n'
-                '- "number": the small reference number printed DIRECTLY NEXT TO or inside '
-                'the specific drawing at the given bounding box coordinates. '
-                'This is in a VARIABLE POSITION — examine carefully the area immediately '
-                'surrounding each bounding box for a small printed number or label.\n\n'
-                f"Respond ONLY with a valid JSON object using EXACTLY these keys: {id_list_str}\n"
-                "Example (replace <IDx> with the real IDs from above):\n"
-                '{\"<ID1>\": {\"page\": \"45\", \"plate\": \"Tav. III\", \"figure\": \"Fig. 5\", \"number\": \"1\"}, '
-                '\"<ID2>\": {\"page\": \"45\", \"plate\": \"Tav. III\", \"figure\": \"Fig. 5\", \"number\": \"2a\"}}\n'
+                '- "number": the small catalogue number PRINTED IN THE ORIGINAL PUBLICATION '
+                'near or inside the drawing inside the orange box. '
+                'It is a digit or short alphanumeric (e.g. "1", "3", "14", "2a", "7b") '
+                'that appears as part of the publication layout, NOT the orange letter label.\n\n'
+            )
+            if prompt_suffix:
+                prompt += f"Additional context from the user:\n{prompt_suffix}\n\n"
+            prompt += (
+                f"Respond ONLY with a valid JSON object using EXACTLY these letter keys: {letter_list_str}\n"
+                "Example for two drawings labelled A and B:\n"
+                '{"A": {"page": "45", "plate": "Tav. III", "figure": "Fig. 5", "number": "1"}, '
+                '"B": {"page": "45", "plate": "Tav. III", "figure": "Fig. 5", "number": "2a"}}\n'
                 "If a value is not found, use null."
             )
 
@@ -1973,7 +2088,12 @@ def ai_extract_bibliographic_batch(project_id):
                 errors.append(f'Invalid JSON for: {current_image_name}')
                 continue
 
-            for mask_id, values in ai_result.items():
+            # Remap letter keys (A, B, C...) back to actual row IDs
+            for letter, values in ai_result.items():
+                mask_id = letter_map.get(letter)
+                if mask_id is None:
+                    print(f"[AI Batch] Warning: unexpected key {letter!r} in response, skipping")
+                    continue
                 exact_mask_file = f"{current_image_name}_mask_layer_{mask_id}.png"
                 row_mask = df_info['mask_file'] == exact_mask_file
                 if not row_mask.any():

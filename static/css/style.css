@@ -871,6 +871,7 @@ body {
     border-radius: 8px;
     overflow: auto;
     position: relative;
+    align-self: start;  /* prevent stretching when table column grows */
 }
 
 .tabular-canvas-wrapper {
@@ -950,6 +951,101 @@ body {
     overflow-y: auto;
     border: 1px solid var(--border);
     border-radius: 6px;
+}
+
+/* Bbox inline row editor (fixed popover) */
+.bbox-editor {
+    position: fixed;
+    z-index: 9999;
+    background: #1e293b;
+    border: 1px solid #475569;
+    border-radius: 8px;
+    padding: 0.75rem;
+    min-width: 220px;
+    max-width: 300px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    color: #e2e8f0;
+    font-size: 0.8rem;
+}
+
+.bbox-editor-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: 600;
+    color: #94a3b8;
+    margin-bottom: 0.6rem;
+    font-size: 0.82rem;
+}
+
+.bbox-editor-close {
+    background: none;
+    border: none;
+    color: #64748b;
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0;
+}
+
+.bbox-editor-close:hover { color: #e2e8f0; }
+
+.bbox-editor-fields {
+    max-height: 240px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.bbox-editor-field {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.bbox-editor-field label {
+    width: 58px;
+    flex-shrink: 0;
+    font-size: 0.73rem;
+    color: #94a3b8;
+    text-align: right;
+}
+
+.bbox-editor-field input {
+    flex: 1;
+    background: #0f172a;
+    border: 1px solid #475569;
+    border-radius: 4px;
+    color: #e2e8f0;
+    padding: 0.28rem 0.45rem;
+    font-size: 0.77rem;
+}
+
+.bbox-editor-field input:focus {
+    outline: none;
+    border-color: #3b82f6;
+}
+
+.bbox-editor-save {
+    margin-top: 0.55rem;
+    width: 100%;
+    background: #2563eb;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    padding: 0.38rem;
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+.bbox-editor-save:hover { background: #1d4ed8; }
+
+/* Highlighted row in table when bbox is selected */
+.data-table tr.bbox-highlighted td {
+    background: #dbeafe !important;
+    outline: 2px solid #2563eb;
 }
 
 /* Post Processing Layout */

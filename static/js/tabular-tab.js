@@ -56,6 +56,34 @@ function setupTabularListeners() {
     document.getElementById('ai-bibliographic-btn')?.addEventListener('click', handleAiBibliographic);
     document.getElementById('ai-bibliographic-batch-btn')?.addEventListener('click', handleAiBibliographicBatch);
 
+    // Prompt customisation panel toggle
+    document.getElementById('ai-prompt-toggle-btn')?.addEventListener('click', () => {
+        const panel = document.getElementById('ai-prompt-panel');
+        if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    });
+    document.getElementById('ai-prompt-reset-btn')?.addEventListener('click', () => {
+        const ta = document.getElementById('ai-prompt-suffix');
+        if (ta) ta.value = '';
+        localStorage.removeItem('pypottery_ai_prompt');
+        _showPromptSaveIndicator('Reset');
+    });
+
+    // Load saved prompt from localStorage and auto-save on change
+    const _promptTa = document.getElementById('ai-prompt-suffix');
+    if (_promptTa) {
+        const _saved = localStorage.getItem('pypottery_ai_prompt');
+        if (_saved) _promptTa.value = _saved;
+
+        let _promptSaveTimer = null;
+        _promptTa.addEventListener('input', () => {
+            clearTimeout(_promptSaveTimer);
+            _promptSaveTimer = setTimeout(() => {
+                localStorage.setItem('pypottery_ai_prompt', _promptTa.value);
+                _showPromptSaveIndicator('Saved');
+            }, 600);
+        });
+    }
+
     // Export to CSV - use combined export endpoint
     document.getElementById('export-csv-btn')?.addEventListener('click', exportCombinedCSV);
     
@@ -167,6 +195,9 @@ async function loadTabularData(imgNum) {
 }
 
 function displayTabularData(data) {
+    // Close any open bbox editor when switching images
+    closeBboxEditor();
+
     // Store image_name and other metadata
     tabularState.currentImageName = data.image_name;
     tabularState.imageList = data.image_list || [];
@@ -192,6 +223,40 @@ function displayTabularData(data) {
     }
 }
 
+function _drawAnnotations(ctx, img, annotations, hoveredLabel) {
+    ctx.drawImage(img, 0, 0);
+    if (!annotations || annotations.length === 0) return;
+
+    ctx.font = 'bold 16px Arial';
+
+    annotations.forEach(annot => {
+        const [x1, y1, x2, y2] = annot.bbox;
+        const label = annot.label;
+        const hovered = (label === hoveredLabel);
+        const color = hovered ? '#f97316' : '#2563eb';   // orange when hovered, blue otherwise
+
+        // Semi-transparent fill on hover
+        if (hovered) {
+            ctx.fillStyle = 'rgba(249, 115, 22, 0.18)';
+            ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+        }
+
+        // Box stroke (thicker on hover)
+        ctx.strokeStyle = color;
+        ctx.lineWidth = hovered ? 5 : 3;
+        ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+
+        // Label tag
+        const labelText = `ID: ${label}`;
+        const textWidth = ctx.measureText(labelText).width;
+        const textHeight = 20;
+        ctx.fillStyle = color;
+        ctx.fillRect(x1, y1 - textHeight - 4, textWidth + 8, textHeight + 4);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(labelText, x1 + 4, y1 - 8);
+    });
+}
+
 function displayAnnotatedImage(imageData, annotations) {
     const canvas = document.getElementById('tabular-canvas');
     if (!canvas) {
@@ -205,43 +270,13 @@ function displayAnnotatedImage(imageData, annotations) {
     img.onload = () => {
         canvas.width = img.width;
         canvas.height = img.height;
-        ctx.drawImage(img, 0, 0);
 
-        // Draw annotations (bounding boxes)
-        if (annotations && annotations.length > 0) {
-            ctx.strokeStyle = '#2563eb';
-            ctx.lineWidth = 3;
-            ctx.font = 'bold 16px Arial';
-            ctx.fillStyle = '#2563eb';
+        // Store image reference so hover redraws can use it
+        tabularState._bboxImg = img;
+        tabularState.annotations = annotations || [];
 
-            annotations.forEach(annot => {
-                const bbox = annot.bbox;  // [x1, y1, x2, y2]
-                const label = annot.label;
-                
-                const [x1, y1, x2, y2] = bbox;
-                const width = x2 - x1;
-                const height = y2 - y1;
-                
-                // Draw rectangle
-                ctx.strokeRect(x1, y1, width, height);
-                
-                // Draw label background
-                const labelText = `ID: ${label}`;
-                const textMetrics = ctx.measureText(labelText);
-                const textWidth = textMetrics.width;
-                const textHeight = 20;
-                
-                ctx.fillStyle = '#2563eb';
-                ctx.fillRect(x1, y1 - textHeight - 4, textWidth + 8, textHeight + 4);
-                
-                // Draw label text
-                ctx.fillStyle = '#ffffff';
-                ctx.fillText(labelText, x1 + 4, y1 - 8);
-                
-                // Reset fill style for next annotation
-                ctx.fillStyle = '#2563eb';
-            });
-        }
+        _drawAnnotations(ctx, img, tabularState.annotations, null);
+        _setupBboxInteraction(canvas, tabularState.annotations);
     };
 
     img.onerror = (error) => {
@@ -249,6 +284,168 @@ function displayAnnotatedImage(imageData, annotations) {
     };
 
     img.src = imageData;
+}
+
+function _setupBboxInteraction(canvas, annotations) {
+    // Remove previous handlers to avoid accumulation
+    if (tabularState._bboxClickHandler) {
+        canvas.removeEventListener('click', tabularState._bboxClickHandler, true);
+    }
+    if (tabularState._bboxMoveHandler) {
+        canvas.removeEventListener('mousemove', tabularState._bboxMoveHandler);
+    }
+
+    if (!annotations || annotations.length === 0) return;
+
+    // Use capture=true so our handler fires before the zoom handler;
+    // if a bbox is hit we stop propagation to prevent zoom.
+    tabularState._bboxClickHandler = (e) => {
+        const hit = _hitTestBbox(e, canvas, annotations);
+        if (!hit) { closeBboxEditor(); return; }
+        e.stopImmediatePropagation();
+        const rowIndex = tabularState.tableData.findIndex(r => String(r.ID) === String(hit.label));
+        if (rowIndex === -1) return;
+        highlightTableRow(String(hit.label));
+        showBboxEditor(rowIndex, hit.label, e.clientX, e.clientY);
+    };
+    canvas.addEventListener('click', tabularState._bboxClickHandler, true);
+
+    // Mousemove: change cursor + redraw with hover highlight
+    let _lastHovered = null;
+    const ctx = canvas.getContext('2d');
+    tabularState._bboxMoveHandler = (e) => {
+        const hit = _hitTestBbox(e, canvas, annotations);
+        const hLabel = hit ? hit.label : null;
+        canvas.style.cursor = hit ? 'pointer' : 'zoom-in';
+        if (hLabel !== _lastHovered) {
+            _lastHovered = hLabel;
+            if (tabularState._bboxImg) {
+                _drawAnnotations(ctx, tabularState._bboxImg, annotations, hLabel);
+            }
+        }
+    };
+    canvas.addEventListener('mousemove', tabularState._bboxMoveHandler);
+}
+
+function _hitTestBbox(e, canvas, annotations) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / canvas.clientWidth;
+    const scaleY = canvas.height / canvas.clientHeight;
+    const cx = (e.clientX - rect.left) * scaleX;
+    const cy = (e.clientY - rect.top) * scaleY;
+    for (const annot of annotations) {
+        const [x1, y1, x2, y2] = annot.bbox;
+        if (cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2) return annot;
+    }
+    return null;
+}
+
+function showBboxEditor(rowIndex, label, clientX, clientY) {
+    closeBboxEditor();
+
+    const row = tabularState.tableData[rowIndex];
+    if (!row) return;
+
+    const editableCols = tabularState.columns.filter(c => c !== 'ID');
+
+    const el = document.createElement('div');
+    el.id = 'bbox-editor';
+    el.className = 'bbox-editor';
+
+    // Header
+    const title = document.createElement('div');
+    title.className = 'bbox-editor-title';
+    title.innerHTML = `<span>🏺 ID: ${label}</span>`;
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'bbox-editor-close';
+    closeBtn.textContent = '✕';
+    closeBtn.addEventListener('click', closeBboxEditor);
+    title.appendChild(closeBtn);
+    el.appendChild(title);
+
+    // Fields
+    const fieldsDiv = document.createElement('div');
+    fieldsDiv.className = 'bbox-editor-fields';
+    editableCols.forEach(col => {
+        const fieldDiv = document.createElement('div');
+        fieldDiv.className = 'bbox-editor-field';
+        const lbl = document.createElement('label');
+        lbl.textContent = col;
+        const inp = document.createElement('input');
+        inp.type = 'text';
+        inp.value = row[col] || '';
+        inp.dataset.col = col;
+        inp.dataset.row = rowIndex;
+        // Live update state on change
+        inp.addEventListener('change', (e) => {
+            if (tabularState.tableData[rowIndex]) {
+                tabularState.tableData[rowIndex][col] = e.target.value;
+                // Sync the main table input if visible
+                const tableInput = document.querySelector(
+                    `#table-body input[data-row="${rowIndex}"][data-col="${col}"]`
+                );
+                if (tableInput) tableInput.value = e.target.value;
+            }
+        });
+        fieldDiv.appendChild(lbl);
+        fieldDiv.appendChild(inp);
+        fieldsDiv.appendChild(fieldDiv);
+    });
+    el.appendChild(fieldsDiv);
+
+    // Save button
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'bbox-editor-save';
+    saveBtn.textContent = '✓ Save';
+    saveBtn.addEventListener('click', async () => {
+        await saveTabularData();
+        closeBboxEditor();
+    });
+    el.appendChild(saveBtn);
+
+    // Position (viewport-relative, clamped to stay visible)
+    document.body.appendChild(el);
+    const pw = el.offsetWidth, ph = el.offsetHeight;
+    let left = clientX + 12, top = clientY - 20;
+    if (left + pw > window.innerWidth - 8) left = clientX - pw - 12;
+    if (top + ph > window.innerHeight - 8) top = window.innerHeight - ph - 8;
+    if (top < 8) top = 8;
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+
+    // Close on outside click
+    setTimeout(() => {
+        document.addEventListener('click', _outsideEditorClick, true);
+    }, 0);
+}
+
+function _outsideEditorClick(e) {
+    const el = document.getElementById('bbox-editor');
+    if (el && !el.contains(e.target)) {
+        closeBboxEditor();
+    }
+}
+
+function closeBboxEditor() {
+    document.removeEventListener('click', _outsideEditorClick, true);
+    const el = document.getElementById('bbox-editor');
+    if (el) el.remove();
+    // Clear table row highlight
+    document.querySelectorAll('.data-table tr.bbox-highlighted').forEach(tr => {
+        tr.classList.remove('bbox-highlighted');
+    });
+}
+
+function highlightTableRow(rowId) {
+    // Remove previous highlight
+    document.querySelectorAll('.data-table tr.bbox-highlighted').forEach(tr => {
+        tr.classList.remove('bbox-highlighted');
+    });
+    const tr = document.querySelector(`#table-body tr[data-row-id="${rowId}"]`);
+    if (tr) {
+        tr.classList.add('bbox-highlighted');
+        tr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
 }
 
 function displayTable(data, columns) {
@@ -273,6 +470,7 @@ function displayTable(data, columns) {
     // Create body
     data.forEach((row, rowIndex) => {
         const tr = document.createElement('tr');
+        tr.dataset.rowId = row.ID || rowIndex;
         columns.forEach(col => {
             const td = document.createElement('td');
             const input = document.createElement('input');
@@ -639,6 +837,31 @@ window.refreshTabular = loadProjectCards;
 /* =========================================================
  * GPU / download confirmation dialog
  * ========================================================= */
+
+/** Return the user-defined prompt context, or empty string if not set. */
+function getPromptSuffix() {
+    const ta = document.getElementById('ai-prompt-suffix');
+    return ta ? ta.value.trim() : '';
+}
+
+/** Flash a brief "Saved" / "Reset" badge next to the prompt reset button. */
+function _showPromptSaveIndicator(text) {
+    const btn = document.getElementById('ai-prompt-reset-btn');
+    if (!btn) return;
+    let badge = document.getElementById('ai-prompt-save-badge');
+    if (!badge) {
+        badge = document.createElement('span');
+        badge.id = 'ai-prompt-save-badge';
+        badge.style.cssText = 'font-size:0.72rem;color:#22c55e;margin-left:0.5rem;opacity:1;transition:opacity 1s ease;';
+        btn.parentNode.insertBefore(badge, btn.nextSibling);
+    }
+    badge.textContent = text === 'Reset' ? '✓ Reset' : '✓ Saved';
+    badge.style.color = text === 'Reset' ? '#f59e0b' : '#22c55e';
+    badge.style.opacity = '1';
+    clearTimeout(badge._hideTimer);
+    badge._hideTimer = setTimeout(() => { badge.style.opacity = '0'; }, 2000);
+}
+
 async function checkAiRequirements() {
     const res = await window.PyPotteryUtils.apiRequest('/api/check-ai-requirements');
     return res;
@@ -713,7 +936,7 @@ function startProgressPolling(labelEl, barEl, stopSignal) {
     const interval = setInterval(async () => {
         if (stopSignal.stopped) { clearInterval(interval); return; }
         try {
-            const prog = await window.PyPotteryUtils.apiRequest('/api/progress');
+            const prog = await window.PyPotteryUtils.apiRequest('/api/operation-progress');
             if (prog && prog.active) {
                 labelEl.textContent = prog.message || '';
                 barEl.style.width = (prog.percent || 0) + '%';
@@ -721,6 +944,26 @@ function startProgressPolling(labelEl, barEl, stopSignal) {
         } catch (_) { /* ignore polling errors */ }
     }, 800);
     return interval;
+}
+
+function showBatchProgressOverlay() {
+    document.getElementById('ai-batch-progress-overlay')?.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'ai-batch-progress-overlay';
+    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:20000; display:flex; align-items:center; justify-content:center;';
+    overlay.innerHTML = `
+        <div style="background:#1e293b; color:#e2e8f0; border-radius:12px; padding:2rem;
+                    max-width:480px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.5);">
+            <h3 style="margin:0 0 1rem; font-size:1.2rem;">🤖 Batch AI Extraction</h3>
+            <p id="ai-batch-progress-label" style="font-size:0.85rem; color:#94a3b8; margin:0 0 0.4rem;">Starting...</p>
+            <div style="background:#334155; border-radius:6px; overflow:hidden; height:12px;">
+                <div id="ai-batch-progress-bar"
+                     style="height:100%; background:#6366f1; transition:width 0.4s; width:0%"></div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+    return overlay;
 }
 
 async function handleAiBibliographic() {
@@ -741,6 +984,39 @@ async function handleAiBibliographic() {
         return;
     }
 
+    // If model is already cached, skip confirm dialog and run directly
+    if (requirements.model_cached) {
+        btn.disabled = true;
+        if (statusEl) statusEl.textContent = '⏳ Analysing with Gemma 4 AI...';
+        window.PyPotteryUtils.showLoading('Extracting references with Gemma 4 AI...');
+        try {
+            const response = await window.PyPotteryUtils.apiRequest(
+                `/api/projects/${tabularState.currentProject.project_id}/tabular/ai-bibliographic`,
+                { method: 'POST', body: JSON.stringify({ img_num: tabularState.currentIndex, prompt_suffix: getPromptSuffix() }) }
+            );
+            window.PyPotteryUtils.hideLoading();
+            if (response.success) {
+                tabularState.tableData = response.table;
+                tabularState.columns = response.columns;
+                displayTable(response.table, response.columns);
+                if (statusEl) statusEl.textContent = '✅ References extracted successfully';
+                window.PyPotteryUtils.showToast('Bibliographic references extracted!', 'success');
+            } else {
+                if (statusEl) statusEl.textContent = '❌ Error: ' + (response.error || 'unknown');
+                window.PyPotteryUtils.showToast(response.error || 'AI Error', 'error');
+            }
+        } catch (error) {
+            window.PyPotteryUtils.hideLoading();
+            if (statusEl) statusEl.textContent = '❌ ' + error.message;
+            window.PyPotteryUtils.showToast(error.message, 'error');
+            console.error('[AI Bibliographic] Error:', error);
+        } finally {
+            btn.disabled = false;
+        }
+        return;
+    }
+
+    // Model not yet cached: show confirm dialog with download progress bar
     showAiConfirmDialog(requirements, async (overlay) => {
         const labelEl = document.getElementById('ai-download-progress-label');
         const barEl = document.getElementById('ai-download-progress-bar');
@@ -748,15 +1024,15 @@ async function handleAiBibliographic() {
         const pollInterval = startProgressPolling(labelEl, barEl, stopSignal);
 
         btn.disabled = true;
-        if (statusEl) statusEl.textContent = '⏳ Loading model and analysing...';
-        window.PyPotteryUtils.showLoading('Extracting references with Gemma 4 AI...');
+        if (statusEl) statusEl.textContent = '⏳ Downloading model and analysing...';
+        window.PyPotteryUtils.showLoading('Downloading Gemma 4 AI model (~10 GB)...');
 
         try {
             const response = await window.PyPotteryUtils.apiRequest(
                 `/api/projects/${tabularState.currentProject.project_id}/tabular/ai-bibliographic`,
                 {
                     method: 'POST',
-                    body: JSON.stringify({ img_num: tabularState.currentIndex })
+                    body: JSON.stringify({ img_num: tabularState.currentIndex, prompt_suffix: getPromptSuffix() })
                 }
             );
 
@@ -807,39 +1083,25 @@ async function handleAiBibliographicBatch() {
         return;
     }
 
-    // Modify dialog title for batch mode
-    const originalTitle = '🤖 AI Bibliographic Extraction';
-    requirements._batchMode = true;
-
-    showAiConfirmDialog(requirements, async (overlay) => {
-        const labelEl = document.getElementById('ai-download-progress-label');
-        const barEl = document.getElementById('ai-download-progress-bar');
-        // Show progress wrapper for batch mode even if model is cached
-        document.getElementById('ai-download-progress-wrapper').style.display = 'block';
+    // Helper: run the batch request with a given progress label/bar and overlay
+    async function runBatch(overlay, labelEl, barEl) {
         const stopSignal = { stopped: false };
         const pollInterval = startProgressPolling(labelEl, barEl, stopSignal);
-
         btn.disabled = true;
         if (statusEl) statusEl.textContent = '⏳ Running batch extraction...';
-        window.PyPotteryUtils.showLoading('Batch AI extraction in progress...');
-
         try {
             const response = await window.PyPotteryUtils.apiRequest(
                 `/api/projects/${tabularState.currentProject.project_id}/tabular/ai-bibliographic-batch`,
-                { method: 'POST', body: JSON.stringify({}) }
+                { method: 'POST', body: JSON.stringify({ prompt_suffix: getPromptSuffix() }) }
             );
-
             stopSignal.stopped = true;
             clearInterval(pollInterval);
-            window.PyPotteryUtils.hideLoading();
             overlay.remove();
-
             if (response.success) {
                 const errMsg = response.errors && response.errors.length
                     ? ` (${response.errors.length} errors)` : '';
                 if (statusEl) statusEl.textContent = `✅ Batch complete: ${response.processed} images${errMsg}`;
                 window.PyPotteryUtils.showToast(`Batch extraction done: ${response.processed} images${errMsg}`, 'success');
-                // Reload current card to reflect new data
                 await loadTabularData(tabularState.currentIndex);
             } else {
                 if (statusEl) statusEl.textContent = '❌ Batch error: ' + (response.error || 'unknown');
@@ -848,7 +1110,6 @@ async function handleAiBibliographicBatch() {
         } catch (error) {
             stopSignal.stopped = true;
             clearInterval(pollInterval);
-            window.PyPotteryUtils.hideLoading();
             overlay.remove();
             if (statusEl) statusEl.textContent = '❌ ' + error.message;
             window.PyPotteryUtils.showToast(error.message, 'error');
@@ -856,5 +1117,23 @@ async function handleAiBibliographicBatch() {
         } finally {
             btn.disabled = false;
         }
+    }
+
+    // If model is already cached, skip confirm dialog and show progress overlay directly
+    if (requirements.model_cached) {
+        const overlay = showBatchProgressOverlay();
+        const labelEl = document.getElementById('ai-batch-progress-label');
+        const barEl = document.getElementById('ai-batch-progress-bar');
+        await runBatch(overlay, labelEl, barEl);
+        return;
+    }
+
+    // Model not yet cached: show confirm dialog with download note
+    showAiConfirmDialog(requirements, async (overlay) => {
+        const labelEl = document.getElementById('ai-download-progress-label');
+        const barEl = document.getElementById('ai-download-progress-bar');
+        // Always show the progress bar inside the dialog for batch mode
+        document.getElementById('ai-download-progress-wrapper').style.display = 'block';
+        await runBatch(overlay, labelEl, barEl);
     });
 }
