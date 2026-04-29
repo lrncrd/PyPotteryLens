@@ -1794,3 +1794,81 @@ body {
         grid-template-columns: 1fr;
     }
 }
+
+/* AI Backend Segmented Control */
+.ai-backend-segmented-control {
+    display: flex;
+    background-color: #0f172a;
+    padding: 4px;
+    border-radius: 8px;
+    border: 1px solid #334155;
+    margin-bottom: 1rem;
+    position: relative;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
+}
+
+.ai-backend-segmented-control input[type="radio"] {
+    display: none;
+}
+
+.ai-backend-segmented-control label {
+    flex: 1;
+    text-align: center;
+    padding: 8px 16px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #94a3b8;
+    border-radius: 6px;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.ai-backend-segmented-control input[type="radio"]:checked + label {
+    color: #ffffff;
+    background-color: #6366f1;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    transform: scale(1.02);
+}
+
+.ai-backend-segmented-control label:hover:not(:checked) {
+    color: #cbd5e1;
+    background-color: rgba(255,255,255,0.05);
+}
+
+/* Animated Collapsible Panels */
+.collapsible-panel {
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.4s ease, margin 0.4s ease, padding 0.4s ease, border-color 0.4s ease;
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    border-color: transparent !important;
+}
+
+.collapsible-panel.show {
+    max-height: 500px;
+    opacity: 1;
+    margin-top: 0.75rem !important;
+    padding-top: 1rem !important;
+    padding-bottom: 1rem !important;
+    border-color: #334155 !important;
+}
+
+.collapsible-content {
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
+}
+
+.collapsible-content.show {
+    max-height: 300px;
+    opacity: 1;
+}

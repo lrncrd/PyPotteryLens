@@ -59,7 +59,7 @@ function setupTabularListeners() {
     // AI backend toggle panel
     document.getElementById('ai-backend-toggle-btn')?.addEventListener('click', () => {
         const panel = document.getElementById('ai-backend-panel');
-        if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+        if (panel) panel.classList.toggle('show');
     });
 
     // Show/hide OpenRouter config based on radio selection
@@ -67,7 +67,10 @@ function setupTabularListeners() {
         radio.addEventListener('change', () => {
             const isOpenRouter = document.getElementById('ai-backend-openrouter')?.checked;
             const configEl = document.getElementById('ai-openrouter-config');
-            if (configEl) configEl.style.display = isOpenRouter ? 'block' : 'none';
+            if (configEl) {
+                if (isOpenRouter) configEl.classList.add('show');
+                else configEl.classList.remove('show');
+            }
             localStorage.setItem('pypottery_ai_backend', isOpenRouter ? 'openrouter' : 'local');
         });
     });
@@ -79,7 +82,7 @@ function setupTabularListeners() {
         if (radioEl) {
             radioEl.checked = true;
             const configEl = document.getElementById('ai-openrouter-config');
-            if (configEl) configEl.style.display = 'block';
+            if (configEl) configEl.classList.add('show');
         }
     }
 
@@ -100,7 +103,7 @@ function setupTabularListeners() {
     // Prompt customisation panel toggle
     document.getElementById('ai-prompt-toggle-btn')?.addEventListener('click', () => {
         const panel = document.getElementById('ai-prompt-panel');
-        if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+        if (panel) panel.classList.toggle('show');
     });
     document.getElementById('ai-prompt-reset-btn')?.addEventListener('click', () => {
         const ta = document.getElementById('ai-prompt-suffix');
@@ -1069,7 +1072,7 @@ async function handleAiBibliographic() {
     if (backendParams.ai_backend === 'openrouter') {
         if (!backendParams.openrouter_api_key) {
             window.PyPotteryUtils.showToast('Please enter your OpenRouter API key in the AI Backend panel', 'warning');
-            document.getElementById('ai-backend-panel').style.display = 'block';
+            document.getElementById('ai-backend-panel').classList.add('show');
             return;
         }
         btn.disabled = true;
@@ -1251,7 +1254,7 @@ async function handleAiBibliographicBatch() {
     if (backendParams.ai_backend === 'openrouter') {
         if (!backendParams.openrouter_api_key) {
             window.PyPotteryUtils.showToast('Please enter your OpenRouter API key in the AI Backend panel', 'warning');
-            document.getElementById('ai-backend-panel').style.display = 'block';
+            document.getElementById('ai-backend-panel').classList.add('show');
             return;
         }
         const overlay = showBatchProgressOverlay();
