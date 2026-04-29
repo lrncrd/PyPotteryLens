@@ -160,6 +160,57 @@ def _annotate_image_with_bboxes(image, bbox_data):
     return image
 
 
+class VisionUnsupportedError(Exception):
+    """Raised when the selected OpenRouter model does not support image/vision input."""
+    pass
+
+
+def call_openrouter_ai(image_pil, prompt, api_key, model_name):
+    """Send an image + text prompt to OpenRouter and return the raw text response.
+
+    The image is base64-encoded and sent as an OpenAI-compatible vision message so
+    any vision-capable model available on OpenRouter can be used.
+    """
+    import base64 as _base64
+    import io as _io
+    from openai import OpenAI
+
+    # Encode PIL image as base64 PNG
+    buf = _io.BytesIO()
+    image_pil.save(buf, format='PNG')
+    img_b64 = _base64.b64encode(buf.getvalue()).decode('utf-8')
+    data_url = f"data:image/png;base64,{img_b64}"
+
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+            max_tokens=1024,
+        )
+    except Exception as _or_exc:
+        _msg = str(_or_exc)
+        if '404' in _msg or 'image input' in _msg.lower() or 'No endpoints' in _msg:
+            raise VisionUnsupportedError(
+                f"Model '{model_name}' does not support image/vision input on OpenRouter. "
+                "Please select a vision-capable model in the AI Backend panel."
+            ) from _or_exc
+        raise
+
+    return response.choices[0].message.content or ""
+
 
 init_status = {
     'ready': False,
@@ -1703,6 +1754,9 @@ def ai_extract_bibliographic(project_id):
         data = request.json
         img_num = int(data.get('img_num', 0))
         prompt_suffix = str(data.get('prompt_suffix', '')).strip()
+        ai_backend = str(data.get('ai_backend', 'local')).strip()
+        openrouter_api_key = str(data.get('openrouter_api_key', '')).strip()
+        openrouter_model = str(data.get('openrouter_model', 'deepseek/deepseek-v4-flash')).strip()
 
         cards_path = project_manager.get_project_path(project_id, 'cards')
         images_path = project_manager.get_project_path(project_id, 'images')
@@ -1808,41 +1862,50 @@ def ai_extract_bibliographic(project_id):
             prompt += f"Additional context from the user:\n{prompt_suffix}\n\n"
         prompt += (
             f"Respond ONLY with a valid JSON object using EXACTLY these letter keys: {letter_list_str}\n"
+            "If the context above asks you to extract additional fields beyond the four standard ones, "
+            "include them in each drawing's object using a concise snake_case key (e.g. 'material', 'ceramic_class').\n"
             "Example for two drawings labelled A and B:\n"
             '{"A": {"page": "45", "plate": "Tav. III", "figure": "Fig. 5", "number": "1"}, '
             '"B": {"page": "45", "plate": "Tav. III", "figure": "Fig. 5", "number": "2a"}}\n'
             "If a value is not found, use null."
         )
 
-        # Load Gemma 4 E2B-it and run inference
-        model, processor = load_gemma_model()
+        # ---- Run inference (local Gemma or OpenRouter) ----
+        if ai_backend == 'openrouter':
+            if not openrouter_api_key:
+                return jsonify({'error': 'OpenRouter API key is required', 'success': False}), 400
+            raw_response = call_openrouter_ai(page_image, prompt, openrouter_api_key, openrouter_model)
+            print(f"[AI OpenRouter] Raw response: {raw_response[:300]}")
+        else:
+            # Load Gemma 4 E2B-it and run inference
+            model, processor = load_gemma_model()
 
-        messages = [{
-            "role": "user",
-            "content": [
-                {"type": "image", "image": page_image},
-                {"type": "text", "text": prompt}
-            ]
-        }]
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": page_image},
+                    {"type": "text", "text": prompt}
+                ]
+            }]
 
-        text = processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
-        )
-        inputs = processor(text=text, images=[page_image], return_tensors="pt").to(model.device)
-        input_len = inputs["input_ids"].shape[-1]
-
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=512,
-                temperature=1.0,
-                top_p=0.95,
-                top_k=64,
-                do_sample=True
+            text = processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
             )
+            inputs = processor(text=text, images=[page_image], return_tensors="pt").to(model.device)
+            input_len = inputs["input_ids"].shape[-1]
 
-        raw_response = processor.decode(outputs[0][input_len:], skip_special_tokens=True)
-        print(f"[AI] Raw response: {raw_response[:300]}")
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=512,
+                    temperature=1.0,
+                    top_p=0.95,
+                    top_k=64,
+                    do_sample=True
+                )
+
+            raw_response = processor.decode(outputs[0][input_len:], skip_special_tokens=True)
+            print(f"[AI] Raw response: {raw_response[:300]}")
 
         # Extract JSON block from the response
         json_match = _re.search(r'\{.*\}', raw_response, _re.DOTALL)
@@ -1854,14 +1917,21 @@ def ai_extract_bibliographic(project_id):
 
         ai_result = _json.loads(json_match.group())
 
-        # Add missing columns to df_info if needed
-        for col in ['page', 'plate', 'figure', 'number']:
+        # Ensure all columns returned by the model exist in df_info
+        # (handles both the 4 standard fields and any extra user-requested ones)
+        all_field_keys = set()
+        for _vals in ai_result.values():
+            if isinstance(_vals, dict):
+                all_field_keys.update(_vals.keys())
+        for col in all_field_keys:
             if col not in df_info.columns:
                 df_info[col] = ''
 
         # Write extracted values into df_info rows for current image.
         # Model response uses letter keys (A, B, C...); remap to actual row IDs.
         for letter, values in ai_result.items():
+            if not isinstance(values, dict):
+                continue
             mask_id = letter_map.get(letter)
             if mask_id is None:
                 print(f"[AI] Warning: unexpected key {letter!r} in response, skipping")
@@ -1874,8 +1944,7 @@ def ai_extract_bibliographic(project_id):
                     lambda x: str(x).replace('.png', '') == exact_no_ext
                 )
             if row_mask.any():
-                for col in ['page', 'plate', 'figure', 'number']:
-                    val = values.get(col)
+                for col, val in values.items():
                     if val is not None:
                         df_info.loc[row_mask, col] = str(val)
             else:
@@ -1906,6 +1975,8 @@ def ai_extract_bibliographic(project_id):
             'ai_result': ai_result
         })
 
+    except VisionUnsupportedError as e:
+        return jsonify({'error': str(e), 'success': False, 'vision_unsupported': True}), 400
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1927,6 +1998,12 @@ def ai_extract_bibliographic_batch(project_id):
 
         data = request.json or {}
         prompt_suffix = str(data.get('prompt_suffix', '')).strip()
+        ai_backend = str(data.get('ai_backend', 'local')).strip()
+        openrouter_api_key = str(data.get('openrouter_api_key', '')).strip()
+        openrouter_model = str(data.get('openrouter_model', 'deepseek/deepseek-v4-flash')).strip()
+
+        if ai_backend == 'openrouter' and not openrouter_api_key:
+            return jsonify({'error': 'OpenRouter API key is required', 'success': False}), 400
 
         cards_path = project_manager.get_project_path(project_id, 'cards')
         images_path = project_manager.get_project_path(project_id, 'images')
@@ -1957,8 +2034,10 @@ def ai_extract_bibliographic_batch(project_id):
         total = len(unique_images)
         update_operation_progress('ai_batch', 0, total, 'Loading AI model...')
 
-        # Load model once before the loop
-        model, processor = load_gemma_model()
+        # Load local model only if needed (skip for OpenRouter)
+        model, processor = (None, None)
+        if ai_backend != 'openrouter':
+            model, processor = load_gemma_model()
 
         errors = []
         for idx, current_image_name in enumerate(unique_images):
@@ -2044,38 +2123,49 @@ def ai_extract_bibliographic_batch(project_id):
                 prompt += f"Additional context from the user:\n{prompt_suffix}\n\n"
             prompt += (
                 f"Respond ONLY with a valid JSON object using EXACTLY these letter keys: {letter_list_str}\n"
+                "If the context above asks you to extract additional fields beyond the four standard ones, "
+                "include them in each drawing's object using a concise snake_case key (e.g. 'material', 'ceramic_class').\n"
                 "Example for two drawings labelled A and B:\n"
                 '{"A": {"page": "45", "plate": "Tav. III", "figure": "Fig. 5", "number": "1"}, '
                 '"B": {"page": "45", "plate": "Tav. III", "figure": "Fig. 5", "number": "2a"}}\n'
                 "If a value is not found, use null."
             )
 
-            messages = [{
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": page_image},
-                    {"type": "text", "text": prompt}
-                ]
-            }]
+            # ---- Run inference (local Gemma or OpenRouter) ----
+            if ai_backend == 'openrouter':
+                try:
+                    raw_response = call_openrouter_ai(page_image, prompt, openrouter_api_key, openrouter_model)
+                    print(f"[AI Batch OpenRouter] {current_image_name} response: {raw_response[:200]}")
+                except Exception as _or_err:
+                    errors.append(f'OpenRouter error for {current_image_name}: {_or_err}')
+                    continue
+            else:
+                messages = [{
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": page_image},
+                        {"type": "text", "text": prompt}
+                    ]
+                }]
 
-            text = processor.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
-            )
-            inputs = processor(text=text, images=[page_image], return_tensors="pt").to(model.device)
-            input_len = inputs["input_ids"].shape[-1]
-
-            with torch.no_grad():
-                outputs = model.generate(
-                    **inputs,
-                    max_new_tokens=512,
-                    temperature=1.0,
-                    top_p=0.95,
-                    top_k=64,
-                    do_sample=True
+                text = processor.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
                 )
+                inputs = processor(text=text, images=[page_image], return_tensors="pt").to(model.device)
+                input_len = inputs["input_ids"].shape[-1]
 
-            raw_response = processor.decode(outputs[0][input_len:], skip_special_tokens=True)
-            print(f"[AI Batch] {current_image_name} response: {raw_response[:200]}")
+                with torch.no_grad():
+                    outputs = model.generate(
+                        **inputs,
+                        max_new_tokens=512,
+                        temperature=1.0,
+                        top_p=0.95,
+                        top_k=64,
+                        do_sample=True
+                    )
+
+                raw_response = processor.decode(outputs[0][input_len:], skip_special_tokens=True)
+                print(f"[AI Batch] {current_image_name} response: {raw_response[:200]}")
 
             json_match = _re.search(r'\{.*\}', raw_response, _re.DOTALL)
             if not json_match:
@@ -2088,8 +2178,17 @@ def ai_extract_bibliographic_batch(project_id):
                 errors.append(f'Invalid JSON for: {current_image_name}')
                 continue
 
+            # Ensure any extra columns the model returned exist in df_info
+            for _vals in ai_result.values():
+                if isinstance(_vals, dict):
+                    for col in _vals.keys():
+                        if col not in df_info.columns:
+                            df_info[col] = ''
+
             # Remap letter keys (A, B, C...) back to actual row IDs
             for letter, values in ai_result.items():
+                if not isinstance(values, dict):
+                    continue
                 mask_id = letter_map.get(letter)
                 if mask_id is None:
                     print(f"[AI Batch] Warning: unexpected key {letter!r} in response, skipping")
@@ -2102,8 +2201,7 @@ def ai_extract_bibliographic_batch(project_id):
                         lambda x: str(x).replace('.png', '') == exact_no_ext
                     )
                 if row_mask.any():
-                    for col in ['page', 'plate', 'figure', 'number']:
-                        val = values.get(col)
+                    for col, val in values.items():
                         if val is not None:
                             df_info.loc[row_mask, col] = str(val)
 
@@ -2116,6 +2214,9 @@ def ai_extract_bibliographic_batch(project_id):
             'errors': errors
         })
 
+    except VisionUnsupportedError as e:
+        clear_operation_progress()
+        return jsonify({'error': str(e), 'success': False, 'vision_unsupported': True}), 400
     except Exception as e:
         import traceback
         traceback.print_exc()

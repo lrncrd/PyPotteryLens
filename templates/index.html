@@ -605,12 +605,17 @@
                             </div>
                             <div class="form-row" style="margin-top: 0.5rem; align-items: center; gap: 0.5rem;">
                                 <button class="btn btn-secondary" id="ai-bibliographic-btn"
-                                    title="Use Gemma 4 E2B to extract bibliographic references (plate, figure, number) from the current page">
+                                    title="Use AI to extract bibliographic references (plate, figure, number) from the current page">
                                     🤖 Extract AI References
                                 </button>
                                 <button class="btn btn-secondary" id="ai-bibliographic-batch-btn"
                                     title="Run AI bibliographic extraction on all images in the project (batch mode)">
                                     🔄 Extract All (Batch)
+                                </button>
+                                <button class="btn btn-secondary" id="ai-backend-toggle-btn"
+                                    title="Choose AI backend: local Gemma model or OpenRouter cloud API"
+                                    style="padding:0.5rem 0.85rem; font-size:0.85rem;">
+                                    ⚙️ AI Backend
                                 </button>
                                 <button class="btn btn-secondary" id="ai-prompt-toggle-btn"
                                     title="Customise the AI prompt with publication-specific context and examples"
@@ -618,6 +623,57 @@
                                     ✏️ Prompt
                                 </button>
                                 <span id="ai-bibliographic-status" style="font-size:0.8rem; color:#64748b;"></span>
+                            </div>
+
+                            <!-- AI Backend selector panel -->
+                            <div id="ai-backend-panel" style="display:none; margin-top:0.75rem;
+                                 background:#1e293b; border:1px solid #334155; border-radius:8px;
+                                 padding:1rem; animation: fadeIn 0.2s ease;">
+                                <span style="font-size:0.85rem; font-weight:600; color:#94a3b8; display:block; margin-bottom:0.75rem;">
+                                    ⚙️ AI Backend
+                                </span>
+                                <div style="display:flex; gap:1.5rem; margin-bottom:0.85rem;">
+                                    <label style="display:flex; align-items:center; gap:0.4rem; cursor:pointer; font-size:0.85rem; color:#e2e8f0;">
+                                        <input type="radio" name="ai-backend-choice" id="ai-backend-local" value="local" checked
+                                               style="accent-color:#6366f1;">
+                                        🖥️ Local (Gemma 4 E2B)
+                                    </label>
+                                    <label style="display:flex; align-items:center; gap:0.4rem; cursor:pointer; font-size:0.85rem; color:#e2e8f0;">
+                                        <input type="radio" name="ai-backend-choice" id="ai-backend-openrouter" value="openrouter"
+                                               style="accent-color:#6366f1;">
+                                        ☁️ OpenRouter API
+                                    </label>
+                                </div>
+                                <div id="ai-openrouter-config" style="display:none;">
+                                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.6rem;">
+                                        <div>
+                                            <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.25rem;">
+                                                API Key
+                                            </label>
+                                            <input type="password" id="ai-openrouter-apikey"
+                                                   placeholder="sk-or-..."
+                                                   style="width:100%; box-sizing:border-box; background:#0f172a;
+                                                          color:#e2e8f0; border:1px solid #475569; border-radius:6px;
+                                                          padding:0.45rem 0.65rem; font-size:0.82rem; font-family:monospace;">
+                                        </div>
+                                        <div>
+                                            <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.25rem;">
+                                                Model name
+                                            </label>
+                                            <input type="text" id="ai-openrouter-model"
+                                                   placeholder="e.g. google/gemini-flash-1.5"
+                                                   style="width:100%; box-sizing:border-box; background:#0f172a;
+                                                          color:#e2e8f0; border:1px solid #475569; border-radius:6px;
+                                                          padding:0.45rem 0.65rem; font-size:0.82rem; font-family:monospace;">
+                                        </div>
+                                    </div>
+                                    <p style="font-size:0.75rem; color:#64748b; margin:0.55rem 0 0;">
+                                        The API key is stored only in your browser session (not persisted).
+                                        <strong style="color:#f59e0b;">The model must support vision (image) inputs.</strong>
+                                        Full list at <a href="https://openrouter.ai/models" target="_blank"
+                                        style="color:#6366f1;">openrouter.ai/models</a>.
+                                    </p>
+                                </div>
                             </div>
 
                             <!-- Collapsible prompt customisation panel -->
@@ -634,10 +690,10 @@
                                     </button>
                                 </div>
                                 <p style="font-size:0.78rem; color:#64748b; margin:0 0 0.5rem;">
-                                    Describe publication-specific conventions so the model can find
-                                    the right values. You can include examples like
-                                    <em>"Plate numbers are written as 'T. 12' at the bottom of the page"</em>.
-                                    Leave blank to use the default prompt.
+                                    Describe publication-specific conventions or request extra fields.
+                                    E.g. <em>"Plate numbers are written as 'T. 12' at the bottom"</em>
+                                    or <em>"Also extract the ceramic class and write it as 'ceramic_class'"</em>.
+                                    Extra fields become new columns automatically. Leave blank to use the default prompt.
                                 </p>
                                 <textarea id="ai-prompt-suffix"
                                     placeholder="E.g.: Plate numbers appear as 'Tav. IV' at the top-left corner. Figure labels look like 'Fig. 3' in the bottom margin. Individual pottery numbers are small digits next to each drawing..."

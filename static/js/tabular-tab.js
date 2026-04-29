@@ -56,6 +56,47 @@ function setupTabularListeners() {
     document.getElementById('ai-bibliographic-btn')?.addEventListener('click', handleAiBibliographic);
     document.getElementById('ai-bibliographic-batch-btn')?.addEventListener('click', handleAiBibliographicBatch);
 
+    // AI backend toggle panel
+    document.getElementById('ai-backend-toggle-btn')?.addEventListener('click', () => {
+        const panel = document.getElementById('ai-backend-panel');
+        if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    });
+
+    // Show/hide OpenRouter config based on radio selection
+    document.querySelectorAll('input[name="ai-backend-choice"]').forEach(radio => {
+        radio.addEventListener('change', () => {
+            const isOpenRouter = document.getElementById('ai-backend-openrouter')?.checked;
+            const configEl = document.getElementById('ai-openrouter-config');
+            if (configEl) configEl.style.display = isOpenRouter ? 'block' : 'none';
+            localStorage.setItem('pypottery_ai_backend', isOpenRouter ? 'openrouter' : 'local');
+        });
+    });
+
+    // Restore saved backend choice from localStorage
+    const _savedBackend = localStorage.getItem('pypottery_ai_backend');
+    if (_savedBackend === 'openrouter') {
+        const radioEl = document.getElementById('ai-backend-openrouter');
+        if (radioEl) {
+            radioEl.checked = true;
+            const configEl = document.getElementById('ai-openrouter-config');
+            if (configEl) configEl.style.display = 'block';
+        }
+    }
+
+    // Persist OpenRouter API key and model in sessionStorage (not localStorage for security)
+    const _orKey = document.getElementById('ai-openrouter-apikey');
+    const _orModel = document.getElementById('ai-openrouter-model');
+    if (_orKey) {
+        const _savedKey = sessionStorage.getItem('pypottery_or_apikey');
+        if (_savedKey) _orKey.value = _savedKey;
+        _orKey.addEventListener('input', () => sessionStorage.setItem('pypottery_or_apikey', _orKey.value));
+    }
+    if (_orModel) {
+        const _savedModel = localStorage.getItem('pypottery_or_model');
+        if (_savedModel) _orModel.value = _savedModel;
+        _orModel.addEventListener('input', () => localStorage.setItem('pypottery_or_model', _orModel.value));
+    }
+
     // Prompt customisation panel toggle
     document.getElementById('ai-prompt-toggle-btn')?.addEventListener('click', () => {
         const panel = document.getElementById('ai-prompt-panel');
@@ -844,6 +885,54 @@ function getPromptSuffix() {
     return ta ? ta.value.trim() : '';
 }
 
+/** Return current AI backend params to include in every AI request body. */
+function getAiBackendParams() {
+    const isOpenRouter = document.getElementById('ai-backend-openrouter')?.checked;
+    if (!isOpenRouter) {
+        return { ai_backend: 'local' };
+    }
+    return {
+        ai_backend: 'openrouter',
+        openrouter_api_key: document.getElementById('ai-openrouter-apikey')?.value.trim() || '',
+        openrouter_model: document.getElementById('ai-openrouter-model')?.value.trim() || 'google/gemini-flash-1.5',
+    };
+}
+
+function showVisionUnsupportedDialog(modelName) {
+    document.getElementById('ai-vision-unsupported-dialog')?.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'ai-vision-unsupported-dialog';
+    overlay.style.cssText = `
+        position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:20000;
+        display:flex; align-items:center; justify-content:center;
+    `;
+    overlay.innerHTML = `
+        <div style="background:#1e293b; color:#e2e8f0; border-radius:12px; padding:2rem;
+                    max-width:460px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.5);">
+            <h3 style="margin:0 0 1rem; font-size:1.2rem; color:#f87171;">⚠️ Model does not support vision</h3>
+            <p style="margin:0 0 0.75rem;">
+                <code style="color:#f59e0b; background:#0f172a; padding:0.15rem 0.4rem; border-radius:4px;">${modelName}</code>
+                does not support image input on OpenRouter.
+            </p>
+            <p style="margin:0 0 1.25rem; color:#94a3b8; font-size:0.85rem;">
+                Please choose a vision-capable model. Browse available models at
+                <a href="https://openrouter.ai/models" target="_blank" style="color:#6366f1;">openrouter.ai/models</a>
+                and filter by image input support.
+            </p>
+            <div style="display:flex; justify-content:flex-end;">
+                <button id="ai-vision-dialog-ok" class="btn btn-primary">OK, change model</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('ai-vision-dialog-ok').addEventListener('click', () => {
+        overlay.remove();
+        // Open the AI Backend panel so the user can change the model immediately
+        const panel = document.getElementById('ai-backend-panel');
+        if (panel) panel.style.display = 'block';
+    });
+}
+
 /** Flash a brief "Saved" / "Reset" badge next to the prompt reset button. */
 function _showPromptSaveIndicator(text) {
     const btn = document.getElementById('ai-prompt-reset-btn');
@@ -974,8 +1063,46 @@ async function handleAiBibliographic() {
 
     const statusEl = document.getElementById('ai-bibliographic-status');
     const btn = document.getElementById('ai-bibliographic-btn');
+    const backendParams = getAiBackendParams();
 
-    // Check GPU requirements first
+    // For OpenRouter, skip GPU check entirely and call directly
+    if (backendParams.ai_backend === 'openrouter') {
+        if (!backendParams.openrouter_api_key) {
+            window.PyPotteryUtils.showToast('Please enter your OpenRouter API key in the AI Backend panel', 'warning');
+            document.getElementById('ai-backend-panel').style.display = 'block';
+            return;
+        }
+        btn.disabled = true;
+        if (statusEl) statusEl.textContent = '⏳ Analysing via OpenRouter...';
+        window.PyPotteryUtils.showLoading('Extracting references via OpenRouter...');
+        try {
+            const response = await window.PyPotteryUtils.apiRequest(
+                `/api/projects/${tabularState.currentProject.project_id}/tabular/ai-bibliographic`,
+                { method: 'POST', body: JSON.stringify({ img_num: tabularState.currentIndex, prompt_suffix: getPromptSuffix(), ...backendParams }) }
+            );
+            window.PyPotteryUtils.hideLoading();
+            if (response.success) {
+                tabularState.tableData = response.table;
+                tabularState.columns = response.columns;
+                displayTable(response.table, response.columns);
+                if (statusEl) statusEl.textContent = '✅ References extracted successfully';
+                window.PyPotteryUtils.showToast('Bibliographic references extracted!', 'success');
+            } else {
+                if (statusEl) statusEl.textContent = '❌ Error: ' + (response.error || 'unknown');
+                window.PyPotteryUtils.showToast(response.error || 'AI Error', 'error');
+            }
+        } catch (error) {
+            window.PyPotteryUtils.hideLoading();
+            if (statusEl) statusEl.textContent = '❌ ' + error.message;
+            window.PyPotteryUtils.showToast(error.message, 'error');
+            console.error('[AI Bibliographic] Error:', error);
+        } finally {
+            btn.disabled = false;
+        }
+        return;
+    }
+
+    // Local backend: check GPU requirements first
     let requirements;
     try {
         requirements = await checkAiRequirements();
@@ -992,7 +1119,7 @@ async function handleAiBibliographic() {
         try {
             const response = await window.PyPotteryUtils.apiRequest(
                 `/api/projects/${tabularState.currentProject.project_id}/tabular/ai-bibliographic`,
-                { method: 'POST', body: JSON.stringify({ img_num: tabularState.currentIndex, prompt_suffix: getPromptSuffix() }) }
+                { method: 'POST', body: JSON.stringify({ img_num: tabularState.currentIndex, prompt_suffix: getPromptSuffix(), ...backendParams }) }
             );
             window.PyPotteryUtils.hideLoading();
             if (response.success) {
@@ -1001,6 +1128,9 @@ async function handleAiBibliographic() {
                 displayTable(response.table, response.columns);
                 if (statusEl) statusEl.textContent = '✅ References extracted successfully';
                 window.PyPotteryUtils.showToast('Bibliographic references extracted!', 'success');
+            } else if (response.vision_unsupported) {
+                if (statusEl) statusEl.textContent = '';
+                showVisionUnsupportedDialog(backendParams.openrouter_model);
             } else {
                 if (statusEl) statusEl.textContent = '❌ Error: ' + (response.error || 'unknown');
                 window.PyPotteryUtils.showToast(response.error || 'AI Error', 'error');
@@ -1032,7 +1162,7 @@ async function handleAiBibliographic() {
                 `/api/projects/${tabularState.currentProject.project_id}/tabular/ai-bibliographic`,
                 {
                     method: 'POST',
-                    body: JSON.stringify({ img_num: tabularState.currentIndex, prompt_suffix: getPromptSuffix() })
+                    body: JSON.stringify({ img_num: tabularState.currentIndex, prompt_suffix: getPromptSuffix(), ...backendParams })
                 }
             );
 
@@ -1047,6 +1177,9 @@ async function handleAiBibliographic() {
                 displayTable(response.table, response.columns);
                 if (statusEl) statusEl.textContent = '✅ References extracted successfully';
                 window.PyPotteryUtils.showToast('Bibliographic references extracted!', 'success');
+            } else if (response.vision_unsupported) {
+                if (statusEl) statusEl.textContent = '';
+                showVisionUnsupportedDialog(backendParams.openrouter_model);
             } else {
                 if (statusEl) statusEl.textContent = '❌ Error: ' + (response.error || 'unknown');
                 window.PyPotteryUtils.showToast(response.error || 'AI Error', 'error');
@@ -1073,15 +1206,7 @@ async function handleAiBibliographicBatch() {
 
     const statusEl = document.getElementById('ai-bibliographic-status');
     const btn = document.getElementById('ai-bibliographic-batch-btn');
-
-    // Check GPU requirements first
-    let requirements;
-    try {
-        requirements = await checkAiRequirements();
-    } catch (e) {
-        window.PyPotteryUtils.showToast('Could not check system requirements', 'error');
-        return;
-    }
+    const backendParams = getAiBackendParams();
 
     // Helper: run the batch request with a given progress label/bar and overlay
     async function runBatch(overlay, labelEl, barEl) {
@@ -1092,7 +1217,7 @@ async function handleAiBibliographicBatch() {
         try {
             const response = await window.PyPotteryUtils.apiRequest(
                 `/api/projects/${tabularState.currentProject.project_id}/tabular/ai-bibliographic-batch`,
-                { method: 'POST', body: JSON.stringify({ prompt_suffix: getPromptSuffix() }) }
+                { method: 'POST', body: JSON.stringify({ prompt_suffix: getPromptSuffix(), ...backendParams }) }
             );
             stopSignal.stopped = true;
             clearInterval(pollInterval);
@@ -1103,6 +1228,9 @@ async function handleAiBibliographicBatch() {
                 if (statusEl) statusEl.textContent = `✅ Batch complete: ${response.processed} images${errMsg}`;
                 window.PyPotteryUtils.showToast(`Batch extraction done: ${response.processed} images${errMsg}`, 'success');
                 await loadTabularData(tabularState.currentIndex);
+            } else if (response.vision_unsupported) {
+                if (statusEl) statusEl.textContent = '';
+                showVisionUnsupportedDialog(backendParams.openrouter_model);
             } else {
                 if (statusEl) statusEl.textContent = '❌ Batch error: ' + (response.error || 'unknown');
                 window.PyPotteryUtils.showToast(response.error || 'Batch AI Error', 'error');
@@ -1117,6 +1245,29 @@ async function handleAiBibliographicBatch() {
         } finally {
             btn.disabled = false;
         }
+    }
+
+    // For OpenRouter, skip GPU check and run batch directly with progress overlay
+    if (backendParams.ai_backend === 'openrouter') {
+        if (!backendParams.openrouter_api_key) {
+            window.PyPotteryUtils.showToast('Please enter your OpenRouter API key in the AI Backend panel', 'warning');
+            document.getElementById('ai-backend-panel').style.display = 'block';
+            return;
+        }
+        const overlay = showBatchProgressOverlay();
+        const labelEl = document.getElementById('ai-batch-progress-label');
+        const barEl = document.getElementById('ai-batch-progress-bar');
+        await runBatch(overlay, labelEl, barEl);
+        return;
+    }
+
+    // Local backend: check GPU requirements first
+    let requirements;
+    try {
+        requirements = await checkAiRequirements();
+    } catch (e) {
+        window.PyPotteryUtils.showToast('Could not check system requirements', 'error');
+        return;
     }
 
     // If model is already cached, skip confirm dialog and show progress overlay directly
