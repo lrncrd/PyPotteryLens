@@ -46,11 +46,8 @@ class TabManager {
                 case 'projects':
                     await refreshProjectsTab();
                     break;
-                case 'model':
-                    await refreshModelTab();
-                    break;
-                case 'annotation':
-                    await refreshAnnotationTab();
+                case 'fewshot':
+                    if (typeof FewShotTab !== 'undefined') FewShotTab.loadImages();
                     break;
                 case 'tabular':
                     await refreshTabularTab();

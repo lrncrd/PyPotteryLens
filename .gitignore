@@ -186,3 +186,7 @@ requirements_BK.txt
 TO_DO.txt
 
 models_llm
+
+model_vision/hub/*
+
+models_vision

@@ -2,29 +2,30 @@
 
 import numpy as np
 import os
+import json
+import logging
+import threading
+import urllib.request
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import pandas as pd
 from PIL import Image
-#import gradio as gr
 import fitz
-from ultralytics import YOLO
 from skimage.filters import threshold_otsu, median
 from skimage.segmentation import clear_border
 from skimage.measure import label, regionprops
 from skimage.morphology import closing, square, disk
 from scipy.ndimage import binary_dilation, binary_erosion
-from typing import  Dict, List, Optional, Tuple
-import numpy as np
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Any
 import torch
+import torch.nn.functional as F
 import torchvision.transforms as transforms
-from models import MultiHeadEfficientNet
 import shutil
 from reportlab.lib import pagesizes
 from reportlab.pdfgen import canvas
-from PIL import Image
 import gc
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -34,16 +35,23 @@ class PDFConfig:
     output_dir: Path
 
 @dataclass
-class ModelConfig:
-    """Configuration for model processing"""
-    models_dir: Path
-    pred_output_dir: Path
-    confidence: float = 0.5
-    kernel_size: int = 2
-    iterations: int = 10
-    diagnostic: bool = False
-    ###
+class FewShotConfig:
+    """Configuration for SAM2 + DINOv2 few-shot processor"""
     device: str = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    sam2_checkpoint_url: str = "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt"
+    sam2_checkpoint_path: Path = Path("models_vision/sam2.1_hiera_large.pt")
+    sam2_config: str = "configs/sam2.1/sam2.1_hiera_l.yaml"
+    dinov2_repo: str = "facebookresearch/dinov2"
+    dinov2_model: str = "dinov2_vitl14"
+    # Local directory for torch.hub cache (DINOv2 weights stored here)
+    dinov2_hub_dir: Path = Path("models_vision/hub")
+    # Pre-downloaded weights file (placed by initialize_models at startup)
+    dinov2_weights_url: str = "https://dl.fbaipublicfiles.com/dinov2/dinov2_vitl14/dinov2_vitl14_pretrain.pth"
+    # SAM2 automatic mask generator parameters
+    points_per_side: int = 16          # 16²=256 grid pts vs 32²=1024 → ~4× faster
+    pred_iou_thresh: float = 0.80
+    stability_score_thresh: float = 0.92
+    min_mask_region_area: int = 200    # discard tiny noise masks
 
 @dataclass
 class MaskExtractionConfig:
@@ -54,11 +62,6 @@ class MaskExtractionConfig:
     closing_kernel_size: int = 3
     output_suffix: str = "_card"
     mask_suffix: str = "_mask"
-
-@dataclass
-class AnnotationConfig:
-    """Configuration for annotation processing"""
-    pred_output_dir: Path
 
 @dataclass
 class TabularConfig:
@@ -171,226 +174,988 @@ class PDFProcessor:
         right_page.save(output_folder / f'{pdf_name}_page_{page_num}b.jpg', 'JPEG')
 
         
-class ModelProcessor:
-    """Handles model application and prediction"""
-    
-    def __init__(self, config: ModelConfig):
-        self.config = config
+# ─────────────────────────────────────────────────────────────────────────────
+# SAM2 + DINOv2 singletons (lazy-loaded once per process)
+# ─────────────────────────────────────────────────────────────────────────────
+_sam2_predictor = None
+_sam2_generator = None
+_dinov2_model = None
+_models_lock = threading.Lock()
 
-    def apply_model(self,
-                   folder: str,
-                   model_name: str,
-                   confidence: float,
-                   diagnostic: bool,
-                   kernel_size: float,
-                   iterations: float,
-                   excluded_images: list = None) -> str:
-        """Apply model to images in folder"""
-        try:
-            kernel_size = int(kernel_size)
-            iterations = int(iterations)
-            
-            if not folder or not model_name:
-                return "Please select both a folder and a model"
-            
-            # Load model from models directory
-            model_path = self.config.models_dir / model_name
-            if not model_path.exists():
-                return f"Model not found: {model_name}"
-            
-            model = YOLO(model_path)
-            
-            # Setup output directory for masks
-            output_folder = self.config.pred_output_dir / f"{folder}_mask"
-            os.makedirs(output_folder, exist_ok=True)
-            
-            # Get images from pdf2img_outputs directory
-            image_path = self.config.pred_output_dir.parent / "pdf2img_outputs" / folder
-            if not image_path.exists():
-                return f"Image folder not found: {folder}"
-                
-            images = os.listdir(image_path)
-            
-            # Filter out excluded images
-            if excluded_images:
-                # Extract just the filename from URLs like "/api/image/folder/filename.jpg"
-                excluded_filenames = set()
-                for url in excluded_images:
-                    filename = url.split('/')[-1]  # Get the last part of the URL
-                    excluded_filenames.add(filename)
-                
-                # Filter images list
-                original_count = len(images)
-                images = [img for img in images if img not in excluded_filenames]
-                excluded_count = original_count - len(images)
-                print(f"Excluded {excluded_count} images from processing")
-            
-            if diagnostic:
-                images = images[:25]
-            
-            total = len(images)
-            for idx, image_file in enumerate(images, 1):
-                print(f"Processing image {idx}/{total}: {image_file}")
-                self._process_single_image(
-                    image_file,
-                    image_path,
-                    model,
-                    confidence,
-                    kernel_size,
-                    iterations,
-                    output_folder
-                )
-            
-            return f"Model applied successfully to {folder} with confidence={confidence}, kernel={kernel_size}, iterations={iterations}"
-        except Exception as e:
-            return f"Error applying model: {str(e)}"
+_DINOV2_TRANSFORM = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
 
-    def apply_model_to_project(self,
-                               images_path: str,
-                               masks_path: str,
-                               model_name: str,
-                               confidence: float,
-                               diagnostic: bool,
-                               kernel_size: int,
-                               iterations: int,
-                               excluded_images: list = None,
-                               progress_callback=None) -> str:
-        """Apply model to images in a project, saving masks to project folder"""
-        try:
-            images_path = Path(images_path)
-            masks_path = Path(masks_path)
-            
-            if not images_path.exists():
-                return f"Images folder not found: {images_path}"
-            
-            # Load model from models directory
-            model_path = self.config.models_dir / model_name
-            if not model_path.exists():
-                return f"Model not found: {model_name}"
-            
-            model = YOLO(model_path)
-            
-            # Setup output directory for masks
-            os.makedirs(masks_path, exist_ok=True)
-            
-            # Get all images (natural sort: image_1, image_2 ... image_10)
-            import re as _re
-            def _natural_key(s):
-                return [int(c) if c.isdigit() else c.lower() for c in _re.split(r'(\d+)', s)]
 
-            image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
-            images = sorted(
-                [f.name for f in images_path.iterdir()
-                 if f.is_file() and f.suffix.lower() in image_extensions],
-                key=_natural_key
+def _ensure_sam2_checkpoint(config: FewShotConfig) -> None:
+    """Download SAM2 checkpoint if not present."""
+    ckpt = Path(config.sam2_checkpoint_path)
+    if ckpt.exists():
+        return
+    ckpt.parent.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Downloading SAM2 checkpoint → {ckpt} …")
+    urllib.request.urlretrieve(config.sam2_checkpoint_url, str(ckpt))
+    logger.info("SAM2 checkpoint downloaded.")
+
+
+def get_sam2_predictor(config: FewShotConfig):
+    global _sam2_predictor
+    with _models_lock:
+        if _sam2_predictor is None:
+            from sam2.build_sam import build_sam2
+            from sam2.sam2_image_predictor import SAM2ImagePredictor
+            _ensure_sam2_checkpoint(config)
+            device = torch.device(config.device)
+            sam2 = build_sam2(config.sam2_config, str(config.sam2_checkpoint_path), device=device)
+            _sam2_predictor = SAM2ImagePredictor(sam2)
+            logger.info("SAM2 predictor ready.")
+    return _sam2_predictor
+
+
+def get_sam2_generator(config: FewShotConfig):
+    global _sam2_generator
+    with _models_lock:
+        if _sam2_generator is None:
+            from sam2.build_sam import build_sam2
+            from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+            _ensure_sam2_checkpoint(config)
+            device = torch.device(config.device)
+            sam2 = build_sam2(config.sam2_config, str(config.sam2_checkpoint_path), device=device)
+            _sam2_generator = SAM2AutomaticMaskGenerator(
+                model=sam2,
+                points_per_side=config.points_per_side,
+                pred_iou_thresh=config.pred_iou_thresh,
+                stability_score_thresh=config.stability_score_thresh,
+                min_mask_region_area=config.min_mask_region_area,
             )
-            
-            # Filter out excluded images
-            if excluded_images:
-                # Extract just the filename from URLs
-                excluded_filenames = set()
-                for url in excluded_images:
-                    filename = url.split('/')[-1]
-                    excluded_filenames.add(filename)
-                
-                original_count = len(images)
-                images = [img for img in images if img not in excluded_filenames]
-                excluded_count = original_count - len(images)
-                print(f"Excluded {excluded_count} images from processing")
-            
-            if diagnostic:
-                images = images[:25]
-            
-            total = len(images)
-            for idx, image_file in enumerate(images, 1):
-                print(f"Processing image {idx}/{total}: {image_file}")
-                
-                # Call progress callback if provided
-                if progress_callback:
-                    progress_callback(idx, total, f"Processing {image_file}")
-                
-                self._process_single_image(
-                    image_file,
-                    images_path,
-                    model,
-                    confidence,
-                    kernel_size,
-                    iterations,
-                    masks_path
-                )
-            
-            return f"Model applied successfully: {total} images processed with confidence={confidence}, kernel={kernel_size}, iterations={iterations}"
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return f"Error applying model: {str(e)}"
+            logger.info("SAM2 generator ready.")
+    return _sam2_generator
 
-    def _process_single_image(self,
-                            image_file: str,
-                            image_path: Path,
-                            model: YOLO,
-                            confidence: float,
-                            kernel_size: int,
-                            iterations: int,
-                            output_folder: Path) -> None:
-        """Process a single image with the model"""
+
+def get_dinov2(config: FewShotConfig):
+    global _dinov2_model
+    with _models_lock:
+        if _dinov2_model is None:
+            hub_dir = Path(config.dinov2_hub_dir)
+            hub_dir.mkdir(parents=True, exist_ok=True)
+            torch.hub.set_dir(str(hub_dir))
+            logger.info(f"Loading DINOv2 ({config.dinov2_model}) from {hub_dir} …")
+            _dinov2_model = torch.hub.load(
+                config.dinov2_repo, config.dinov2_model,
+                trust_repo=True,
+            )
+            _dinov2_model.to(torch.device(config.device))
+            _dinov2_model.eval()
+            logger.info("DINOv2 ready.")
+    return _dinov2_model
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Low-level helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _extract_mask_feature(image_rgb: np.ndarray, mask: np.ndarray, model: torch.nn.Module, device: str) -> np.ndarray:
+    """Extract L2-normalised DINOv2 CLS embedding for a masked region (1024-dim)."""
+    if mask.dtype != bool:
+        mask = mask > 0
+    ys, xs = np.where(mask)
+    if len(ys) == 0:
+        return np.zeros(1024, dtype=np.float32)
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    crop = image_rgb[y0:y1, x0:x1].copy()
+    crop[~mask[y0:y1, x0:x1]] = 0
+    tensor = _DINOV2_TRANSFORM(Image.fromarray(crop)).unsqueeze(0).to(device)
+    with torch.no_grad():
+        feat = model(tensor)
+    feat = F.normalize(feat, p=2, dim=1)
+    return feat.cpu().numpy().flatten().astype(np.float32)
+
+
+def _extract_mask_features_batch(
+    image_rgb: np.ndarray,
+    masks: List[np.ndarray],
+    model: torch.nn.Module,
+    device: str,
+    batch_size: int = 32,
+) -> List[np.ndarray]:
+    """
+    Batch DINOv2 inference for a list of masks.
+    Much faster than calling _extract_mask_feature one-by-one.
+    Returns a list of (1024,) float32 vectors, one per input mask.
+    """
+    result = [np.zeros(1024, dtype=np.float32)] * len(masks)
+    if not masks:
+        return result
+
+    tensors: List = []
+    valid_idx: List[int] = []
+
+    for i, mask in enumerate(masks):
+        if mask.dtype != bool:
+            mask = mask > 0
+        ys, xs = np.where(mask)
+        if len(ys) == 0:
+            continue
+        y0, y1 = int(ys.min()), int(ys.max()) + 1
+        x0, x1 = int(xs.min()), int(xs.max()) + 1
+        crop = image_rgb[y0:y1, x0:x1].copy()
+        crop[~mask[y0:y1, x0:x1]] = 0
+        tensors.append(_DINOV2_TRANSFORM(Image.fromarray(crop)))
+        valid_idx.append(i)
+
+    for batch_start in range(0, len(tensors), batch_size):
+        batch_t = torch.stack(tensors[batch_start:batch_start + batch_size]).to(device)
+        with torch.no_grad():
+            feats = model(batch_t)                            # (B, 1024)
+            feats = F.normalize(feats, p=2, dim=1)
+        np_feats = feats.cpu().numpy().astype(np.float32)
+        for j, orig_i in enumerate(valid_idx[batch_start:batch_start + batch_size]):
+            result[orig_i] = np_feats[j]
+
+    return result
+
+
+def _mask_to_contour(mask: np.ndarray) -> List[List[int]]:
+    """Simplify boolean mask to polygon contour [[x,y], ...]."""
+    import cv2
+    mask_u8 = mask.astype(np.uint8) * 255
+    contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return []
+    contour = max(contours, key=cv2.contourArea)
+    eps = 0.003 * cv2.arcLength(contour, True)
+    approx = cv2.approxPolyDP(contour, eps, True)
+    return approx.reshape(-1, 2).tolist()
+
+
+def _compute_iou(m1: np.ndarray, m2: np.ndarray) -> float:
+    inter = np.logical_and(m1, m2).sum()
+    union = np.logical_or(m1, m2).sum()
+    return float(inter / union) if union > 0 else 0.0
+
+
+_CLASS_COLORS = [
+    "#3b82f6", "#10b981", "#f59e0b", "#ef4444",
+    "#8b5cf6", "#ec4899", "#14b8a6", "#f97316",
+]
+
+
+def _next_color(used: set) -> str:
+    for c in _CLASS_COLORS:
+        if c not in used:
+            return c
+    return _CLASS_COLORS[len(used) % len(_CLASS_COLORS)]
+
+
+def _nms_masks(preds: List[Dict], all_masks: List[Dict], iou_threshold: float = 0.30) -> List[Dict]:
+    """
+    Intra-class NMS: given predictions sorted by similarity (best first),
+    suppress any prediction whose mask IoU with a kept mask exceeds iou_threshold.
+    Uses the actual boolean mask arrays for exact IoU.
+    """
+    kept: List[Dict] = []
+    kept_masks: List[np.ndarray] = []
+    for pred in preds:
+        mask = all_masks[pred["index"]]["mask"]  # bool (H,W)
+        suppress = False
+        for km in kept_masks:
+            inter = np.logical_and(mask, km).sum()
+            union = np.logical_or(mask, km).sum()
+            if union > 0 and inter / union >= iou_threshold:
+                suppress = True
+                break
+        if not suppress:
+            kept.append(pred)
+            kept_masks.append(mask)
+    return kept
+
+
+def _recompute_predictions(
+    all_masks: List[Dict],
+    classes: Dict,
+    threshold: float,
+    target_classes: Optional[Dict] = None,
+) -> None:
+    """
+    Cross-class competition: each mask → best class (highest cosine similarity
+    above threshold).
+    - `classes`        : provides example features for similarity scoring (may span all images)
+    - `target_classes` : receives the resulting predictions (defaults to `classes` if None)
+    Applies intra-class NMS (IoU ≥ 0.30) to suppress redundant overlapping masks.
+    """
+    if target_classes is None:
+        target_classes = classes
+    # Ensure every class in `classes` has a slot in target_classes
+    for cname, cdata in classes.items():
+        if cname not in target_classes:
+            target_classes[cname] = {
+                "color": cdata["color"],
+                "examples": [],
+                "predictions": [],
+                "rejected": set(),
+            }
+    # Exclude masks already labeled on this image (from target_classes, i.e. local)
+    occupied = {ex["mask_index"] for c in target_classes.values() for ex in c["examples"] if ex.get("mask_index", -1) != -1}
+
+    class_features: Dict[str, np.ndarray] = {}
+    for cname, cdata in classes.items():
+        feats = [ex["feature"] for ex in cdata["examples"]]
+        if feats:
+            class_features[cname] = np.array(feats)  # (M, 1024)
+
+    best_assignment: Dict[str, list] = {cn: [] for cn in classes}
+
+    for i, md in enumerate(all_masks):
+        if i in occupied:
+            continue
+        mf = md["feature"]
+        best_class, best_sim = None, -1.0
+        for cname, fmat in class_features.items():
+            rejected = classes[cname].get("rejected", set())
+            if i in rejected:
+                continue
+            sims = np.dot(fmat, mf)          # (M,)
+            sim = float(np.max(sims)) if len(sims) else -1.0
+            if sim >= threshold and sim > best_sim:
+                best_sim, best_class = sim, cname
+        if best_class is not None:
+            best_assignment[best_class].append({
+                "index": i,
+                "similarity": round(best_sim, 4),
+                "contour": md["contour"],
+                "area": md["area"],
+                "bbox": md["bbox"],
+            })
+
+    for cname, preds in best_assignment.items():
+        preds.sort(key=lambda p: p["similarity"], reverse=True)
+        target_classes[cname]["predictions"] = _nms_masks(preds, all_masks, iou_threshold=0.30)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FewShotProcessor
+# ─────────────────────────────────────────────────────────────────────────────
+
+class FewShotProcessor:
+    """
+    SAM2 + DINOv2 few-shot detection engine.
+
+    Workflow per project:
+      1. process_image()        – run SAM2 automask + DINOv2 on one page; cache state
+      2. add_example()          – user clicks a point → SAM2 segment → DINOv2 feature → class
+      3. remove_example()       – remove a labelled example from a class
+      4. get_predictions()      – return current per-class predictions for an image
+      5. apply_to_all()         – batch: run SAM2+DINOv2 on all remaining pages,
+                                   reuse class features → save mask PNG per image
+      6. confirm_predictions()  – write confirmed mask indices as RGBA PNG to masks/
+
+    State is kept in memory (keyed by image_id) AND persisted to
+    <project_path>/fewshot/<image_id>/  as:
+      - masks.npz     : per-mask bool arrays
+      - features.npy  : (N, 1024) float32 features
+      - meta.json     : contours, areas, bboxes
+      - classes.json  : class names, colors, examples (features embedded)
+    """
+
+    def __init__(self, config: FewShotConfig):
+        self.config = config
+        self.device = config.device
+        # In-memory store: {image_id: {image_np, all_masks, classes}}
+        self._store: Dict[str, Dict[str, Any]] = {}
+
+    # ── model accessors ───────────────────────────────────────────────────────
+
+    @property
+    def _predictor(self):
+        return get_sam2_predictor(self.config)
+
+    @property
+    def _generator(self):
+        return get_sam2_generator(self.config)
+
+    @property
+    def _dinov2(self):
+        return get_dinov2(self.config)
+
+    # ── public API ────────────────────────────────────────────────────────────
+
+    def process_image(self, image_path: str, image_id: str, project_fewshot_dir: Path,
+                       threshold: float = 0.5) -> Dict:
+        """
+        Run SAM2 automatic mask generation + DINOv2 feature extraction on one image.
+        Result is cached in memory and persisted to disk.
+
+        Returns dict with image_id, image_width, image_height, num_masks.
+        """
+        image_path = Path(image_path)
+        image_np = np.array(Image.open(image_path).convert("RGB"))
+
+        logger.info(f"[{image_id}] SAM2 automask on {image_np.shape} …")
+        masks_data = self._generator.generate(image_np)
+        logger.info(f"[{image_id}] {len(masks_data)} masks found.")
+
+        # ── batch DINOv2 extraction (all masks at once) ───────────────────────
+        raw_masks = [md["segmentation"] for md in masks_data]
+        logger.info(f"[{image_id}] DINOv2 batch extraction for {len(raw_masks)} masks …")
+        features = _extract_mask_features_batch(image_np, raw_masks, self._dinov2, self.device)
+
+        all_masks = []
+        for md, feature in zip(masks_data, features):
+            all_masks.append({
+                "mask": md["segmentation"],
+                "feature": feature,
+                "contour": _mask_to_contour(md["segmentation"]),
+                "area": int(md["area"]),
+                "bbox": [int(v) for v in md["bbox"]],
+            })
+        logger.info(f"[{image_id}] Feature extraction done.")
+
+        # ── load per-image examples (for display/saving) ─────────────────────
+        local_classes = self._load_classes(project_fewshot_dir, image_id)
+        # ── aggregate ALL examples from disk (for feature matching only) ──────
+        inference_classes = self._load_all_classes(project_fewshot_dir)
+        # Ensure local_classes has a slot for every known class
+        for cname, cdata in inference_classes.items():
+            if cname not in local_classes:
+                local_classes[cname] = {
+                    "color": cdata["color"],
+                    "examples": [],
+                    "predictions": [],
+                    "rejected": set(),
+                }
+
+        self._store[image_id] = {
+            "image_np": image_np,
+            "all_masks": all_masks,
+            "classes": local_classes,            # per-image examples + predictions
+            "inference_classes": inference_classes,  # all-image examples (inference only)
+        }
+
+        # Compute predictions using all features; store results in local_classes
+        if inference_classes:
+            _recompute_predictions(all_masks, inference_classes, threshold,
+                                   target_classes=local_classes)
+            logger.info(f"[{image_id}] Predictions recomputed (threshold={threshold}).")
+
+        self._persist_state(project_fewshot_dir, image_id)
+
+        return {
+            "image_id": image_id,
+            "image_width": int(image_np.shape[1]),
+            "image_height": int(image_np.shape[0]),
+            "num_masks": len(all_masks),
+        }
+
+    def load_for_prediction(self, image_path: str, image_id: str, project_fewshot_dir: Optional[Path] = None) -> Dict:
+        """
+        Load image into the store WITHOUT running SAM2 auto-mask generation.
+        Fast (< 1 s) — just reads the image and makes it available for
+        preview_prompt() and add_example().  Restores saved classes from disk
+        if project_fewshot_dir is given.  DINOv2 features for 'apply_to_all'
+        are computed lazily by process_image().
+
+        Returns { image_id, image_width, image_height, classes }.
+        """
+        image_path = Path(image_path)
+        if image_id in self._store:
+            data = self._store[image_id]
+            return {
+                "image_id": image_id,
+                "image_width": int(data["image_np"].shape[1]),
+                "image_height": int(data["image_np"].shape[0]),
+                "classes": self._classes_summary(data["classes"]),
+            }
+        image_np = np.array(Image.open(image_path).convert("RGB"))
+        local_classes = self._load_classes(project_fewshot_dir, image_id) if project_fewshot_dir else {}
+        inference_classes = self._load_all_classes(project_fewshot_dir) if project_fewshot_dir else {}
+        for cname, cdata in inference_classes.items():
+            if cname not in local_classes:
+                local_classes[cname] = {
+                    "color": cdata["color"],
+                    "examples": [],
+                    "predictions": [],
+                    "rejected": set(),
+                }
+        self._store[image_id] = {
+            "image_np": image_np,
+            "all_masks": [],
+            "classes": local_classes,
+            "inference_classes": inference_classes,
+        }
+        return {
+            "image_id": image_id,
+            "image_width": int(image_np.shape[1]),
+            "image_height": int(image_np.shape[0]),
+            "classes": self._classes_summary(local_classes),
+        }
+
+    def add_example(
+        self,
+        image_id: str,
+        class_name: str,
+        x: int,
+        y: int,
+        threshold: float,
+        project_fewshot_dir: Path,
+        points: Optional[List[List[int]]] = None,
+        labels: Optional[List[int]] = None,
+        box: Optional[List[int]] = None,    # [x1, y1, x2, y2]
+    ) -> Dict:
+        """
+        User confirms a prompt (multi-point or box) to label an example for class_name.
+        SAM2 segments it, DINOv2 extracts feature, added to class.
+        Predictions for ALL classes are recomputed.
+        Returns summary of all classes.
+        """
+        data = self._store.get(image_id)
+        if data is None:
+            raise ValueError(f"Image {image_id} not loaded. Call process_image first.")
+
+        image_np = data["image_np"]
+        all_masks = data["all_masks"]
+        classes = data["classes"]
+
+        # ── run SAM2 predictor ────────────────────────────────────────────────
+        self._predictor.set_image(image_np)
+        if box is not None:
+            box_np = np.array(box, dtype=np.float32)  # [x1,y1,x2,y2]
+            if points and labels:
+                masks_out, scores, _ = self._predictor.predict(
+                    point_coords=np.array(points),
+                    point_labels=np.array(labels),
+                    box=box_np,
+                    multimask_output=False,
+                )
+            else:
+                masks_out, scores, _ = self._predictor.predict(
+                    box=box_np,
+                    multimask_output=False,
+                )
+        elif points and labels:
+            masks_out, scores, _ = self._predictor.predict(
+                point_coords=np.array(points),
+                point_labels=np.array(labels),
+                multimask_output=False,
+            )
+        else:
+            masks_out, scores, _ = self._predictor.predict(
+                point_coords=np.array([[x, y]]),
+                point_labels=np.array([1]),
+                multimask_output=False,
+            )
+
+        mask = masks_out[0]
+        sam_score = float(scores[0])
+        feature = _extract_mask_feature(image_np, mask, self._dinov2, self.device)
+
+        # Match to precomputed mask by IoU
+        best_iou, best_idx = 0.0, -1
+        for i, md in enumerate(all_masks):
+            iou = _compute_iou(mask, md["mask"])
+            if iou > best_iou:
+                best_iou, best_idx = iou, i
+        mask_index = best_idx if best_iou > 0.8 else -1
+
+        # Create class if new
+        if class_name not in classes:
+            used_colors = {c["color"] for c in classes.values()}
+            classes[class_name] = {
+                "color": _next_color(used_colors),
+                "examples": [],
+                "predictions": [],
+                "rejected": set(),
+            }
+
+        new_example = {
+            "id": len(classes[class_name]["examples"]),
+            "mask_index": mask_index,
+            "x": x,
+            "y": y,
+            "points": points or [[x, y]],
+            "labels": labels or [1],
+            "box": box,
+            "mask": mask,
+            "feature": feature,
+            "contour": _mask_to_contour(mask),
+            "area": int(mask.sum()),
+            "sam_score": round(sam_score, 4),
+        }
+        classes[class_name].get("rejected", set()).clear()
+        classes[class_name]["examples"].append(new_example)
+
+        # Mirror the new example into inference_classes so predictions stay current
+        inference_classes = data.get("inference_classes", classes)
+        if class_name not in inference_classes:
+            inference_classes[class_name] = {
+                "color": classes[class_name]["color"],
+                "examples": [],
+                "predictions": [],
+                "rejected": set(),
+            }
+        inference_classes[class_name]["examples"].append(new_example)
+
+        _recompute_predictions(all_masks, inference_classes, threshold,
+                               target_classes=classes)
+        self._persist_state(project_fewshot_dir, image_id)
+
+        return self._classes_summary(classes)
+
+    def remove_example(
+        self,
+        image_id: str,
+        class_name: str,
+        example_index: int,
+        threshold: float,
+        project_fewshot_dir: Path,
+    ) -> Dict:
+        """Remove an example from a class and recompute predictions."""
+        data = self._store.get(image_id)
+        if data is None:
+            raise ValueError(f"Image {image_id} not loaded.")
+        classes = data["classes"]
+        if class_name not in classes:
+            raise ValueError(f"Class '{class_name}' not found.")
+        cdata = classes[class_name]
+        if example_index < 0 or example_index >= len(cdata["examples"]):
+            raise ValueError("Invalid example index.")
+        cdata["examples"].pop(example_index)
+        # Re-number ids
+        for i, ex in enumerate(cdata["examples"]):
+            ex["id"] = i
+        if not cdata["examples"]:
+            del classes[class_name]
+        # Reload inference_classes from disk to keep them consistent
+        data["inference_classes"] = self._load_all_classes(project_fewshot_dir)
+        # Mirror local new examples into inference_classes
+        for cname2, cdata2 in classes.items():
+            if cname2 not in data["inference_classes"]:
+                data["inference_classes"][cname2] = {
+                    "color": cdata2["color"], "examples": list(cdata2["examples"]),
+                    "predictions": [], "rejected": set(),
+                }
+        inference_cls = data.get("inference_classes", classes)
+        if inference_cls:
+            _recompute_predictions(data["all_masks"], inference_cls, threshold,
+                                   target_classes=classes)
+        self._persist_state(project_fewshot_dir, image_id)
+        return self._classes_summary(classes)
+
+    def get_predictions(self, image_id: str, threshold: float) -> Dict:
+        """Return current predictions for all classes on image_id (recomputes if needed)."""
+        data = self._store.get(image_id)
+        if data is None:
+            raise ValueError(f"Image {image_id} not loaded.")
+        inference_cls = data.get("inference_classes", data["classes"])
+        _recompute_predictions(data["all_masks"], inference_cls, threshold,
+                               target_classes=data["classes"])
+        return self._classes_summary(data["classes"])
+
+    def preview_prompt(
+        self,
+        image_id: str,
+        points: Optional[List[List[int]]] = None,
+        labels: Optional[List[int]] = None,
+        box: Optional[List[int]] = None,    # [x1, y1, x2, y2]
+    ) -> Dict:
+        """
+        Run SAM2 predictor with the given point/box prompt and return the mask
+        contour immediately, WITHOUT adding anything to a class.
+        Used for live visual feedback while the user is building a prompt.
+
+        Returns:
+          { contour, area, bbox, sam_score, success }
+        """
+        data = self._store.get(image_id)
+        if data is None:
+            raise ValueError(f"Image {image_id} not loaded. Call process_image first.")
+
+        image_np = data["image_np"]
+
+        self._predictor.set_image(image_np)
+        if box is not None:
+            box_np = np.array(box, dtype=np.float32)
+            if points and labels:
+                masks_out, scores, _ = self._predictor.predict(
+                    point_coords=np.array(points),
+                    point_labels=np.array(labels),
+                    box=box_np,
+                    multimask_output=False,
+                )
+            else:
+                masks_out, scores, _ = self._predictor.predict(
+                    box=box_np,
+                    multimask_output=False,
+                )
+        elif points and labels:
+            masks_out, scores, _ = self._predictor.predict(
+                point_coords=np.array(points),
+                point_labels=np.array(labels),
+                multimask_output=False,
+            )
+        else:
+            return {"contour": [], "area": 0, "bbox": [], "sam_score": 0.0}
+
+        mask = masks_out[0]
+        sam_score = float(scores[0])
+        contour = _mask_to_contour(mask)
+        ys, xs = np.where(mask)
+        bbox = [] if len(ys) == 0 else [
+            int(xs.min()), int(ys.min()),
+            int(xs.max() - xs.min()), int(ys.max() - ys.min()),
+        ]
+        return {
+            "contour": contour,
+            "area": int(mask.sum()),
+            "bbox": bbox,
+            "sam_score": round(sam_score, 4),
+        }
+
+    def confirm_predictions(
+        self,
+        image_id: str,
+        class_name: str,
+        mask_indices: List[int],
+        masks_output_dir: Path,
+        image_filename: str,
+    ) -> str:
+        """
+        Write confirmed mask indices as RGBA PNG (same format as old pipeline) to masks_output_dir.
+        One file per original image: <stem>_mask_layer.png
+        """
+        data = self._store.get(image_id)
+        if data is None:
+            raise ValueError(f"Image {image_id} not loaded.")
+        all_masks = data["all_masks"]
+        image_np = data["image_np"]
+        H, W = image_np.shape[:2]
+
+        # Combine selected masks
+        combined = np.zeros((H, W), dtype=bool)
+        for idx in mask_indices:
+            if 0 <= idx < len(all_masks):
+                combined |= all_masks[idx]["mask"]
+
+        _save_mask_rgba(combined, masks_output_dir, Path(image_filename).stem)
+        return f"Saved {len(mask_indices)} mask(s) for '{class_name}' → {masks_output_dir}"
+
+    def save_labeled_masks(
+        self,
+        image_id: str,
+        masks_output_dir: Path,
+        image_filename: str,
+    ) -> Dict:
+        """
+        Save all labeled examples for every class on image_id as RGBA mask PNGs.
+        Works both with and without auto-mask pre-processing.
+        Each class whose examples have masks produces one combined PNG:
+          <stem>_<class_name>_mask.png
+
+        Returns { saved: {class_name: path_str, ...}, skipped: [class_name, ...] }
+        """
+        data = self._store.get(image_id)
+        if data is None:
+            raise ValueError(f"Image {image_id} not loaded.")
+
+        image_np = data["image_np"]
+        classes = data["classes"]
+        H, W = image_np.shape[:2]
+        masks_output_dir = Path(masks_output_dir)
+        masks_output_dir.mkdir(parents=True, exist_ok=True)
+        stem = Path(image_filename).stem
+
+        saved, skipped = {}, []
+        for class_name, cdata in classes.items():
+            combined = np.zeros((H, W), dtype=bool)
+            any_mask = False
+            for ex in cdata["examples"]:
+                ex_mask = ex.get("mask")
+                if ex_mask is not None:
+                    combined |= (ex_mask > 0) if not isinstance(ex_mask, np.ndarray) else ex_mask.astype(bool)
+                    any_mask = True
+                elif ex.get("mask_index", -1) >= 0:
+                    idx = ex["mask_index"]
+                    if idx < len(data["all_masks"]):
+                        combined |= data["all_masks"][idx]["mask"]
+                        any_mask = True
+            if any_mask:
+                safe_cls = "".join(c if c.isalnum() or c in "-_" else "_" for c in class_name)
+                out_path = masks_output_dir / f"{stem}_{safe_cls}_mask.png"
+                _save_mask_rgba(combined, masks_output_dir, f"{stem}_{safe_cls}")
+                saved[class_name] = str(out_path)
+            else:
+                skipped.append(class_name)
+
+        return {"saved": saved, "skipped": skipped}
+
+
+
+    def apply_to_all(
+        self,
+        images_dir: Path,
+        masks_dir: Path,
+        project_fewshot_dir: Path,
+        threshold: float,
+        excluded_images: Optional[List[str]] = None,
+        progress_callback=None,
+    ) -> str:
+        """
+        Batch apply current class examples to every image in images_dir.
+        For each image:
+          - Run SAM2 automask + DINOv2
+          - Cross-class competition with all class examples
+          - Save combined mask per class as RGBA PNG in masks_dir
+
+        progress_callback(current, total, message) is called if provided.
+        """
+        import re as _re
+
+        images_dir = Path(images_dir)
+        masks_dir = Path(masks_dir)
+        masks_dir.mkdir(parents=True, exist_ok=True)
+
+        # Collect examples from disk (all labeled images) + in-memory store
+        merged_classes = self._load_all_classes(project_fewshot_dir)
+        # Also merge anything only in memory (not yet flushed)
+        for data in self._store.values():
+            for cname, cdata in data["classes"].items():
+                if cname not in merged_classes:
+                    merged_classes[cname] = {
+                        "color": cdata["color"], "examples": [],
+                        "predictions": [], "rejected": set(),
+                    }
+                for ex in cdata["examples"]:
+                    merged_classes[cname]["examples"].append(ex)
+
+        all_class_features: Dict[str, np.ndarray] = {}
+        all_class_colors: Dict[str, str] = {}
+        for cname, cdata in merged_classes.items():
+            feats = [ex["feature"] for ex in cdata["examples"]]
+            if feats:
+                all_class_features[cname] = np.array(feats)
+                all_class_colors[cname]   = cdata["color"]
+
+        if not all_class_features:
+            return "No examples defined. Label at least one object first."
+
+        ext = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
+
+        def _nat(s):
+            return [int(c) if c.isdigit() else c.lower() for c in _re.split(r'(\d+)', s)]
+
+        excluded_set = set(excluded_images or [])
+        images = sorted(
+            [f.name for f in images_dir.iterdir() if f.is_file() and f.suffix.lower() in ext and f.name not in excluded_set],
+            key=_nat,
+        )
+
+        total = len(images)
+        if total == 0:
+            return "No images found in project."
+
+        for idx, img_name in enumerate(images, 1):
+            if progress_callback:
+                progress_callback(idx, total, f"Processing {img_name}")
+            try:
+                self._apply_to_single_image(
+                    images_dir / img_name,
+                    masks_dir,
+                    all_class_features,
+                    threshold,
+                    project_fewshot_dir,
+                )
+            except Exception as e:
+                logger.warning(f"Skipping {img_name}: {e}")
+
+        return f"Batch complete: {total} images processed → {masks_dir}"
+
+    # ── internal helpers ──────────────────────────────────────────────────────
+
+    def _apply_to_single_image(
+        self,
+        image_path: Path,
+        masks_dir: Path,
+        class_features: Dict[str, np.ndarray],
+        threshold: float,
+        project_fewshot_dir: Path,
+    ) -> None:
+        image_np = np.array(Image.open(image_path).convert("RGB"))
+        H, W = image_np.shape[:2]
+        masks_data = self._generator.generate(image_np)
+
+        raw_masks = [md["segmentation"] for md in masks_data]
+        features  = _extract_mask_features_batch(image_np, raw_masks, self._dinov2, self.device)
+        all_masks = [
+            {"mask": md["segmentation"], "feature": feat, "area": int(md["area"])}
+            for md, feat in zip(masks_data, features)
+        ]
+
+        # Cross-class competition
+        combined: Dict[str, np.ndarray] = {cn: np.zeros((H, W), dtype=bool) for cn in class_features}
+
+        for md in all_masks:
+            mf = md["feature"]
+            best_class, best_sim = None, -1.0
+            for cname, fmat in class_features.items():
+                sims = np.dot(fmat, mf)
+                sim = float(np.max(sims)) if len(sims) else -1.0
+                if sim >= threshold and sim > best_sim:
+                    best_sim, best_class = sim, cname
+            if best_class is not None:
+                combined[best_class] |= md["mask"]
+
+        # Save one mask file per class (only if non-empty)
+        stem = image_path.stem
+        for cname, mask in combined.items():
+            if mask.any():
+                safe_cname = "".join(c if c.isalnum() or c in "-_" else "_" for c in cname)
+                _save_mask_rgba(mask, masks_dir, f"{stem}_{safe_cname}")
+
+    def _classes_summary(self, classes: Dict) -> Dict:
+        result = {}
+        for cname, cdata in classes.items():
+            result[cname] = {
+                "color": cdata["color"],
+                "num_examples": len(cdata["examples"]),
+                "examples": [
+                    {
+                        "id": ex["id"],
+                        "x": ex["x"],
+                        "y": ex["y"],
+                        "area": ex["area"],
+                        "sam_score": ex["sam_score"],
+                        "mask_index": ex["mask_index"],
+                        "contour": ex["contour"],
+                    }
+                    for ex in cdata["examples"]
+                ],
+                "predictions": cdata.get("predictions", []),
+            }
+        return result
+
+    def _persist_state(self, project_fewshot_dir: Path, image_id: str) -> None:
+        """Persist mask arrays, features and class metadata to disk."""
+        data = self._store.get(image_id)
+        if data is None:
+            return
+        save_dir = Path(project_fewshot_dir) / image_id
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        all_masks = data["all_masks"]
+        # masks.npz
+        np.savez_compressed(
+            save_dir / "masks.npz",
+            **{str(i): m["mask"] for i, m in enumerate(all_masks)},
+        )
+        # features.npy
+        feats = np.array([m["feature"] for m in all_masks])
+        np.save(save_dir / "features.npy", feats)
+        # meta.json  (contours, areas, bboxes)
+        meta = [{"contour": m["contour"], "area": m["area"], "bbox": m["bbox"]} for m in all_masks]
+        (save_dir / "meta.json").write_text(json.dumps(meta))
+        # classes.json  (without numpy arrays)
+        classes_serial = {}
+        for cname, cdata in data["classes"].items():
+            classes_serial[cname] = {
+                "color": cdata["color"],
+                "examples": [
+                    {
+                        "id": ex["id"],
+                        "x": ex["x"],
+                        "y": ex["y"],
+                        "mask_index": ex["mask_index"],
+                        "feature": ex["feature"].tolist(),
+                        "contour": ex["contour"],
+                        "area": ex["area"],
+                        "sam_score": ex["sam_score"],
+                    }
+                    for ex in cdata["examples"]
+                ],
+            }
+        (save_dir / "classes.json").write_text(json.dumps(classes_serial))
+
+    def _load_classes(self, project_fewshot_dir: Path, image_id: str) -> Dict:
+        """Restore class definitions (with features) from disk if available."""
+        classes_path = Path(project_fewshot_dir) / image_id / "classes.json"
+        if not classes_path.exists():
+            return {}
         try:
-            img = Image.open(image_path / image_file)
-            #img_tensor = transforms.ToTensor()(img).to(self.config.device)
-            results = model.predict(
-                img,
-                save_crop=False,
-                conf=confidence,
-                retina_masks=True,
-                device=self.config.device
-            )[0]
-            
-            if len(results) > 0:
-                pred_masks = results.masks.data.cpu().numpy()
-                save_mask(
-                    img,
-                    pred_masks,
-                    image_file.split(".")[0],
-                    output_folder,
-                    kernel_size,
-                    iterations,
-                    export_masks=True
-                )
+            raw = json.loads(classes_path.read_text())
+            classes = {}
+            for cname, cdata in raw.items():
+                examples = []
+                for ex in cdata["examples"]:
+                    ex = dict(ex)
+                    ex["feature"] = np.array(ex["feature"], dtype=np.float32)
+                    ex["mask"] = np.zeros((1, 1), dtype=bool)  # placeholder
+                    examples.append(ex)
+                classes[cname] = {
+                    "color": cdata["color"],
+                    "examples": examples,
+                    "predictions": [],
+                    "rejected": set(),
+                }
+            return classes
         except Exception as e:
-            print(f"Error processing image {image_file}: {str(e)}")
+            logger.warning(f"Could not restore classes for {image_id}: {e}")
+            return {}
 
-    #def _process_single_image(self,
-    #                        image_file: str,
-    #                        image_path: Path,
-    #                        model: YOLO,
-    #                        confidence: float,
-    #                        kernel_size: int,
-    #                        iterations: int,
-    #                        output_folder: Path) -> None:
-    #    """Process a single image with the model"""
-    #    try:
-    #        img = Image.open(image_path / image_file)
-    #        results = model.predict(
-    #            img,
-    #            save_crop=False,
-    #            conf=confidence,
-    #            retina_masks=True
-    #        )[0]
-    #        
-    #        if len(results) > 0:
-    #            pred_masks = results.masks.data.cpu().numpy()
-    #            save_mask(
-    #                img,
-    #                pred_masks,
-    #                image_file.split(".")[0],
-    #                output_folder,
-    #                kernel_size,
-    #                iterations,
-    #                export_masks=True
-    #            )
-    #    except Exception as e:
-    #        print(f"Error processing image {image_file}: {str(e)}")
+    def _load_all_classes(self, project_fewshot_dir: Path) -> Dict:
+        """
+        Aggregate class definitions (with features) from ALL image directories
+        in the fewshot folder.  This way 'process_image' uses examples labeled
+        on ANY image, not just the one being analyzed.
+        """
+        merged: Dict = {}
+        fewshot_path = Path(project_fewshot_dir)
+        if not fewshot_path.exists():
+            return {}
+        ex_counter: Dict[str, int] = {}
+        for image_dir in sorted(fewshot_path.iterdir()):
+            if not image_dir.is_dir():
+                continue
+            classes_path = image_dir / "classes.json"
+            if not classes_path.exists():
+                continue
+            try:
+                raw = json.loads(classes_path.read_text())
+                for cname, cdata in raw.items():
+                    if cname not in merged:
+                        merged[cname] = {
+                            "color": cdata["color"],
+                            "examples": [],
+                            "predictions": [],
+                            "rejected": set(),
+                        }
+                        ex_counter[cname] = 0
+                    for ex in cdata["examples"]:
+                        ex_copy = dict(ex)
+                        ex_copy["feature"] = np.array(ex_copy["feature"], dtype=np.float32)
+                        ex_copy["mask"]    = np.zeros((1, 1), dtype=bool)
+                        ex_copy["id"]      = ex_counter[cname]
+                        ex_counter[cname] += 1
+                        merged[cname]["examples"].append(ex_copy)
+            except Exception as e:
+                logger.warning(f"Could not load classes from {image_dir}: {e}")
+        total = sum(len(v["examples"]) for v in merged.values())
+        logger.info(f"Loaded {total} examples across {len(merged)} classes from disk.")
+        return merged
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Mask I/O helper (shared with MaskExtractor pipeline)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _save_mask_rgba(mask: np.ndarray, output_dir: Path, stem: str) -> None:
+    """Save boolean mask as RGBA PNG compatible with MaskExtractor."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    mask_repeated = np.repeat(np.expand_dims(mask.astype(np.uint8) * 128, 2), 4, axis=2)
+    Image.fromarray(mask_repeated.astype(np.uint8), mode="RGBA").save(
+        output_dir / f"{stem}_mask_layer.png"
+    )
 
 
 class MaskExtractor:
@@ -668,108 +1433,6 @@ class MaskExtractor:
             traceback.print_exc()
             return f"Error extracting masks: {str(e)}"
     
-class AnnotationProcessor:
-    """Handles annotation processing"""
-    
-    def __init__(self, config: AnnotationConfig):
-        self.config = config
-
-    def save_annotation(self, folder: str, editor_data: Dict, current_image: str) -> bool:
-        """Save annotation and return success status"""
-        try:
-            if not all([folder, editor_data, current_image]):
-                return False
-                    
-            # Fast path for saving
-            if 'layers' in editor_data and editor_data['layers']:
-                layer = editor_data['layers'][0]
-                if layer is not None:
-                    # Setup paths
-                    file_name = Path(current_image).stem + "_mask_layer"
-                    saving_folder = folder + "_mask"
-                    saving_path = self.config.pred_output_dir / saving_folder / f"{file_name}.png"
-                    
-                    # Ensure saving directory exists
-                    os.makedirs(self.config.pred_output_dir / saving_folder, exist_ok=True)
-                    
-                    # Direct save
-                    Image.fromarray(layer).save(saving_path)
-                    
-                    # Force Python garbage collection
-                    del layer
-                    gc.collect()
-                    
-                    return True
-                    
-            return False
-            
-        except Exception as e:
-            print(f"Error saving annotation: {str(e)}")
-            return False
-        
-    def file_selection(self, file_path: str) -> Dict:
-        """Select file and prepare image data with performance optimizations"""
-        try:
-            if not file_path:
-                return {"background": None, "layers": [], "composite": None}
-                    
-            file_path = Path(file_path)
-            
-            # Prepare mask path
-            mask_dir_name = file_path.parent.name + "_mask"
-            mask_name = file_path.stem + "_mask_layer.png"
-            mask_path = self.config.pred_output_dir / mask_dir_name / mask_name
-
-            # Load and resize original image
-            with Image.open(file_path) as img:
-                # Resize for preview while maintaining aspect ratio
-                img.thumbnail((1200, 1200))
-                img_background = np.asarray(img, dtype=np.uint8)
-            
-            # Check and load mask if exists
-            layers = []
-            if mask_path.exists():
-                with Image.open(mask_path) as mask_img:
-                    # Resize mask to match image dimensions
-                    mask_img = mask_img.resize(img_background.shape[:2][::-1], Image.Resampling.NEAREST)
-                    mask = np.asarray(mask_img, dtype=np.uint8)
-                    layers = [mask]
-            
-            # Force cleanup
-            gc.collect()
-            
-            return {
-                "background": img_background,
-                "layers": layers,
-                "composite": img_background.copy()
-            }
-            
-        except Exception as e:
-            print(f"Error in file selection: {str(e)}")
-            return {"background": None, "layers": [], "composite": None}
-
-class ImageProcessor:
-    """Handles image processing and display"""
-    
-    def __init__(self, pdfimg_output_dir: Path, pred_output_dir: Path):
-        self.pdfimg_output_dir = Path(pdfimg_output_dir)
-        self.pred_output_dir = Path(pred_output_dir)
-
-    def return_images(self, folder: str) -> List[str]:
-        """Return list of images in folder"""
-        if not folder:
-            return []
-        try:
-            return [
-                str(self.pdfimg_output_dir / folder / img_name)
-                for img_name in os.listdir(self.pdfimg_output_dir / folder)
-                if img_name.lower().endswith(('.png', '.jpg', '.jpeg'))
-            ]
-        except Exception as e:
-            print(f"Error loading images: {str(e)}")
-            return []
-        
-
 class TabularProcessor:
     """Handles tabular data viewing and editing for extracted masks"""
     
@@ -1014,391 +1677,7 @@ class TabularProcessor:
         except Exception as e:
             print(f"Error saving table: {str(e)}")
             
-def save_mask(img: Image.Image,
-             masks_array: np.ndarray,
-             img_name: str = "",
-             output_dir: str = ".",
-             kernel_size: int = 5,
-             num_iterations: int = 10,
-             export_masks: bool = False) -> None:
-    """Save mask layers for detected objects"""
-    output_path = Path(output_dir)
-    
-    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
 
-    dilated_masks = _process_masks(masks_array, kernel, num_iterations)
-
-    combined_mask = _combine_masks(dilated_masks, kernel)
-    
-    if export_masks:
-        _export_mask(combined_mask, output_path, img_name)
-
-def _process_masks(masks_array: np.ndarray,
-                  kernel: np.ndarray,
-                  num_iterations: int) -> List[np.ndarray]:
-    """Process individual masks"""
-    return [
-        binary_dilation(mask.copy(), iterations=num_iterations, structure=kernel)
-        for mask in masks_array
-    ]
-
-def _combine_masks(masks: List[np.ndarray], kernel: np.ndarray) -> np.ndarray:
-    """Combine multiple masks into one"""
-    combined = np.sum(masks, axis=0)
-    ###
-    combined = binary_erosion(combined, iterations=2, structure=kernel)
-    ###
-    return median(combined, footprint=disk(5))
-
-def _export_mask(mask: np.ndarray,
-                output_path: Path,
-                img_name: str) -> None:
-    """Export processed mask"""
-    mask_repeated = np.repeat(np.expand_dims(mask * 128, 2), 4, axis=2)
-    mask_rgba = Image.fromarray(mask_repeated.astype(np.uint8), mode="RGBA")
-    mask_rgba.save(output_path / f"{img_name}_mask_layer.png")
-
-
-# Update in utils_new.py
-
-@dataclass
-class SecondStepConfig:
-    """Configuration for second step processing"""
-    pred_output_dir: Path
-    model_path: Path = Path("models/model_classifier.pth")
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    processed_suffix: str = "_processed"
-
-class SecondStepProcessor:
-    def __init__(self, config: SecondStepConfig):
-        self.config = config
-        self.device = torch.device(config.device)
-        self.model = self._load_model()
-        self.transforms = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485], std=[0.229])
-        ])
-        # Add flip options with defaults
-        self.auto_flip_vertical = True
-        self.auto_flip_horizontal = True
-
-    def _load_model(self) -> Optional[torch.nn.Module]:
-        """Load the trained model"""
-        try:
-            print(f"Attempting to load model from {self.config.model_path}")
-            
-            if not self.config.model_path.exists():
-                print(f"Model file not found at {self.config.model_path}")
-                return None
-            
-            # Create model instance
-            model = MultiHeadEfficientNet()
-            
-            # Load state dict with device mapping
-            checkpoint = torch.load(self.config.model_path, map_location=self.device)
-            
-            # Handle both checkpoint dict and state dict formats
-            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['model_state_dict'])
-                #if 'epoch' in checkpoint:
-                #    print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
-            else:
-                model.load_state_dict(checkpoint)
-            
-            # Move to device and set to eval mode
-            model = model.to(self.device)
-            model.eval()
-            
-            print("Model loaded successfully")
-            return model
-            
-        except Exception as e:
-            print(f"Error loading model: {str(e)}")
-            return None
-
-
-    def get_transformed_folder_path(self, folder: str) -> Path:
-        """Get path to the transformed folder"""
-        base_folder = folder.replace("_card", "")
-        return self.config.pred_output_dir / f"{base_folder}_transformed_card"
-
-    def get_original_path(self, folder: str, filename: str) -> Path:
-        """Get path to original image"""
-        return self.config.pred_output_dir / folder / filename
-
-    def get_transformed_path(self, folder: str, filename: str) -> Path:
-        """Get path to transformed image"""
-        transformed_folder = self.get_transformed_folder_path(folder)
-        return transformed_folder / filename
-
-    def set_flip_options(self, flip_vertical: bool, flip_horizontal: bool):
-        """Update flip options for model processing"""
-        self.auto_flip_vertical = flip_vertical
-        self.auto_flip_horizontal = flip_horizontal
-        print(f"Updated flip options - vertical: {flip_vertical}, horizontal: {flip_horizontal}")
-
-    def manual_flip(self, folder: str, filename: str, flip_type: str) -> Optional[Image.Image]:
-        """Manually flip an image vertically or horizontally"""
-        try:
-            # Get paths
-            transformed_folder = self.get_transformed_folder_path(folder)
-            transformed_path = transformed_folder / filename
-            
-            # Load image from transformed folder if it exists, otherwise from original
-            if transformed_path.exists():
-                image = Image.open(transformed_path).convert('L')
-            else:
-                image_path = self.get_original_path(folder, filename)
-                image = Image.open(image_path).convert('L')
-            
-            # Apply the requested flip
-            if flip_type == "vertical":
-                transformed = image.transpose(Image.FLIP_TOP_BOTTOM)  # For vertical flip (top-down)
-            elif flip_type == "horizontal":
-                transformed = image.transpose(Image.FLIP_LEFT_RIGHT)  # For horizontal flip (left-right)
-            else:
-                print(f"Unknown flip type: {flip_type}")
-                return None
-            
-            # Ensure transformed folder exists
-            os.makedirs(transformed_folder, exist_ok=True)
-            
-            # Save the transformed image
-            transformed.save(transformed_path)
-            
-            return transformed
-        
-           
-        except Exception as e:
-            print(f"Error in manual flip: {str(e)}")
-            return None
-        
-    def _update_flip_status(self, folder: str, filename: str, flip_type: str):
-        """Update the status in results CSV after a manual flip"""
-        try:
-            results = self.load_results(folder)
-            if results.empty:
-                return
-            
-            mask = results['filename'] == filename
-            if not any(mask):
-                return
-            
-            # Update position or rotation based on flip type
-            if flip_type == "vertical":
-                current_position = results.loc[mask, 'position'].iloc[0]
-                new_position = "TOP" if current_position == "BOTTOM" else "BOTTOM"
-                results.loc[mask, 'position'] = new_position
-            elif flip_type == "horizontal":
-                current_rotation = results.loc[mask, 'rotation'].iloc[0]
-                new_rotation = "RIGHT" if current_rotation == "LEFT" else "LEFT"
-                results.loc[mask, 'rotation'] = new_rotation
-            
-            # Save updated results
-            transformed_folder = self.get_transformed_folder_path(folder)
-            save_path = transformed_folder / 'classifications.csv'
-            results.to_csv(save_path, index=False)
-            
-        except Exception as e:
-            print(f"Error updating flip status: {str(e)}")
-
-    def process_folder(self, folder: str) -> pd.DataFrame:
-        """Process all mask images in the folder"""
-        try:
-            results = []
-            source_folder = self.config.pred_output_dir / folder
-            transformed_folder = self.get_transformed_folder_path(folder)
-            
-            # Create transformed folder
-            transformed_folder.mkdir(exist_ok=True)
-            
-            if not source_folder.exists():
-                print(f"Source folder not found: {source_folder}")
-                return pd.DataFrame()
-            
-            image_files = [f for f in os.listdir(source_folder) if f.endswith('.png')]
-            print(f"Found {len(image_files)} masks to analyze")
-            
-            for file in image_files:
-                try:
-                    image_path = source_folder / file
-                    print(f"Processing {file}...")
-                    
-                    type_pred, pos_pred, rot_pred, transformed_image = self.process_image(str(image_path))
-                    
-                    if all((type_pred, pos_pred, rot_pred)):
-                        # Save transformed image
-                        transformed_path = transformed_folder / file
-                        if transformed_image:
-                            transformed_image.save(transformed_path)
-                            print(f"Saved transformed image to {transformed_path}")
-                        
-                        results.append({
-                            'filename': file,
-                            'type': type_pred,
-                            'position': pos_pred,
-                            'rotation': rot_pred
-                        })
-                        print(f"Successfully processed {file}: Type={type_pred}, Pos={pos_pred}, Rot={rot_pred}")
-                    
-                except Exception as e:
-                    print(f"Error processing individual image {file}: {str(e)}")
-                    continue
-            
-            # Create and save results DataFrame
-            results_df = pd.DataFrame(results)
-            if not results_df.empty:
-                save_path = transformed_folder / 'classifications.csv'
-                results_df.to_csv(save_path, index=False)
-                print(f"Saved results for {len(results_df)} images")
-                
-            return results_df
-            
-        except Exception as e:
-            print(f"Error in process_folder: {str(e)}")
-            return pd.DataFrame()
-
-    def process_image(self, image_path: str) -> tuple[str, str, str, Image.Image]:
-        """Process a single image with respect to flip options"""
-        try:
-            if self.model is None:
-                print("Model not loaded")
-                return None, None, None, None
-                
-            image = Image.open(image_path).convert('L')
-            image_tensor = self.transforms(image).unsqueeze(0).to(self.device)
-            
-            with torch.no_grad():
-                pred_type, pred_position, pred_rotation = self.model(image_tensor)
-                
-            type_label = "ENT" if pred_type.item() < 0.5 else "FRAG"
-            position_label = "BOTTOM" if pred_position.item() < 0.5 else "TOP"
-            rotation_label = "LEFT" if pred_rotation.item() < 0.5 else "RIGHT"
-            
-            # Transform image according to enabled flip options and predictions
-            transformed = self._transform_image(
-                image, 
-                position_label if self.auto_flip_vertical else None,
-                rotation_label if self.auto_flip_horizontal else None
-            )
-            
-            return type_label, position_label, rotation_label, transformed
-            
-        except Exception as e:
-            print(f"Error processing image {image_path}: {str(e)}")
-            return None, None, None, None
-
-    def _transform_image(self, image: Image.Image, position: Optional[str], rotation: Optional[str]) -> Image.Image:
-        """Transform image based on position and rotation if enabled"""
-        transformed = image.copy()
-        
-        if position == "BOTTOM":
-            transformed = transformed.transpose(Image.FLIP_TOP_BOTTOM)
-        if rotation == "LEFT":
-            transformed = transformed.transpose(Image.FLIP_LEFT_RIGHT)
-            
-        return transformed
-
-    def load_results(self, folder: str) -> pd.DataFrame:
-        """Load results from the transformed folder"""
-        transformed_folder = self.get_transformed_folder_path(folder)
-        results_path = transformed_folder / 'classifications.csv'
-        
-        if results_path.exists():
-            return pd.read_csv(results_path)
-        return pd.DataFrame()
-
-    def update_result(self, folder: str, filename: str, updates: dict):
-        """Update result and transform image if needed"""
-        try:
-            results = self.load_results(folder)
-            if results.empty:
-                print("No results found to update")
-                return
-            
-            # Find the row to update
-            mask = results['filename'] == filename
-            if not any(mask):
-                print(f"No entry found for {filename}")
-                return
-                
-            # Update the values
-            for key, value in updates.items():
-                if key in results.columns:
-                    results.loc[mask, key] = value
-                    
-                    # If position or rotation changed, transform the image
-                    if key in ['position', 'rotation']:
-                        try:
-                            # Load and transform image
-                            image_path = self.get_original_path(folder, filename)
-                            image = Image.open(image_path).convert('L')
-                            
-                            row = results[mask].iloc[0]
-                            transformed = self._transform_image(
-                                image,
-                                row['position'],
-                                row['rotation']
-                            )
-                            
-                            # Save transformed image
-                            transformed_path = self.get_transformed_path(folder, filename)
-                            transformed.save(transformed_path)
-                            print(f"Saved updated transformed image to {transformed_path}")
-                            
-                        except Exception as e:
-                            print(f"Error updating transformed image: {str(e)}")
-            
-            # Save updated results
-            transformed_folder = self.get_transformed_folder_path(folder)
-            save_path = transformed_folder / 'classifications.csv'
-            results.to_csv(save_path, index=False)
-            print(f"Saved updated results to {save_path}")
-            
-        except Exception as e:
-            print(f"Error updating results: {str(e)}")
-            raise e
-        
-
-def download_model(url: str = 'https://huggingface.co/lrncrd/PyPotteryLens/resolve/main/BasicModelv8_v01.pt', 
-                  dest_path: str = 'models_vision/BasicModelv8_v01.pt') -> bool:
-    """Download model file from url to specified path"""
-    try:
-        import os
-        import requests
-        from pathlib import Path
-
-        dest_path = Path(dest_path)
-        os.makedirs(dest_path.parent, exist_ok=True)
-        
-        if dest_path.exists():
-            print('[✓] Model already exists in models_vision directory')
-            return True
-            
-        print(f'[*] Downloading model from {url}...')
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-        
-        total_size = int(response.headers.get('content-length', 0))
-        block_size = 1024
-        downloaded = 0
-        
-        with open(dest_path, 'wb') as f:
-            for data in response.iter_content(block_size):
-                downloaded += len(data)
-                f.write(data)
-                if total_size > 0:
-                    percent = int((downloaded / total_size) * 100)
-                    print(f'\r[*] Download progress: {percent}% ({downloaded}/{total_size} bytes)', end='')
-                    
-        print('\n[✓] Model downloaded successfully')
-        return True
-        
-    except Exception as e:
-        print(f'\n[!] Error downloading model: {str(e)}')
-        return False
-    
 
 @dataclass
 class ExportConfig:

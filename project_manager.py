@@ -52,11 +52,11 @@ class ProjectManager:
         folders = [
             'pdf_source',      # Original PDF files
             'images',          # Extracted images from PDFs
-            'masks',           # Mask images (_mask folder content)
-            'cards',           # Card annotations (_card folder content)
+            'masks',           # Mask images per class (_mask_layer.png)
+            'cards',           # Extracted card crops
             'cards_modified',  # Post-processed cards
-            'exports',         # Final exports (CSV, visualizations)
-            'models'           # Model files used in this project
+            'exports',         # Final exports (CSV, PDF catalog)
+            'fewshot',         # Few-shot state: per-image mask arrays + class features
         ]
         
         for folder in folders:
@@ -74,16 +74,16 @@ class ProjectManager:
                 'pdf_processed': False,
                 'pdf_count': 0,
                 'images_extracted': 0,
-                'model_applied': False,
-                'masks_extracted': 0,
-                'annotations_completed': 0,
+                'fewshot_labeling_done': False,
+                'labeling_images': [],      # image names used for labeling
+                'batch_applied': False,
+                'masks_generated': 0,
+                'cards_extracted': 0,
                 'total_images': 0,
-                'reviewed_images': []  # List of reviewed image names
             },
             'settings': {
-                'model_file': None,
-                'confidence_threshold': 0.5,
-                'excluded_images': []
+                'similarity_threshold': 0.5,
+                'excluded_images': [],
             }
         }
         

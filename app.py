@@ -20,20 +20,16 @@ import time
 
 from utils import (
     PDFProcessor,
-    ModelProcessor,
+    FewShotProcessor,
     MaskExtractor,
-    AnnotationProcessor,
-    ImageProcessor,
     TabularProcessor,
-    SecondStepProcessor,
     ExportProcessor,
     PDFConfig,
-    ModelConfig,
+    FewShotConfig,
     MaskExtractionConfig,
-    AnnotationConfig,
     TabularConfig,
-    SecondStepConfig,
-    ExportConfig
+    ExportConfig,
+    _save_mask_rgba,
 )
 
 from project_manager import ProjectManager
@@ -184,100 +180,61 @@ def download_model(url, destination, model_name, base_progress, progress_range):
 
 
 def initialize_models():
-    """Check and download required models if missing"""
-    update_init_status('checking_models', 10, 'Checking required models...')
-    
-    print("\n" + "="*80)
-    print(" 🔍 Checking Required Models")
-    print("="*80)
-    
-    models_to_check = {
-        'Vision Model': {
-            'path': MODELS_DIR / 'BasicModelv8_v01.pt',
-            'url': 'https://huggingface.co/lrncrd/PyPotteryLens/resolve/main/BasicModelv8_v01.pt'
-        },
-        'Classifier Model': {
-            'path': MODELS_CLASSIFIER_DIR / 'model_classifier.pth',
-            'url': 'https://huggingface.co/lrncrd/PyPotteryLens/resolve/main/model_classifier.pth'
-        }
-    }
-    
-    missing_models = []
-    
-    for model_name, info in models_to_check.items():
-        if info['path'].exists():
-            print(f"✅ {model_name}: Found at {info['path']}")
-        else:
-            print(f"❌ {model_name}: Not found at {info['path']}")
-            missing_models.append((model_name, info))
-    
-    if missing_models:
-        print(f"\n⚠️  {len(missing_models)} model(s) need to be downloaded")
-        print("="*80)
-        
-        progress_per_model = 60 / len(missing_models)  # 60% total for models (20% -> 80%)
-        
-        for idx, (model_name, info) in enumerate(missing_models):
-            base_progress = 20 + (idx * progress_per_model)
-            success = download_model(info['url'], info['path'], model_name, 
-                                   base_progress, progress_per_model)
-            
-            if not success:
-                print(f"\n⚠️  Warning: Could not download {model_name}")
-                print(f"   Please download manually from: {info['url']}")
-                print(f"   And place it at: {info['path']}")
-        
-        print("\n" + "="*80)
-        print(" ✨ Model initialization complete!")
-        print("="*80)
+    """Download SAM2 and DINOv2 weights locally at startup with progress display."""
+    update_init_status('checking_models', 10, 'Checking model weights...')
+
+    # ── SAM2 ──────────────────────────────────────────────────────────────────
+    sam2_path = MODELS_DIR / 'sam2.1_hiera_large.pt'
+    sam2_url = 'https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt'
+
+    if sam2_path.exists():
+        print(f"✅ SAM2 checkpoint found at {sam2_path}")
     else:
-        print("\n✨ All required models are present!")
-        print("="*80)
-    
+        print(f"⬇️  Downloading SAM2 checkpoint (~1.2 GB) → {sam2_path}")
+        update_init_status('downloading', 15, 'Downloading SAM2 Hiera Large (~1.2 GB)...')
+        download_model(sam2_url, sam2_path, 'SAM2 Hiera Large', 15, 35)
+
+    # ── DINOv2 ────────────────────────────────────────────────────────────────
+    dinov2_hub        = MODELS_DIR / 'hub'
+    dinov2_checkpoints = dinov2_hub / 'checkpoints'
+    dinov2_checkpoints.mkdir(parents=True, exist_ok=True)
+
+    dinov2_weights = dinov2_checkpoints / 'dinov2_vitl14_pretrain.pth'
+    dinov2_url     = 'https://dl.fbaipublicfiles.com/dinov2/dinov2_vitl14/dinov2_vitl14_pretrain.pth'
+
+    if dinov2_weights.exists():
+        print(f"✅ DINOv2 weights found at {dinov2_weights}")
+    else:
+        print(f"⬇️  Downloading DINOv2 ViT-L/14 weights (~1.1 GB) → {dinov2_weights}")
+        update_init_status('downloading', 50, 'Downloading DINOv2 ViT-L/14 (~1.1 GB)...')
+        download_model(dinov2_url, dinov2_weights, 'DINOv2 ViT-L/14', 50, 30)
+
     update_init_status('models_ready', 80, 'Models ready, initializing processors...')
 
 
 def initialize_processors():
-    """Initialize all processors after models are ready"""
-    global pdf_processor, model_processor, mask_extractor, annotation_processor
-    global image_processor, tabular_processor, second_step_processor, export_processor
-    
+    """Initialize all processors"""
+    global pdf_processor, few_shot_processor, mask_extractor, tabular_processor, export_processor
+
     update_init_status('init_processors', 85, 'Initializing PDF processor...')
     pdf_processor = PDFProcessor(PDFConfig(output_dir=PDFIMG_OUTPUT_DIR))
 
-    update_init_status('init_processors', 88, 'Initializing model processor...')
-    model_processor = ModelProcessor(ModelConfig(
-        models_dir=MODELS_DIR,
-        pred_output_dir=PRED_OUTPUT_DIR
+    update_init_status('init_processors', 90, 'Initializing few-shot processor (SAM2+DINOv2 — lazy loaded)...')
+    few_shot_processor = FewShotProcessor(FewShotConfig(
+        sam2_checkpoint_path=MODELS_DIR / "sam2.1_hiera_large.pt",
+        dinov2_hub_dir=MODELS_DIR / "hub",
     ))
 
-    update_init_status('init_processors', 90, 'Initializing mask extractor...')
+    update_init_status('init_processors', 94, 'Initializing mask extractor...')
     mask_extractor = MaskExtractor(MaskExtractionConfig(
         pdfimg_output_dir=PDFIMG_OUTPUT_DIR,
         pred_output_dir=PRED_OUTPUT_DIR
     ))
 
-    update_init_status('init_processors', 92, 'Initializing annotation processor...')
-    annotation_processor = AnnotationProcessor(AnnotationConfig(
-        pred_output_dir=PRED_OUTPUT_DIR
-    ))
-
-    update_init_status('init_processors', 94, 'Initializing image processor...')
-    image_processor = ImageProcessor(
-        pdfimg_output_dir=PDFIMG_OUTPUT_DIR,
-        pred_output_dir=PRED_OUTPUT_DIR
-    )
-
     update_init_status('init_processors', 96, 'Initializing tabular processor...')
     tabular_processor = TabularProcessor(TabularConfig(
         pdfimg_output_dir=PDFIMG_OUTPUT_DIR,
         pred_output_dir=PRED_OUTPUT_DIR
-    ))
-
-    update_init_status('init_processors', 98, 'Initializing classification processor...')
-    second_step_processor = SecondStepProcessor(SecondStepConfig(
-        pred_output_dir=PRED_OUTPUT_DIR,
-        model_path=MODELS_CLASSIFIER_DIR / "model_classifier.pth"
     ))
 
     update_init_status('init_processors', 99, 'Initializing export processor...')
@@ -295,12 +252,9 @@ def initialize_processors():
 
 # Initialize processor variables as None
 pdf_processor = None
-model_processor = None
+few_shot_processor = None
 mask_extractor = None
-annotation_processor = None
-image_processor = None
 tabular_processor = None
-second_step_processor = None
 export_processor = None
 
 
@@ -578,11 +532,8 @@ def get_project_images(project_id):
         if images is None:
             return jsonify({'error': 'Project not found', 'success': False}), 404
         
-        # Create URLs for each image
-        image_urls = [f'/api/projects/{project_id}/image/{img}' for img in images]
-        
         return jsonify({
-            'images': image_urls,
+            'images': images,
             'count': len(images),
             'success': True
         })
@@ -883,268 +834,326 @@ def upload_pdf():
         return jsonify({'error': str(e), 'success': False}), 500
 
 
-# ==================== MODEL APPLICATION ====================
+# ==================== FEW-SHOT DETECTION ====================
 
-@app.route('/api/model/apply', methods=['POST'])
-def apply_model():
-    """Apply model to images in a project"""
+@app.route('/api/projects/<project_id>/fewshot/process-image', methods=['POST'])
+def fewshot_process_image(project_id):
+    """
+    Run SAM2 automask + DINOv2 on one image and cache the result.
+    Body: { "image_filename": "page_001.jpg" }
+    """
     try:
         data = request.json
-        project_id = data.get('project_id')
-        model = data.get('model')
-        confidence = float(data.get('confidence', 0.5))
-        diagnostic = data.get('diagnostic', False)
-        kernel_size = int(data.get('kernel_size', 2))
-        iterations = int(data.get('iterations', 10))
-        excluded_images = data.get('excluded_images', [])
-        
-        if not project_id or not model:
-            return jsonify({'error': 'Project and model are required', 'success': False}), 400
-        
-        # Verify project exists
-        project_metadata = project_manager.get_project(project_id)
-        if not project_metadata:
+        image_filename = data.get('image_filename')
+        if not image_filename:
+            return jsonify({'error': 'image_filename required', 'success': False}), 400
+
+        project = project_manager.get_project(project_id)
+        if not project:
             return jsonify({'error': 'Project not found', 'success': False}), 404
-        
-        # Get project paths
+
         images_path = project_manager.get_project_path(project_id, 'images')
-        masks_path = project_manager.get_project_path(project_id, 'masks')
-        
-        if not images_path or not images_path.exists():
-            return jsonify({'error': 'Project images folder not found', 'success': False}), 404
-        
-        print(f"Applying model to project {project_id} with excluded_images: {excluded_images}")
-        
-        # Reset progress
-        global model_progress
-        model_progress = {
-            'total': 0,
-            'current': 0,
-            'message': 'Starting...',
-            'active': True
-        }
-        
-        # Progress callback
-        def update_progress(current, total, message):
-            global model_progress
-            model_progress['current'] = current
-            model_progress['total'] = total
-            model_progress['message'] = message
-        
-        # Run model in background thread
-        def run_model():
-            global model_progress
-            try:
-                result = model_processor.apply_model_to_project(
-                    str(images_path),
-                    str(masks_path),
-                    model,
-                    confidence,
-                    diagnostic,
-                    kernel_size,
-                    iterations,
-                    excluded_images,
-                    progress_callback=update_progress
-                )
-                
-                # Update project workflow status
-                mask_count = project_manager.count_files(project_id, 'masks')
-                project_manager.update_workflow_status(project_id, {
-                    'model_applied': True,
-                    'masks_extracted': mask_count
-                })
-                
-                model_progress['message'] = result
-                model_progress['active'] = False
-                
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                model_progress['message'] = f'Error: {str(e)}'
-                model_progress['active'] = False
-        
-        thread = threading.Thread(target=run_model)
-        thread.daemon = True
-        thread.start()
-        
-        return jsonify({
-            'message': 'Model processing started',
-            'success': True
-        })
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e), 'success': False}), 500
+        fewshot_path = project_manager.get_project_path(project_id, 'fewshot')
+        image_path = images_path / image_filename
 
-
-@app.route('/api/model/progress')
-def get_model_progress():
-    """Get current model processing progress"""
-    global model_progress
-    return jsonify(model_progress)
-
-
-@app.route('/api/images/<folder>')
-def get_folder_images(folder):
-    """Get images in folder"""
-    try:
-        folder_path = PDFIMG_OUTPUT_DIR / folder
-        if not folder_path.exists():
-            return jsonify({'error': 'Folder not found', 'success': False}), 404
-        
-        images = [f for f in os.listdir(folder_path) 
-                 if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-        
-        # Return image paths
-        image_urls = [f'/api/image/{folder}/{img}' for img in images[:20]]  # Limit to 20 for preview
-        
-        return jsonify({
-            'images': image_urls,
-            'count': len(images),
-            'success': True
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e), 'success': False}), 500
-
-
-@app.route('/api/image/<folder>/<filename>')
-def get_image(folder, filename):
-    """Serve image file"""
-    try:
-        folder_path = PDFIMG_OUTPUT_DIR / folder
-        return send_from_directory(folder_path, filename)
-    except Exception as e:
-        return jsonify({'error': str(e), 'success': False}), 404
-
-
-# ==================== ANNOTATION ====================
-
-@app.route('/api/annotation/images/<folder>')
-def get_annotation_images(folder):
-    """Get list of images for annotation"""
-    try:
-        folder_path = PDFIMG_OUTPUT_DIR / folder
-        if not folder_path.exists():
-            return jsonify({'error': 'Folder not found', 'success': False}), 404
-        
-        images = sorted([f for f in os.listdir(folder_path) 
-                        if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
-        
-        return jsonify({
-            'images': images,
-            'total': len(images),
-            'success': True
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e), 'success': False}), 500
-
-
-@app.route('/api/annotation/load', methods=['POST'])
-def load_annotation():
-    """Load image and existing annotation"""
-    try:
-        data = request.json
-        folder = data.get('folder')
-        image_name = data.get('image')
-        
-        if not folder or not image_name:
-            return jsonify({'error': 'Folder and image are required', 'success': False}), 400
-        
-        image_path = PDFIMG_OUTPUT_DIR / folder / image_name
         if not image_path.exists():
-            return jsonify({'error': 'Image not found', 'success': False}), 404
-        
-        # Load annotation data
-        editor_data = annotation_processor.file_selection(str(image_path))
-        
-        # Convert to base64 for sending to client
-        from PIL import Image
-        import io
-        
-        img = Image.fromarray(editor_data['background'])
-        buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
-        img_base64 = base64.b64encode(buffer.getvalue()).decode()
-        
-        # Load mask if exists
-        mask_base64 = None
-        if editor_data['layers']:
-            mask_img = Image.fromarray(editor_data['layers'][0])
-            mask_buffer = io.BytesIO()
-            mask_img.save(mask_buffer, format='PNG')
-            mask_base64 = base64.b64encode(mask_buffer.getvalue()).decode()
-        
-        return jsonify({
-            'image': f'data:image/png;base64,{img_base64}',
-            'mask': f'data:image/png;base64,{mask_base64}' if mask_base64 else None,
-            'success': True
-        })
-        
+            return jsonify({'error': f'Image not found: {image_filename}', 'success': False}), 404
+
+        # Use filename stem as image_id
+        image_id = Path(image_filename).stem
+
+        def run():
+            try:
+                result = few_shot_processor.process_image(str(image_path), image_id, fewshot_path)
+                update_operation_progress('fewshot_process', 1, 1, f"Done: {result['num_masks']} masks")
+            except Exception as e:
+                update_operation_progress('fewshot_process', 1, 1, f"Error: {e}")
+                import traceback; traceback.print_exc()
+
+        update_operation_progress('fewshot_process', 0, 1, f'Processing {image_filename}…')
+        threading.Thread(target=run, daemon=True).start()
+
+        return jsonify({'message': 'Processing started', 'image_id': image_id, 'success': True})
+
     except Exception as e:
         return jsonify({'error': str(e), 'success': False}), 500
 
 
-@app.route('/api/annotation/save', methods=['POST'])
-def save_annotation():
-    """Save annotation mask"""
+@app.route('/api/projects/<project_id>/fewshot/process-image-sync', methods=['POST'])
+def fewshot_process_image_sync(project_id):
+    """Synchronous version — returns immediately with full mask data."""
     try:
         data = request.json
-        folder = data.get('folder')
-        image_name = data.get('image')
-        mask_data = data.get('mask')  # Base64 encoded mask
-        
-        if not all([folder, image_name, mask_data]):
-            return jsonify({'error': 'Missing required data', 'success': False}), 400
-        
-        # Decode mask from base64
-        from PIL import Image
-        import io
-        import numpy as np
-        
-        mask_bytes = base64.b64decode(mask_data.split(',')[1])
-        mask_img = Image.open(io.BytesIO(mask_bytes))
-        mask_array = np.array(mask_img)
-        
-        # Prepare editor_data format
-        editor_data = {
-            'layers': [mask_array]
-        }
-        
-        # Save
-        success = annotation_processor.save_annotation(folder, editor_data, image_name)
-        
-        return jsonify({
-            'message': 'Mask saved successfully' if success else 'Failed to save mask',
-            'success': success
-        })
-        
+        image_filename = data.get('image_filename')
+        if not image_filename:
+            return jsonify({'error': 'image_filename required', 'success': False}), 400
+
+        project = project_manager.get_project(project_id)
+        if not project:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        images_path = project_manager.get_project_path(project_id, 'images')
+        fewshot_path = project_manager.get_project_path(project_id, 'fewshot')
+        image_path = images_path / image_filename
+        if not image_path.exists():
+            return jsonify({'error': f'Image not found: {image_filename}', 'success': False}), 404
+
+        image_id  = Path(image_filename).stem
+        threshold = float(data.get('threshold', 0.5))
+        result    = few_shot_processor.process_image(str(image_path), image_id, fewshot_path, threshold)
+        data_store      = few_shot_processor._store.get(image_id, {})
+        classes_summary = few_shot_processor._classes_summary(data_store.get("classes", {}))
+        return jsonify({**result, 'classes': classes_summary, 'success': True})
+
     except Exception as e:
+        import traceback; traceback.print_exc()
         return jsonify({'error': str(e), 'success': False}), 500
 
 
-@app.route('/api/annotation/extract', methods=['POST'])
-def extract_masks():
-    """Extract masks from annotations"""
+@app.route('/api/projects/<project_id>/fewshot/load-image', methods=['POST'])
+def fewshot_load_image(project_id):
+    """
+    Quickly load a project image into memory so SAM2 predictor can run on it.
+    Does NOT run auto-mask generation.  Fast (< 1 s).
+    Body: { image_filename }
+    """
     try:
         data = request.json
-        folder = data.get('folder')
-        
-        if not folder:
-            return jsonify({'error': 'Folder is required', 'success': False}), 400
-        
-        result = mask_extractor.extract_masks(folder)
-        
-        return jsonify({
-            'message': result,
-            'success': True
-        })
-        
+        image_filename = data.get('image_filename')
+        if not image_filename:
+            return jsonify({'error': 'image_filename required', 'success': False}), 400
+
+        project = project_manager.get_project(project_id)
+        if not project:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        images_path = project_manager.get_project_path(project_id, 'images')
+        image_path  = images_path / image_filename
+        if not image_path.exists():
+            return jsonify({'error': f'Image not found: {image_filename}', 'success': False}), 404
+
+        image_id     = Path(image_filename).stem
+        fewshot_path = project_manager.get_project_path(project_id, 'fewshot')
+        result       = few_shot_processor.load_for_prediction(str(image_path), image_id, fewshot_path)
+        return jsonify({**result, 'success': True})
+
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/fewshot/save-masks', methods=['POST'])
+def fewshot_save_masks(project_id):
+    """
+    Save all labeled examples for the current image as RGBA mask PNGs.
+    Works without auto-mask pre-processing.
+    Body: { image_id, image_filename }
+    """
+    try:
+        data           = request.json
+        image_id       = data.get('image_id')
+        image_filename = data.get('image_filename')
+        if not image_id or not image_filename:
+            return jsonify({'error': 'image_id and image_filename required', 'success': False}), 400
+
+        project = project_manager.get_project(project_id)
+        if not project:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        masks_path = project_manager.get_project_path(project_id, 'masks')
+        result     = few_shot_processor.save_labeled_masks(image_id, masks_path, image_filename)
+        return jsonify({**result, 'success': True})
+
+    except ValueError as e:
+        return jsonify({'error': str(e), 'success': False}), 400
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/fewshot/preview-prompt', methods=['POST'])
+def fewshot_preview_prompt(project_id):
+    """
+    Run SAM2 predictor with given prompts and return the mask contour immediately.
+    Does NOT modify any class — pure preview for live visual feedback.
+    Body: {
+      image_id,
+      points (optional): [[x,y], ...],
+      labels (optional): [1, 0, ...],   1=foreground 0=background
+      box    (optional): [x1, y1, x2, y2]
+    }
+    """
+    try:
+        data = request.json
+        image_id = data.get('image_id')
+        if not image_id:
+            return jsonify({'error': 'image_id required', 'success': False}), 400
+
+        points = data.get('points')
+        labels = data.get('labels')
+        box    = data.get('box')
+
+        result = few_shot_processor.preview_prompt(image_id, points, labels, box)
+        return jsonify({**result, 'success': True})
+
+    except ValueError as e:
+        return jsonify({'error': str(e), 'success': False}), 400
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/fewshot/add-example', methods=['POST'])
+def fewshot_add_example(project_id):
+    """
+    Add a labelled example to a class.
+    Body: {
+      image_id, class_name, x, y, threshold,
+      points (optional), labels (optional), box (optional)
+    }
+    """
+    try:
+        data = request.json
+        image_id   = data.get('image_id')
+        class_name = data.get('class_name')
+        x          = int(data.get('x', 0))
+        y          = int(data.get('y', 0))
+        threshold  = float(data.get('threshold', 0.5))
+        points     = data.get('points')    # [[x,y], ...]
+        labels     = data.get('labels')    # [1, 0, ...]
+        box        = data.get('box')       # [x1, y1, x2, y2]
+
+        if not image_id or not class_name:
+            return jsonify({'error': 'image_id and class_name required', 'success': False}), 400
+
+        fewshot_path = project_manager.get_project_path(project_id, 'fewshot')
+
+        summary = few_shot_processor.add_example(
+            image_id, class_name, x, y, threshold, fewshot_path,
+            points=points, labels=labels, box=box,
+        )
+        return jsonify({'classes': summary, 'success': True})
+
+    except ValueError as e:
+        return jsonify({'error': str(e), 'success': False}), 400
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/fewshot/remove-example', methods=['POST'])
+def fewshot_remove_example(project_id):
+    """
+    Remove a labelled example.
+    Body: { image_id, class_name, example_index, threshold }
+    """
+    try:
+        data = request.json
+        image_id      = data.get('image_id')
+        class_name    = data.get('class_name')
+        example_index = int(data.get('example_index', 0))
+        threshold     = float(data.get('threshold', 0.5))
+
+        fewshot_path = project_manager.get_project_path(project_id, 'fewshot')
+        summary = few_shot_processor.remove_example(image_id, class_name, example_index, threshold, fewshot_path)
+        return jsonify({'classes': summary, 'success': True})
+
+    except ValueError as e:
+        return jsonify({'error': str(e), 'success': False}), 400
     except Exception as e:
         return jsonify({'error': str(e), 'success': False}), 500
 
+
+@app.route('/api/projects/<project_id>/fewshot/classes/<image_id>', methods=['GET'])
+def fewshot_get_classes(project_id, image_id):
+    """Return current class predictions for an image."""
+    try:
+        threshold = float(request.args.get('threshold', 0.5))
+        summary = few_shot_processor.get_predictions(image_id, threshold)
+        return jsonify({'classes': summary, 'success': True})
+    except ValueError as e:
+        return jsonify({'error': str(e), 'success': False}), 400
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/fewshot/confirm', methods=['POST'])
+def fewshot_confirm(project_id):
+    """
+    Confirm selected predictions and write RGBA mask PNGs.
+    Body: {
+      image_id, image_filename,
+      confirmations: { class_name: [mask_index, ...], ... }
+    }
+    """
+    try:
+        data = request.json
+        image_id       = data.get('image_id')
+        image_filename = data.get('image_filename')
+        confirmations  = data.get('confirmations', {})
+
+        masks_path = project_manager.get_project_path(project_id, 'masks')
+        messages = []
+        for class_name, indices in confirmations.items():
+            msg = few_shot_processor.confirm_predictions(
+                image_id, class_name, indices, masks_path, image_filename
+            )
+            messages.append(msg)
+
+        project_manager.update_workflow_status(project_id, {'fewshot_labeling_done': True})
+        return jsonify({'messages': messages, 'success': True})
+
+    except ValueError as e:
+        return jsonify({'error': str(e), 'success': False}), 400
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/fewshot/apply-to-all', methods=['POST'])
+def fewshot_apply_to_all(project_id):
+    """
+    Batch: apply all class examples to every image in the project.
+    Body: { threshold (float), excluded_images (list) }
+    Runs in background; poll /api/operation-progress.
+    """
+    try:
+        data = request.json
+        threshold        = float(data.get('threshold', 0.5))
+        excluded_images  = data.get('excluded_images', [])
+
+        project = project_manager.get_project(project_id)
+        if not project:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        images_path  = project_manager.get_project_path(project_id, 'images')
+        masks_path   = project_manager.get_project_path(project_id, 'masks')
+        fewshot_path = project_manager.get_project_path(project_id, 'fewshot')
+
+        def run():
+            try:
+                result = few_shot_processor.apply_to_all(
+                    images_path, masks_path, fewshot_path,
+                    threshold, excluded_images,
+                    progress_callback=lambda c, t, m: update_operation_progress('batch_fewshot', c, t, m),
+                )
+                mask_count = sum(1 for f in masks_path.iterdir() if f.suffix == '.png')
+                project_manager.update_workflow_status(project_id, {
+                    'batch_applied': True,
+                    'masks_generated': mask_count,
+                })
+                clear_operation_progress()
+            except Exception as e:
+                clear_operation_progress()
+                import traceback; traceback.print_exc()
+
+        update_operation_progress('batch_fewshot', 0, 1, 'Starting batch processing…')
+        threading.Thread(target=run, daemon=True).start()
+
+        return jsonify({'message': 'Batch processing started', 'success': True})
+
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
 
 # ==================== TABULAR ====================
 
@@ -2041,208 +2050,6 @@ def export_project_tabular_csv(project_id):
         return jsonify({'error': str(e), 'success': False}), 500
 
 
-# ==================== POST PROCESSING ====================
-
-@app.route('/api/postprocess/process', methods=['POST'])
-def process_folder():
-    """Process folder with classification model"""
-    try:
-        data = request.json
-        folder = data.get('folder')
-        flip_vertical = data.get('flip_vertical', True)
-        flip_horizontal = data.get('flip_horizontal', True)
-        
-        if not folder:
-            return jsonify({'error': 'Folder is required', 'success': False}), 400
-        
-        # Set flip options
-        second_step_processor.set_flip_options(flip_vertical, flip_horizontal)
-        
-        # Process
-        results = second_step_processor.process_folder(folder)
-        
-        if results.empty:
-            return jsonify({'error': 'No images were processed', 'success': False}), 400
-        
-        return jsonify({
-            'message': f'Successfully processed {len(results)} images',
-            'count': len(results),
-            'success': True
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e), 'success': False}), 500
-
-
-@app.route('/api/postprocess/load', methods=['POST'])
-def load_processed_image():
-    """Load processed image for review"""
-    try:
-        data = request.json
-        folder = data.get('folder')
-        img_num = int(data.get('img_num', 0))
-        
-        if not folder:
-            return jsonify({'error': 'Folder is required', 'success': False}), 400
-        
-        results = second_step_processor.load_results(folder)
-        if results.empty or img_num >= len(results):
-            return jsonify({'error': 'No results found', 'success': False}), 404
-        
-        row = results.iloc[img_num]
-        
-        # Load images
-        from PIL import Image
-        import io
-        
-        original_path = second_step_processor.get_original_path(folder, row['filename'])
-        transformed_path = second_step_processor.get_transformed_path(folder, row['filename'])
-        
-        def img_to_base64(path):
-            if path.exists():
-                img = Image.open(path)
-                buffer = io.BytesIO()
-                img.save(buffer, format='PNG')
-                return base64.b64encode(buffer.getvalue()).decode()
-            return None
-        
-        original_b64 = img_to_base64(original_path)
-        transformed_b64 = img_to_base64(transformed_path)
-        
-        return jsonify({
-            'original': f'data:image/png;base64,{original_b64}' if original_b64 else None,
-            'transformed': f'data:image/png;base64,{transformed_b64}' if transformed_b64 else None,
-            'type': row['type'],
-            'position': row['position'],
-            'rotation': row['rotation'],
-            'current': img_num,
-            'total': len(results) - 1,
-            'success': True
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e), 'success': False}), 500
-
-
-@app.route('/api/postprocess/flip', methods=['POST'])
-def flip_image():
-    """Manually flip an image"""
-    try:
-        data = request.json
-        folder = data.get('folder')
-        img_num = int(data.get('img_num', 0))
-        flip_type = data.get('flip_type')  # 'vertical' or 'horizontal'
-        
-        if not all([folder, flip_type]):
-            return jsonify({'error': 'Missing required data', 'success': False}), 400
-        
-        results = second_step_processor.load_results(folder)
-        if results.empty or img_num >= len(results):
-            return jsonify({'error': 'Image not found', 'success': False}), 404
-        
-        filename = results.iloc[img_num]['filename']
-        
-        # Flip
-        flipped = second_step_processor.manual_flip(folder, filename, flip_type)
-        
-        if flipped is None:
-            return jsonify({'error': 'Failed to flip image', 'success': False}), 500
-        
-        # Return updated image
-        from PIL import Image
-        import io
-        
-        buffer = io.BytesIO()
-        flipped.save(buffer, format='PNG')
-        img_base64 = base64.b64encode(buffer.getvalue()).decode()
-        
-        return jsonify({
-            'image': f'data:image/png;base64,{img_base64}',
-            'success': True
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e), 'success': False}), 500
-
-
-@app.route('/api/postprocess/update-type', methods=['POST'])
-def update_type():
-    """Update type classification"""
-    try:
-        data = request.json
-        folder = data.get('folder')
-        img_num = int(data.get('img_num', 0))
-        new_type = data.get('type')
-        
-        if not all([folder, new_type]):
-            return jsonify({'error': 'Missing required data', 'success': False}), 400
-        
-        results = second_step_processor.load_results(folder)
-        if results.empty or img_num >= len(results):
-            return jsonify({'error': 'Image not found', 'success': False}), 404
-        
-        filename = results.iloc[img_num]['filename']
-        second_step_processor.update_result(folder, filename, {'type': new_type})
-        
-        return jsonify({
-            'message': f'Updated type to {new_type}',
-            'success': True
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e), 'success': False}), 500
-
-
-@app.route('/api/postprocess/merge', methods=['POST'])
-def merge_annotations():
-    """Merge annotations with classifications"""
-    try:
-        data = request.json
-        folder = data.get('folder')
-        
-        if not folder:
-            return jsonify({'error': 'Folder is required', 'success': False}), 400
-        
-        # Get paths
-        annots_path = PRED_OUTPUT_DIR / folder / "mask_info.csv"
-        transformed_folder = second_step_processor.get_transformed_folder_path(folder)
-        results_path = transformed_folder / "classifications.csv"
-        
-        if not annots_path.exists():
-            return jsonify({'error': 'Annotations file not found', 'success': False}), 404
-        if not results_path.exists():
-            return jsonify({'error': 'Classifications not found. Process images first.', 'success': False}), 404
-        
-        # Load and merge
-        annots_df = pd.read_csv(annots_path)
-        results_df = pd.read_csv(results_path)
-        
-        annots_df.rename(columns={'mask_file': 'filename'}, inplace=True)
-        results_df['filename'] = results_df['filename'].str.replace('.png', '')
-        
-        merged_df = pd.merge(
-            annots_df,
-            results_df[['filename', 'type']],
-            on='filename',
-            how='left'
-        )
-        
-        if 'file' in merged_df.columns:
-            merged_df = merged_df.drop('file', axis=1)
-        
-        # Save
-        output_path = transformed_folder / "merged_annotations.csv"
-        merged_df.to_csv(output_path, index=False)
-        
-        return jsonify({
-            'message': 'Successfully merged annotations with classifications',
-            'success': True
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e), 'success': False}), 500
-
-
 # ==================== EXPORT ====================
 
 @app.route('/api/export', methods=['POST'])
@@ -2287,283 +2094,6 @@ def serve_static(filename):
     """Serve static files"""
     return send_from_directory('static', filename)
 
-
-# ==================== PROJECT-AWARE POSTPROCESSING ENDPOINTS ====================
-
-@app.route('/api/projects/<project_id>/postprocess', methods=['POST'])
-def process_project_cards(project_id):
-    """Process all cards in a project with classification model"""
-    try:
-        # Verify project exists
-        project_metadata = project_manager.get_project(project_id)
-        if not project_metadata:
-            return jsonify({'error': 'Project not found', 'success': False}), 404
-        
-        data = request.json
-        flip_vertical = data.get('flip_vertical', True)
-        flip_horizontal = data.get('flip_horizontal', True)
-        
-        # Get project paths
-        cards_path = project_manager.get_project_path(project_id, 'cards')
-        cards_modified_path = project_manager.get_project_path(project_id, 'cards_modified')
-        
-        if not cards_path or not cards_path.exists():
-            return jsonify({'error': 'No cards folder found in project', 'success': False}), 404
-        
-        # Create cards_modified folder
-        cards_modified_path.mkdir(exist_ok=True)
-        
-        # Set flip options
-        second_step_processor.set_flip_options(flip_vertical, flip_horizontal)
-        
-        def _natural_key(s):
-            return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', str(s.name))]
-
-        # Get all card images
-        card_files = sorted([f for f in cards_path.iterdir() if f.suffix.lower() in ['.png', '.jpg', '.jpeg']],
-                           key=_natural_key)
-        
-        if not card_files:
-            return jsonify({'error': 'No card images found', 'success': False}), 404
-        
-        total_cards = len(card_files)
-        
-        # Initialize progress
-        update_operation_progress('postprocess', 0, total_cards, 'Starting post-processing...')
-        
-        # Process each card
-        results = []
-        for idx, card_file in enumerate(card_files):
-            try:
-                # Update progress
-                update_operation_progress('postprocess', idx + 1, total_cards, 
-                                        f'Processing image {idx + 1} of {total_cards}')
-                
-                # Process the image
-                type_pred, pos_pred, rot_pred, transformed_image = second_step_processor.process_image(str(card_file))
-                
-                if all((type_pred, pos_pred, rot_pred)) and transformed_image:
-                    # Save transformed image to cards_modified
-                    transformed_path = cards_modified_path / card_file.name
-                    transformed_image.save(transformed_path)
-                    
-                    results.append({
-                        'filename': card_file.name,
-                        'type': type_pred,
-                        'position': pos_pred,
-                        'rotation': rot_pred
-                    })
-                    print(f"Processed {card_file.name}: Type={type_pred}, Pos={pos_pred}, Rot={rot_pred}")
-                    
-            except Exception as e:
-                print(f"Error processing {card_file.name}: {e}")
-                continue
-        
-        # Clear progress
-        clear_operation_progress()
-        
-        # Save classifications
-        if results:
-            import pandas as pd
-            results_df = pd.DataFrame(results)
-            classifications_path = cards_modified_path / 'classifications.csv'
-            results_df.to_csv(classifications_path, index=False)
-            print(f"Saved classifications for {len(results)} cards")
-        
-        return jsonify({
-            'message': f'Successfully processed {len(results)} cards',
-            'count': len(results),
-            'success': True
-        })
-        
-    except Exception as e:
-        clear_operation_progress()
-        print(f"Error processing project cards: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e), 'success': False}), 500
-
-
-@app.route('/api/projects/<project_id>/postprocess/flip', methods=['POST'])
-def flip_project_card(project_id):
-    """Flip a single card image"""
-    try:
-        # Verify project exists
-        project_metadata = project_manager.get_project(project_id)
-        if not project_metadata:
-            return jsonify({'error': 'Project not found', 'success': False}), 404
-        
-        data = request.json
-        img_num = int(data.get('img_num', 0))
-        flip_type = data.get('flip_type', 'vertical')
-        
-        # Get project paths
-        cards_path = project_manager.get_project_path(project_id, 'cards')
-        cards_modified_path = project_manager.get_project_path(project_id, 'cards_modified')
-        
-        if not cards_path or not cards_path.exists():
-            return jsonify({'error': 'No cards folder found', 'success': False}), 404
-        
-        # Get list of card images
-        card_files = sorted([f for f in cards_path.iterdir() if f.suffix.lower() in ['.png', '.jpg', '.jpeg']])
-        
-        if img_num < 0 or img_num >= len(card_files):
-            return jsonify({'error': 'Invalid image number', 'success': False}), 400
-        
-        card_file = card_files[img_num]
-        
-        # Check if a modified version already exists, use that instead
-        modified_file = cards_modified_path / card_file.name
-        if modified_file.exists():
-            source_file = modified_file
-        else:
-            source_file = card_file
-        
-        # Load image from the appropriate source
-        from PIL import Image
-        img = Image.open(source_file)
-        
-        # Apply flip
-        if flip_type == 'vertical':
-            img = img.transpose(Image.FLIP_TOP_BOTTOM)
-        elif flip_type == 'horizontal':
-            img = img.transpose(Image.FLIP_LEFT_RIGHT)
-        
-        # Save to cards_modified (always save the result here)
-        cards_modified_path.mkdir(parents=True, exist_ok=True)
-        output_path = cards_modified_path / card_file.name
-        img.save(output_path)
-        
-        # Convert to base64 for display
-        import io
-        buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
-        img_base64 = base64.b64encode(buffer.getvalue()).decode()
-        
-        return jsonify({
-            'success': True,
-            'image': f'data:image/png;base64,{img_base64}'
-        })
-        
-    except Exception as e:
-        print(f"Error flipping card: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e), 'success': False}), 500
-
-
-@app.route('/api/projects/<project_id>/postprocess/update-type', methods=['POST'])
-def update_project_card_type(project_id):
-    """Update the type classification for a card"""
-    try:
-        # Verify project exists
-        project_metadata = project_manager.get_project(project_id)
-        if not project_metadata:
-            return jsonify({'error': 'Project not found', 'success': False}), 404
-        
-        data = request.json
-        filename = data.get('filename', '')
-        new_type = data.get('type', '')
-        
-        if not filename:
-            return jsonify({'error': 'Filename is required', 'success': False}), 400
-        
-        # Get project cards folder
-        cards_path = project_manager.get_project_path(project_id, 'cards')
-        if not cards_path or not cards_path.exists():
-            return jsonify({'error': 'No cards folder found', 'success': False}), 404
-        
-        # Try cards_modified first (where classifications.csv is usually saved after processing)
-        project_root = cards_path.parent
-        cards_modified_path = project_root / 'cards_modified'
-        classifications_csv = cards_modified_path / 'classifications.csv'
-        
-        if not classifications_csv.exists():
-            # Fallback to cards folder
-            classifications_csv = cards_path / 'classifications.csv'
-        
-        if not classifications_csv.exists():
-            return jsonify({'error': 'Classifications file not found. Run processing first.', 'success': False}), 404
-        
-        # Load classifications CSV
-        df = pd.read_csv(classifications_csv)
-        
-        # Find the row with matching filename
-        mask = df['filename'] == filename
-        if not mask.any():
-            return jsonify({'error': f'File {filename} not found in classifications', 'success': False}), 404
-        
-        # Update type
-        df.loc[mask, 'type'] = new_type
-        
-        # Save back to CSV
-        df.to_csv(classifications_csv, index=False)
-        
-        print(f"Updated type for {filename} to {new_type} in {classifications_csv}")
-        
-        return jsonify({
-            'success': True,
-            'message': 'Type updated successfully'
-        })
-        
-    except Exception as e:
-        print(f"Error updating type: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e), 'success': False}), 500
-
-
-@app.route('/api/projects/<project_id>/postprocess/merge', methods=['POST'])
-def merge_project_annotations(project_id):
-    """Merge mask annotations with classifications"""
-    try:
-        # Verify project exists
-        project_metadata = project_manager.get_project(project_id)
-        if not project_metadata:
-            return jsonify({'error': 'Project not found', 'success': False}), 404
-        
-        # Get project cards folder
-        cards_path = project_manager.get_project_path(project_id, 'cards')
-        if not cards_path or not cards_path.exists():
-            return jsonify({'error': 'No cards folder found', 'success': False}), 404
-        
-        # Check for required CSV files
-        mask_info_csv = cards_path / 'mask_info.csv'
-        classifications_csv = cards_path / 'classifications.csv'
-        
-        if not mask_info_csv.exists():
-            return jsonify({'error': 'mask_info.csv not found. Extract cards first.', 'success': False}), 404
-        
-        if not classifications_csv.exists():
-            return jsonify({'error': 'classifications.csv not found. Run processing first.', 'success': False}), 404
-        
-        # Load both CSVs
-        df_mask = pd.read_csv(mask_info_csv)
-        df_class = pd.read_csv(classifications_csv)
-        
-        # Merge on filename (mask_file matches image in classifications)
-        merged = pd.merge(
-            df_mask, 
-            df_class[['image', 'type', 'is_correct']], 
-            left_on='mask_file', 
-            right_on='image', 
-            how='left'
-        )
-        
-        # Save merged annotations
-        merged_csv = cards_path / 'merged_annotations.csv'
-        merged.to_csv(merged_csv, index=False)
-        
-        return jsonify({
-            'success': True,
-            'message': f'Successfully merged {len(merged)} annotations'
-        })
-        
-    except Exception as e:
-        print(f"Error merging annotations: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e), 'success': False}), 500
 
 
 @app.route('/api/projects/<project_id>/export', methods=['POST'])

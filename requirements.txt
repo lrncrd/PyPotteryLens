@@ -1,9 +1,7 @@
 flask
 werkzeug
-ultralytics
 pillow
 scikit-image
-timm
 PyMuPDF
 psutil
 gputil
@@ -11,9 +9,11 @@ reportlab
 pandas
 numpy
 scipy
-transformers>=4.51.0
-accelerate
+opencv-python
 # PyTorch with CUDA support (if available, otherwise CPU)
 --extra-index-url https://download.pytorch.org/whl/cu126
 torch
 torchvision
+# SAM2 (Facebook Segment Anything 2)
+# Install with: pip install git+https://github.com/facebookresearch/sam2.git
+# sam2

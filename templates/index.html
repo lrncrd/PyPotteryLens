@@ -64,13 +64,18 @@
         }
 
         @keyframes spin {
-            0% {
-                transform: rotate(0deg);
-            }
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
 
-            100% {
-                transform: rotate(360deg);
-            }
+        /* canvas loading spinner for few-shot analysis */
+        .fs-spinner {
+            border: 3px solid rgba(255,255,255,0.25);
+            border-top: 3px solid #fff;
+            border-radius: 50%;
+            width: 42px;
+            height: 42px;
+            animation: spin 0.85s linear infinite;
         }
 
         .splash-title {
@@ -330,10 +335,9 @@
             <div class="tabs">
                 <button class="tab-button active" data-tab="projects">🗂️ Project Manager</button>
                 <button class="tab-button" data-tab="pdf">1. PDF document processing</button>
-                <button class="tab-button" data-tab="model">2. Apply Model</button>
-                <button class="tab-button" data-tab="annotation">3. Review Annotations and extract masks</button>
-                <button class="tab-button" data-tab="tabular">4. Tabular Information</button>
-                <button class="tab-button" data-tab="postprocess">5. Post Processing</button>
+                <button class="tab-button" data-tab="fewshot">2. Few-Shot Labeling</button>
+                <button class="tab-button" data-tab="tabular">3. Tabular Information</button>
+                <button class="tab-button" data-tab="postprocess">4. Post Processing</button>
             </div>
 
             <!-- Tab Content -->
@@ -423,145 +427,110 @@
                     <div id="pdf-status" class="status-message"></div>
                 </div>
 
-                <!-- Model Application Tab -->
-                <div class="tab-content" id="model-tab">
+                <!-- Few-Shot Labeling Tab -->
+                <div class="tab-content" id="fewshot-tab">
                     <div class="tab-layout">
                         <!-- Left Panel - Controls -->
                         <div class="controls-panel">
-                            <!-- Model Selection -->
+
+                            <!-- Image Selector -->
                             <div class="control-group">
-                                <h3>🤖 Model Selection</h3>
-                                <div class="form-group">
-                                    <label>Model</label>
-                                    <select id="model-select" class="form-control">
-                                        <option value="">Select model...</option>
-                                    </select>
-                                    <p class="info-text">Select the YOLO model to apply to project images</p>
+                                <h3>🖼️ Images (<span id="fs-image-count">0</span>)</h3>
+                                <div class="annotation-image-list" id="fs-image-list" style="max-height:220px; overflow-y:auto;">
                                 </div>
                             </div>
 
-                            <!-- Model Parameters -->
+                            <!-- Class Manager -->
                             <div class="control-group">
-                                <h3>⚙️ Model Parameters</h3>
-                                <div class="form-group">
-                                    <label>Confidence Threshold</label>
-                                    <input type="range" id="confidence" min="0.1" max="1.0" step="0.05" value="0.5"
-                                        class="form-range">
-                                    <span id="confidence-value">0.5</span>
-                                    <p class="info-text">Lower values detect more objects but may increase false
-                                        positives</p>
+                                <h3>🏷️ Classes</h3>
+                                <div class="form-row" style="gap:6px;">
+                                    <input type="text" id="fs-new-class-name" class="form-control"
+                                        placeholder="Class name..." style="flex:1;">
+                                    <button class="btn btn-secondary" id="fs-add-class-btn">➕ Add</button>
                                 </div>
-                                <div class="form-row">
-                                    <div class="form-group">
-                                        <label>Kernel Size</label>
-                                        <input type="number" id="kernel-size" min="1" max="10" value="2"
-                                            class="form-control">
-                                    </div>
-                                    <div class="form-group">
-                                        <label>Iterations</label>
-                                        <input type="number" id="iterations" min="1" max="50" value="10"
-                                            class="form-control">
-                                    </div>
-                                </div>
+                                <div id="fs-class-list" style="margin-top:8px;"></div>
                             </div>
 
-                            <!-- Advanced Options -->
+                            <!-- Prompt Mode -->
                             <div class="control-group">
-                                <h3>🔧 Advanced Options</h3>
-                                <label>
-                                    <input type="checkbox" id="diagnostic-mode">
-                                    Diagnostic Mode
-                                </label>
-                                <p class="info-text">Process only first 25 images for testing</p>
+                                <h3>🖱️ Prompt Mode</h3>
+                                <div class="form-row" style="gap:6px; margin-bottom:6px;">
+                                    <button class="btn btn-tool active" id="fs-mode-point" style="flex:1;">
+                                        📍 Points
+                                    </button>
+                                    <button class="btn btn-tool" id="fs-mode-box" style="flex:1;">
+                                        ⬜ Box
+                                    </button>
+                                </div>
+                                <p class="info-text" id="fs-neg-hint">
+                                    Left-click = positive (green&nbsp;+) &nbsp;|&nbsp; Right-click or Shift+click = negative (red&nbsp;✕)<br>
+                                    Points accumulate — click <strong>Add to Class</strong> to confirm.
+                                </p>
+                                <div class="form-row" style="gap:6px; margin-top:6px;">
+                                    <button class="btn btn-secondary" id="fs-reset-prompt" style="flex:1;">
+                                        🗑️ Reset Prompt
+                                    </button>
+                                    <button class="btn btn-primary" id="fs-add-btn" style="flex:1;" disabled>
+                                        ➕ Add to Class
+                                    </button>
+                                </div>
                             </div>
 
-                            <!-- Process Button -->
+                            <!-- Threshold -->
                             <div class="control-group">
-                                <button class="btn btn-primary btn-block" id="apply-model-btn">
-                                    🚀 Apply Model to Project
-                                </button>
-
-                                <!-- Progress Bar -->
-                                <div class="progress-container" id="model-progress">
-                                    <div class="progress-bar-wrapper">
-                                        <div class="progress-bar" id="model-progress-bar">0%</div>
-                                    </div>
-                                    <div class="progress-info" id="model-progress-info">Processing...</div>
-                                </div>
-
-                                <div id="model-status" class="status-message"></div>
-                            </div>
-                        </div>
-
-                        <!-- Right Panel - Preview -->
-                        <div class="preview-panel">
-                            <div id="model-empty-msg" class="empty-message">
-                                <h3>📁 No project selected</h3>
-                                <p>Select a project to preview its images</p>
-                            </div>
-                            <div id="model-gallery" class="image-gallery" style="display: none;"></div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Annotation Tab -->
-                <div class="tab-content" id="annotation-tab">
-                    <div class="tab-layout">
-                        <!-- Left Panel - Image List -->
-                        <div class="controls-panel">
-                            <!-- Image List with Checkboxes -->
-                            <div class="control-group"
-                                style="flex: 1; overflow: hidden; display: flex; flex-direction: column;">
-                                <h3>🖼️ Images (<span id="annotation-image-count">0</span>)</h3>
-                                <div class="annotation-image-list" id="annotation-image-list">
-                                    <!-- Empty state will be populated by JavaScript -->
-                                </div>
+                                <label>Similarity Threshold: <strong id="fs-threshold-value">0.5</strong></label>
+                                <input type="range" id="fs-threshold" min="0.1" max="1.0" step="0.05" value="0.5"
+                                    class="form-range">
+                                <p class="info-text">Minimum cosine similarity for mask-to-class assignment</p>
                             </div>
 
                             <!-- Actions -->
                             <div class="control-group">
-                                <button class="btn btn-primary btn-block" id="annotation-save"
-                                    style="margin-bottom: 8px;">
-                                    💾 Save Current Mask
+                                <button class="btn btn-primary btn-block" id="fs-save-btn" style="margin-bottom:6px;">
+                                    💾 Save Masks
                                 </button>
-                                <button class="btn btn-primary btn-block" id="extract-masks-btn">
-                                    📤 Extract Cards
+                                <button class="btn btn-secondary btn-block" id="fs-analyze-btn" style="margin-bottom:6px;">
+                                    🔬 Analyze for Batch
+                                </button>
+                                <button class="btn btn-primary btn-block" id="fs-batch-btn">
+                                    🚀 Apply to All Images
                                 </button>
 
-                                <!-- Extraction Progress Bar -->
-                                <div class="progress-container" id="extraction-progress" style="margin-top: 12px;">
+                                <div class="progress-container" id="fs-batch-progress" style="display:none; margin-top:10px;">
                                     <div class="progress-bar-wrapper">
-                                        <div class="progress-bar" id="extraction-progress-bar">0%</div>
+                                        <div class="progress-bar" id="fs-batch-progress-bar">0%</div>
                                     </div>
-                                    <div class="progress-info" id="extraction-progress-info">Extracting...</div>
+                                    <div class="progress-info" id="fs-batch-progress-info">Processing...</div>
                                 </div>
 
-                                <div id="annotation-status" class="status-message"></div>
+                                <div id="fs-status" class="status-message"></div>
                             </div>
                         </div>
 
-                        <!-- Right Panel - Editor -->
-                        <div class="preview-panel">
-                            <div id="annotation-empty-msg" class="empty-message">
-                                <h3>🖼️ No Mask Selected</h3>
-                                <p>Select a project with masks and click a mask to review</p>
+                        <!-- Right Panel - Canvas -->
+                        <div class="preview-panel" style="position:relative; display:flex; flex-direction:column; align-items:center;">
+                            <div id="fs-empty-msg" class="empty-message">
+                                <h3>🖼️ Select an image to start</h3>
+                                <p>Choose an image from the list — it loads automatically for SAM2.</p>
                             </div>
-                            <div id="annotation-editor" style="display: none;">
-                                <div style="text-align: center; margin-bottom: 10px;">
-                                    <strong id="annotation-current-image">No image</strong>
-                                </div>
-                                <canvas id="annotation-canvas"></canvas>
-                                <div class="editor-controls">
-                                    <button class="btn btn-secondary" id="annotation-prev-btn">◀ Prev</button>
-                                    <button class="btn btn-tool active" id="brush-tool" data-tool="brush">🖌️
-                                        Brush</button>
-                                    <button class="btn btn-tool" id="eraser-tool" data-tool="eraser">🧹 Eraser</button>
-                                    <button class="btn btn-tool" id="clear-tool" data-tool="clear">🗑️ Clear</button>
-                                    <label>Size: <input type="range" id="brush-size" min="5" max="50"
-                                            value="20"></label>
-                                    <button class="btn btn-secondary" id="annotation-next-btn">Next ▶</button>
+                            <div id="fs-canvas-wrapper" style="display:none; position:relative; cursor:crosshair; max-width:100%;">
+                                <!-- layer 0: base image -->
+                                <canvas id="fs-canvas" style="display:block; max-width:100%; border:1px solid #e2e8f0; border-radius:6px;"></canvas>
+                                <!-- layer 1: confirmed class prediction overlays -->
+                                <canvas id="fs-overlay" style="position:absolute; top:0; left:0; pointer-events:none; max-width:100%;"></canvas>
+                                <!-- layer 2: current prompt points / preview mask / box -->
+                                <canvas id="fs-prompt"  style="position:absolute; top:0; left:0; max-width:100%;"></canvas>
+                                <!-- loading overlay (shown during SAM2 processing) -->
+                                <div id="fs-canvas-loading" style="display:none;position:absolute;inset:0;background:rgba(15,23,42,0.62);border-radius:6px;z-index:50;flex-direction:column;align-items:center;justify-content:center;gap:12px;">
+                                    <div class="fs-spinner"></div>
+                                    <span id="fs-loading-label" style="color:#fff;font-size:0.82rem;font-weight:500;letter-spacing:0.02em;">Processing…</span>
                                 </div>
                             </div>
+                            <p id="fs-click-hint" style="font-size:0.8rem; color:#64748b; margin-top:6px; display:none;">
+                                Click image to add a point prompt, or drag to draw a box. Select a class then click <strong>Add to Class</strong>.
+                            </p>
+                            <!-- Ghost predictions panel (shown after Analyze for Batch) -->
+                            <div id="fs-ghost-panel" style="display:none; margin-top:10px; width:100%; max-width:900px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:10px 14px;"></div>
                         </div>
                     </div>
                 </div>
@@ -771,11 +740,28 @@
     <script src="/static/js/utils.js?v=20251024163500"></script>
     <script src="/static/js/project-tab.js?v=20251024163500"></script>
     <script src="/static/js/pdf-tab.js?v=20251024163500"></script>
-    <script src="/static/js/model-tab.js?v=20251024163500"></script>
-    <script src="/static/js/annotation-tab.js?v=20251024163500"></script>
+    <script src="/static/js/fewshot-tab.js?v=20260501000000"></script>
     <script src="/static/js/tabular-tab.js?v=20251024163500"></script>
     <script src="/static/js/postprocess-tab.js?v=20251024163500"></script>
     <script src="/static/js/main.js?v=20251024163500"></script>
+    <!-- Prompt toolbar (shown after SAM2 preview) -->
+    <div id="fs-prompt-toolbar" style="position:fixed;display:none;z-index:9999;background:#1e293b;color:#fff;border-radius:8px;padding:6px 10px;box-shadow:0 4px 20px rgba(0,0,0,0.35);align-items:center;gap:6px;">
+        <span style="font-size:0.72rem;color:#94a3b8;margin-right:2px;">SAM preview</span>
+        <button id="fs-tb-accept" style="padding:4px 14px;font-size:0.8rem;background:#22c55e;color:#fff;border:none;border-radius:5px;cursor:pointer;font-weight:600;">✓ Accept</button>
+        <button id="fs-tb-undo"   style="padding:4px 10px;font-size:0.8rem;background:#475569;color:#fff;border:none;border-radius:5px;cursor:pointer;">↩ Undo</button>
+        <button id="fs-tb-cancel" style="padding:4px 10px;font-size:0.8rem;background:#475569;color:#fff;border:none;border-radius:5px;cursor:pointer;">✕</button>
+    </div>
+    <!-- Class assignment popover (shown after Accept) -->
+    <div id="fs-class-popover" style="position:fixed;display:none;z-index:10000;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;box-shadow:0 6px 24px rgba(0,0,0,0.15);min-width:200px;">
+        <p style="font-size:0.78rem;font-weight:600;color:#475569;margin:0 0 8px;">Assign to class:</p>
+        <div id="fs-popover-class-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;"></div>
+        <hr style="border:none;border-top:1px solid #f1f5f9;margin:6px 0;">
+        <div style="display:flex;gap:6px;">
+            <input id="fs-popover-new-name" type="text" placeholder="New class..." style="flex:1;font-size:0.8rem;padding:4px 8px;border:1px solid #e2e8f0;border-radius:6px;outline:none;">
+            <button id="fs-popover-create-btn" style="padding:4px 8px;font-size:0.8rem;background:#6366f1;color:#fff;border:none;border-radius:6px;cursor:pointer;">+ Create</button>
+        </div>
+    </div>
+
 </body>
 
 </html>
