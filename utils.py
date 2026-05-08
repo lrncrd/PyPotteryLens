@@ -727,6 +727,8 @@ class FewShotProcessor:
             ex["id"] = i
         if not cdata["examples"]:
             del classes[class_name]
+        # Persist the deletion to disk first
+        self._persist_state(project_fewshot_dir, image_id)
         # Reload inference_classes from disk to keep them consistent
         data["inference_classes"] = self._load_all_classes(project_fewshot_dir)
         # Mirror local new examples into inference_classes
@@ -740,7 +742,6 @@ class FewShotProcessor:
         if inference_cls:
             _recompute_predictions(data["all_masks"], inference_cls, threshold,
                                    target_classes=classes)
-        self._persist_state(project_fewshot_dir, image_id)
         return self._classes_summary(classes)
 
     def get_predictions(self, image_id: str, threshold: float) -> Dict:

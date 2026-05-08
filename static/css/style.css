@@ -1698,3 +1698,37 @@ body {
         grid-template-columns: 1fr;
     }
 }
+
+/* Segmented Control for Prompt Mode */
+.prompt-mode-toggle {
+    display: flex;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 4px;
+    position: relative;
+    gap: 4px;
+}
+
+.prompt-mode-toggle .btn-tool {
+    flex: 1;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-weight: 600;
+    z-index: 1;
+    transition: all 0.2s ease;
+    border-radius: 6px;
+    padding: 8px 0;
+}
+
+.prompt-mode-toggle .btn-tool.active {
+    color: var(--primary-color);
+    background: white;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    border: 1px solid var(--border);
+}
+
+.prompt-mode-toggle .btn-tool:hover:not(.active) {
+    background: rgba(0,0,0,0.02);
+}

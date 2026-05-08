@@ -449,8 +449,21 @@ const FewShotTab = (() => {
         var rect = promptCanvas.getBoundingClientRect();
         var popW = pop.offsetWidth || 220;
         var popH = pop.offsetHeight || 120;
-        var left = Math.min(Math.max(rect.left + rect.width  / 2 - popW / 2, 8), window.innerWidth - popW - 8);
-        var top  = Math.max(rect.top  + rect.height / 2 - popH / 2, 8);
+        if (previewContour && previewContour.length >= 3) {
+            var xs   = previewContour.map(function(p) { return toCanvasX(p[0]); });
+            var ys   = previewContour.map(function(p) { return toCanvasY(p[1]); });
+            var minY = Math.min.apply(null, ys);
+            var cx   = (Math.min.apply(null, xs) + Math.max.apply(null, xs)) / 2;
+            var scX  = rect.width  / promptCanvas.width;
+            var scY  = rect.height / promptCanvas.height;
+            var sx   = rect.left + cx   * scX;
+            var sy   = rect.top  + minY * scY;
+            var left = Math.min(Math.max(sx - popW / 2, 8), window.innerWidth - popW - 8);
+            var top  = Math.max(sy - popH - 10, 8);
+        } else {
+            var left = Math.min(Math.max(rect.left + rect.width  / 2 - popW / 2, 8), window.innerWidth - popW - 8);
+            var top  = Math.max(rect.top  + rect.height / 2 - popH / 2, 8);
+        }
         pop.style.left = left + 'px';
         pop.style.top  = top  + 'px';
     }
@@ -537,6 +550,163 @@ const FewShotTab = (() => {
             ghostPopup = null;
         }
         if (hoveredGhost) { hoveredGhost = null; drawOverlay(); }
+    }
+
+    var _confirmedPopup = null;
+
+    function _showConfirmedMaskPopup(maskInfo, clientX, clientY) {
+        _closeConfirmedPopup();
+        _closeGhostPopup();
+        var info  = classes[maskInfo.className];
+        var color = info ? info.color : '#94a3b8';
+        var div   = document.createElement('div');
+        div.style.cssText =
+            'position:fixed;z-index:10001;background:#1e293b;color:#fff;border-radius:10px;' +
+            'padding:10px 14px;box-shadow:0 6px 24px rgba(0,0,0,0.4);min-width:190px;';
+        
+        var optionsHtml = Object.keys(classes).map(function(c) {
+            return '<option value="' + c + '" ' + (c === maskInfo.className ? 'selected' : '') + '>' + c + '</option>';
+        }).join('');
+
+        div.innerHTML =
+            '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">' +
+            '<span style="width:10px;height:10px;border-radius:50%;background:' + color + ';display:inline-block;flex-shrink:0;"></span>' +
+            '<strong style="font-size:0.82rem;">' + maskInfo.className + '</strong>' +
+            '</div>' +
+            '<div style="margin-bottom:8px;">' +
+            '<select id="cmp-class-select" style="width:100%;font-size:0.8rem;padding:4px;border-radius:4px;background:#334155;color:#fff;border:1px solid #475569;outline:none;">' +
+            optionsHtml +
+            '</select>' +
+            '</div>' +
+            '<div style="display:flex;gap:6px;">' +
+            '<button id="cmp-save" style="flex:1;padding:5px 0;font-size:0.78rem;background:#22c55e;color:#fff;border:none;border-radius:5px;cursor:pointer;font-weight:600;">✓ Save</button>' +
+            '<button id="cmp-delete" style="flex:1;padding:5px 0;font-size:0.78rem;background:#ef4444;color:#fff;border:none;border-radius:5px;cursor:pointer;">🗑 Delete</button>' +
+            '</div>';
+            
+        var popW = 210;
+        div.style.left = Math.min(Math.max(clientX + 14, 8), window.innerWidth - popW - 8) + 'px';
+        div.style.top  = Math.max(clientY - 50, 8) + 'px';
+        
+        var backdrop = document.createElement('div');
+        backdrop.style.cssText = 'position:fixed;inset:0;z-index:10000;';
+        backdrop.onclick = function() { _closeConfirmedPopup(); };
+        
+        document.body.appendChild(backdrop);
+        document.body.appendChild(div);
+        _confirmedPopup = { div: div, backdrop: backdrop };
+        
+        document.getElementById('cmp-save').onclick = async function(e) {
+            e.stopPropagation(); 
+            var newClass = document.getElementById('cmp-class-select').value;
+            _closeConfirmedPopup();
+            if (newClass !== maskInfo.className) {
+                await _changeMaskClass(maskInfo.className, maskInfo.exIdx, newClass);
+            }
+        };
+        document.getElementById('cmp-delete').onclick = async function(e) {
+            e.stopPropagation(); 
+            _closeConfirmedPopup();
+            await _deleteMask(maskInfo.className, maskInfo.exIdx);
+        };
+    }
+
+    function _closeConfirmedPopup() {
+        if (_confirmedPopup) {
+            _confirmedPopup.div.remove();
+            _confirmedPopup.backdrop.remove();
+            _confirmedPopup = null;
+        }
+    }
+
+    function _findConfirmedMaskAtNatural(nx, ny) {
+        for (var name in classes) {
+            var examples = classes[name].examples || [];
+            for (var i = 0; i < examples.length; i++) {
+                var c = examples[i].contour;
+                if (c && c.length >= 3 && _pointInContourNatural(nx, ny, c))
+                    return { className: name, ex: examples[i], exIdx: i };
+            }
+        }
+        return null;
+    }
+
+    async function _deleteMask(className, exIdx) {
+        var ex = classes[className].examples[exIdx];
+        if (!ex) return;
+        
+        // Remove locally immediately for better UX
+        classes[className].examples.splice(exIdx, 1);
+        saveExamplesForImage(imageId);
+        drawOverlay();
+        renderClassList();
+        
+        if (!ex._confirmed_ghost) {
+            try {
+                await apiRequest('/api/projects/' + projectId + '/fewshot/remove-example', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        image_id: imageId,
+                        class_name: className,
+                        example_index: exIdx,
+                        threshold: threshold
+                    })
+                });
+            } catch (e) {
+                setStatus('Failed to delete on server: ' + e.message, 'error');
+            }
+        }
+    }
+
+    async function _changeMaskClass(oldClass, exIdx, newClass) {
+        var ex = classes[oldClass].examples[exIdx];
+        if (!ex) return;
+        
+        // Remove from old class, add to new class locally
+        classes[oldClass].examples.splice(exIdx, 1);
+        if (!classes[newClass]) classes[newClass] = { color: '#ffffff', examples: [] };
+        
+        var newEx = Object.assign({}, ex);
+        classes[newClass].examples.push(newEx);
+        
+        saveExamplesForImage(imageId);
+        drawOverlay();
+        renderClassList();
+        
+        if (!ex._confirmed_ghost) {
+            try {
+                // Delete from old class
+                await apiRequest('/api/projects/' + projectId + '/fewshot/remove-example', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        image_id: imageId,
+                        class_name: oldClass,
+                        example_index: exIdx,
+                        threshold: threshold
+                    })
+                });
+                
+                // Add to new class (we must submit a point inside the contour)
+                var xs = ex.contour.map(function(p) { return p[0]; });
+                var ys = ex.contour.map(function(p) { return p[1]; });
+                var cx = (Math.min.apply(null, xs) + Math.max.apply(null, xs)) / 2;
+                var cy = (Math.min.apply(null, ys) + Math.max.apply(null, ys)) / 2;
+                
+                await apiRequest('/api/projects/' + projectId + '/fewshot/add-example', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        image_id: imageId,
+                        class_name: newClass,
+                        x: cx,
+                        y: cy,
+                        points: [[cx, cy]],
+                        labels: [1],
+                        threshold: threshold
+                    })
+                });
+            } catch (e) {
+                setStatus('Failed to update class on server: ' + e.message, 'error');
+            }
+        }
     }
 
     function _addConfirmedContour(className, pred) {
@@ -833,13 +1003,18 @@ const FewShotTab = (() => {
         promptCanvas.addEventListener('mousedown', function(e) {
             e.preventDefault();
             if (!imageId || !naturalW) return;
+            var pos = naturalCoords(e);
             // ghost hit-test — intercept click before normal point/box logic
             if (Object.keys(ghostPredictions).length > 0) {
-                var gpos = naturalCoords(e);
-                var found = _findGhostAtNatural(gpos.x, gpos.y);
+                var found = _findGhostAtNatural(pos.x, pos.y);
                 if (found) { _showGhostPopup(found, e.clientX, e.clientY); return; }
             }
-            var pos = naturalCoords(e);
+            // confirmed mask hit-test
+            var cfound = _findConfirmedMaskAtNatural(pos.x, pos.y);
+            if (cfound) {
+                _showConfirmedMaskPopup(cfound, e.clientX, e.clientY);
+                return;
+            }
             if (promptMode === 'box') {
                 boxDragStart   = { x: pos.x, y: pos.y };
                 pendingBox     = null;
@@ -881,12 +1056,27 @@ const FewShotTab = (() => {
                     drawOverlay();
                 }
             }
-            // normal tooltip
+            // Confirmed mask hit-test
+            if (!ghostPopup && !_confirmedPopup) {
+                var pos = naturalCoords(e);
+                var maskFound = _findConfirmedMaskAtNatural(pos.x, pos.y);
+                if (maskFound) {
+                    promptCanvas.style.cursor = 'pointer';
+                    _showTooltip(e, maskFound.className + ' \u00b7 click to edit');
+                    return;
+                } else {
+                    promptCanvas.style.cursor = 'crosshair';
+                }
+            }
+
+            // normal tooltip (only show if actively drawing or prompt exists)
             var hasPrompt = pendingPoints.length > 0 || pendingBox || previewContour;
-            if (hasPrompt && !activeClass) {
-                _showTooltip(e, '\u2190 Select or create a class');
-            } else if (activeClass) {
-                _showTooltip(e, activeClass);
+            if (hasPrompt) {
+                if (!activeClass) {
+                    _showTooltip(e, '\u2190 Select or create a class');
+                } else {
+                    _showTooltip(e, activeClass);
+                }
             } else {
                 _hideTooltip();
             }
