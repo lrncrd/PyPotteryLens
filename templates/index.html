@@ -5,6 +5,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PyPotteryLens - Archaeological Pottery Documentation Tool</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/style.css">
     <style>
         /* Splash Screen Styles */
@@ -515,7 +518,7 @@
                             </div>
                             <div id="fs-canvas-wrapper" style="display:none; position:relative; cursor:crosshair; max-width:100%;">
                                 <!-- layer 0: base image -->
-                                <canvas id="fs-canvas" style="display:block; max-width:100%; border:1px solid #e2e8f0; border-radius:6px;"></canvas>
+                                <canvas id="fs-canvas" class="workspace-canvas"></canvas>
                                 <!-- layer 1: confirmed class prediction overlays -->
                                 <canvas id="fs-overlay" style="position:absolute; top:0; left:0; pointer-events:none; max-width:100%;"></canvas>
                                 <!-- layer 2: current prompt points / preview mask / box -->
