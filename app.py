@@ -33,7 +33,10 @@ from utils import (
     AnnotationConfig,
     TabularConfig,
     SecondStepConfig,
-    ExportConfig
+    ExportConfig,
+    read_vessels_sidecar,
+    write_vessels_sidecar,
+    VESSELS_SIDECAR_SUFFIX,
 )
 
 from project_manager import ProjectManager
@@ -880,6 +883,61 @@ def save_project_mask(project_id):
     except Exception as e:
         import traceback
         traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+# ============================================================================
+# MANUALLY DRAWN VESSELS (LabelMe-style polygons)
+# During review the operator draws polygons around vessels the model missed
+# (e.g. a vessel drawn inside another). Each polygon becomes its own card on
+# extraction. Polygons are stored as a JSON sidecar next to the mask.
+# ============================================================================
+
+@app.route('/api/projects/<project_id>/vessels/<base>', methods=['GET'])
+def get_image_vessels(project_id, base):
+    """Return manually drawn vessel polygons for a single image."""
+    try:
+        masks_path = project_manager.get_project_path(project_id, 'masks')
+        if not masks_path:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+        return jsonify({'success': True, 'polygons': read_vessels_sidecar(masks_path, base)})
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/vessels/<base>', methods=['POST'])
+def save_image_vessels(project_id, base):
+    """Persist manually drawn vessel polygons for a single image."""
+    try:
+        masks_path = project_manager.get_project_path(project_id, 'masks')
+        if not masks_path or not masks_path.exists():
+            return jsonify({'error': 'Project masks folder not found', 'success': False}), 404
+        data = request.get_json(silent=True) or {}
+        polygons = data.get('polygons', [])
+        write_vessels_sidecar(masks_path, base, polygons)
+        return jsonify({'success': True, 'count': len(polygons)})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/vessels-summary', methods=['GET'])
+def get_project_vessels_summary(project_id):
+    """Per-image count of manually drawn vessels (for badges in the image list)."""
+    try:
+        masks_path = project_manager.get_project_path(project_id, 'masks')
+        summary = {}
+        if masks_path and masks_path.exists():
+            for f in masks_path.iterdir():
+                if not f.name.endswith(VESSELS_SIDECAR_SUFFIX):
+                    continue
+                base = f.name[:-len(VESSELS_SIDECAR_SUFFIX)]
+                count = len(read_vessels_sidecar(masks_path, base))
+                if count:
+                    summary[base] = count
+        return jsonify({'success': True, 'summary': summary})
+    except Exception as e:
         return jsonify({'error': str(e), 'success': False}), 500
 
 
@@ -1739,6 +1797,133 @@ def save_project_tabular_data(project_id):
         return jsonify({'error': str(e), 'success': False}), 500
 
 
+# --------------------------------------------------------------------------
+# AI extraction helpers (shared by single + batch bibliographic extraction)
+# --------------------------------------------------------------------------
+
+def _normalize_field_key(s):
+    """Loose key for matching column names regardless of case/spacing/punctuation."""
+    return _re.sub(r'[^a-z0-9]', '', str(s).lower())
+
+
+def _canonical_fields_from_prompt(prompt_suffix):
+    """Field names the user wrote inside [square brackets] become EXACT column names.
+
+    e.g. "Add also [Scale], which is on the bottom-left" -> ["Scale"]. This keeps a
+    single, stable column across every page/iteration instead of the model inventing
+    variants (scale, Scale, scala...).
+    """
+    if not prompt_suffix:
+        return []
+    out = []
+    for f in _re.findall(r'\[([^\[\]]+)\]', prompt_suffix):
+        f = f.strip()
+        if f and f not in out:
+            out.append(f)
+    return out
+
+
+def _extra_fields_instruction(canonical_fields):
+    """Prompt fragment telling the model which extra keys to use, verbatim."""
+    if canonical_fields:
+        keys = ", ".join(f'"{c}"' for c in canonical_fields)
+        return (
+            "In addition to the four standard fields, also extract these fields and use "
+            "these EXACT JSON keys, spelled verbatim — do NOT translate, rename, pluralise "
+            f"or change the case: {keys}.\n"
+            "Use the same key on every drawing; if a value is not present, use null.\n"
+        )
+    return (
+        "If the context above asks you to extract additional fields beyond the four "
+        "standard ones, include them in each drawing's object using a concise snake_case "
+        "key (e.g. 'material', 'ceramic_class').\n"
+    )
+
+
+def _canonicalize_keys(values, canonical_fields):
+    """Rename model-returned keys to the exact canonical spelling when they match."""
+    if not canonical_fields or not isinstance(values, dict):
+        return values
+    lookup = {_normalize_field_key(c): c for c in canonical_fields}
+    out = {}
+    for k, v in values.items():
+        out[lookup.get(_normalize_field_key(k), k)] = v
+    return out
+
+
+def _parse_ai_json(raw_response):
+    """Extract and parse the JSON object from an LLM response, tolerantly.
+
+    Handles markdown fences, smart quotes, trailing commas, and — importantly —
+    responses truncated by the token limit, by trimming back to the last complete
+    drawing object so partial results are still usable. Raises ValueError if no
+    usable JSON can be recovered.
+    """
+    if not raw_response or not raw_response.strip():
+        raise ValueError("empty response")
+
+    text = raw_response.strip()
+    if text.startswith("```"):
+        text = _re.sub(r'^```[a-zA-Z]*\n?', '', text)
+        text = _re.sub(r'\n?```\s*$', '', text).strip()
+    text = text.replace('“', '"').replace('”', '"').replace('’', "'")
+
+    start = text.find('{')
+    if start == -1:
+        raise ValueError("no JSON object found in response")
+
+    # Walk to the matching closing brace, respecting string literals/escapes
+    depth = 0
+    in_str = False
+    esc = False
+    end = None
+    last_inner_close = None  # end of the last fully-closed drawing object
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == '\\':
+                esc = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 1:
+                    last_inner_close = i
+                elif depth == 0:
+                    end = i + 1
+                    break
+
+    candidate = text[start:end] if end else text[start:]
+
+    # Attempt 1: as-is
+    try:
+        return _json.loads(candidate)
+    except _json.JSONDecodeError:
+        pass
+
+    # Attempt 2: strip trailing commas before } or ]
+    repaired = _re.sub(r',\s*([}\]])', r'\1', candidate)
+    try:
+        return _json.loads(repaired)
+    except _json.JSONDecodeError:
+        pass
+
+    # Attempt 3: response was truncated — keep complete drawing objects only
+    if last_inner_close is not None:
+        trimmed = text[start:last_inner_close + 1].rstrip().rstrip(',') + '}'
+        trimmed = _re.sub(r',\s*([}\]])', r'\1', trimmed)
+        return _json.loads(trimmed)  # raises ValueError-compatible on failure
+
+    raise ValueError("could not parse JSON from response")
+
+
 @app.route('/api/projects/<project_id>/tabular/ai-bibliographic', methods=['POST'])
 def ai_extract_bibliographic(project_id):
     """Use Gemma 4 E2B-it to extract bibliographic info (tavola, figura, numero)
@@ -1858,17 +2043,21 @@ def ai_extract_bibliographic(project_id):
             'It is a digit or short alphanumeric (e.g. "1", "3", "14", "2a", "7b") '
             'that appears as part of the publication layout, NOT the orange letter label.\n\n'
         )
+        canonical_fields = _canonical_fields_from_prompt(prompt_suffix)
         if prompt_suffix:
             prompt += f"Additional context from the user:\n{prompt_suffix}\n\n"
         prompt += (
             f"Respond ONLY with a valid JSON object using EXACTLY these letter keys: {letter_list_str}\n"
-            "If the context above asks you to extract additional fields beyond the four standard ones, "
-            "include them in each drawing's object using a concise snake_case key (e.g. 'material', 'ceramic_class').\n"
+            + _extra_fields_instruction(canonical_fields) +
             "Example for two drawings labelled A and B:\n"
             '{"A": {"page": "45", "plate": "Tav. III", "figure": "Fig. 5", "number": "1"}, '
             '"B": {"page": "45", "plate": "Tav. III", "figure": "Fig. 5", "number": "2a"}}\n'
             "If a value is not found, use null."
         )
+
+        # Token budget scales with the number of drawings so large pages (30+
+        # drawings) are not truncated mid-JSON.
+        max_tokens = min(4096, max(512, len(letter_bbox_data) * 70 + 256))
 
         # ---- Run inference (local Gemma or OpenRouter) ----
         if ai_backend == 'openrouter':
@@ -1897,7 +2086,7 @@ def ai_extract_bibliographic(project_id):
             with torch.no_grad():
                 outputs = model.generate(
                     **inputs,
-                    max_new_tokens=512,
+                    max_new_tokens=max_tokens,
                     temperature=1.0,
                     top_p=0.95,
                     top_k=64,
@@ -1907,15 +2096,23 @@ def ai_extract_bibliographic(project_id):
             raw_response = processor.decode(outputs[0][input_len:], skip_special_tokens=True)
             print(f"[AI] Raw response: {raw_response[:300]}")
 
-        # Extract JSON block from the response
-        json_match = _re.search(r'\{.*\}', raw_response, _re.DOTALL)
-        if not json_match:
+        # Robustly parse JSON (handles fences, smart quotes, truncation)
+        try:
+            ai_result = _parse_ai_json(raw_response)
+        except Exception as parse_err:
             return jsonify({
-                'error': f'Model did not return valid JSON. Response: {raw_response[:500]}',
+                'error': f'Model did not return valid JSON ({parse_err}). Response: {raw_response[:500]}',
                 'success': False
             }), 500
 
-        ai_result = _json.loads(json_match.group())
+        # Force the user's bracketed field names to be exact columns and
+        # normalise model key variants onto them.
+        if canonical_fields:
+            ai_result = {k: _canonicalize_keys(v, canonical_fields)
+                         for k, v in ai_result.items()}
+            for col in canonical_fields:
+                if col not in df_info.columns:
+                    df_info[col] = ''
 
         # Ensure all columns returned by the model exist in df_info
         # (handles both the 4 standard fields and any extra user-requested ones)
@@ -2119,17 +2316,19 @@ def ai_extract_bibliographic_batch(project_id):
                 'It is a digit or short alphanumeric (e.g. "1", "3", "14", "2a", "7b") '
                 'that appears as part of the publication layout, NOT the orange letter label.\n\n'
             )
+            canonical_fields = _canonical_fields_from_prompt(prompt_suffix)
             if prompt_suffix:
                 prompt += f"Additional context from the user:\n{prompt_suffix}\n\n"
             prompt += (
                 f"Respond ONLY with a valid JSON object using EXACTLY these letter keys: {letter_list_str}\n"
-                "If the context above asks you to extract additional fields beyond the four standard ones, "
-                "include them in each drawing's object using a concise snake_case key (e.g. 'material', 'ceramic_class').\n"
+                + _extra_fields_instruction(canonical_fields) +
                 "Example for two drawings labelled A and B:\n"
                 '{"A": {"page": "45", "plate": "Tav. III", "figure": "Fig. 5", "number": "1"}, '
                 '"B": {"page": "45", "plate": "Tav. III", "figure": "Fig. 5", "number": "2a"}}\n'
                 "If a value is not found, use null."
             )
+
+            max_tokens = min(4096, max(512, len(letter_bbox_data) * 70 + 256))
 
             # ---- Run inference (local Gemma or OpenRouter) ----
             if ai_backend == 'openrouter':
@@ -2157,7 +2356,7 @@ def ai_extract_bibliographic_batch(project_id):
                 with torch.no_grad():
                     outputs = model.generate(
                         **inputs,
-                        max_new_tokens=512,
+                        max_new_tokens=max_tokens,
                         temperature=1.0,
                         top_p=0.95,
                         top_k=64,
@@ -2167,16 +2366,19 @@ def ai_extract_bibliographic_batch(project_id):
                 raw_response = processor.decode(outputs[0][input_len:], skip_special_tokens=True)
                 print(f"[AI Batch] {current_image_name} response: {raw_response[:200]}")
 
-            json_match = _re.search(r'\{.*\}', raw_response, _re.DOTALL)
-            if not json_match:
-                errors.append(f'No JSON from model for: {current_image_name}')
+            try:
+                ai_result = _parse_ai_json(raw_response)
+            except Exception as _pe:
+                errors.append(f'Invalid JSON for {current_image_name}: {_pe}')
                 continue
 
-            try:
-                ai_result = _json.loads(json_match.group())
-            except _json.JSONDecodeError:
-                errors.append(f'Invalid JSON for: {current_image_name}')
-                continue
+            # Force the user's bracketed field names to be exact columns
+            if canonical_fields:
+                ai_result = {k: _canonicalize_keys(v, canonical_fields)
+                             for k, v in ai_result.items()}
+                for col in canonical_fields:
+                    if col not in df_info.columns:
+                        df_info[col] = ''
 
             # Ensure any extra columns the model returned exist in df_info
             for _vals in ai_result.values():

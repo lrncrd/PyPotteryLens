@@ -377,11 +377,18 @@ function _hitTestBbox(e, canvas, annotations) {
     const scaleY = canvas.height / canvas.clientHeight;
     const cx = (e.clientX - rect.left) * scaleX;
     const cy = (e.clientY - rect.top) * scaleY;
+    // Among all boxes containing the click, pick the SMALLEST one so that a
+    // nested piece (whose box sits inside a larger one) is still selectable.
+    let best = null;
+    let bestArea = Infinity;
     for (const annot of annotations) {
         const [x1, y1, x2, y2] = annot.bbox;
-        if (cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2) return annot;
+        if (cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2) {
+            const area = Math.abs((x2 - x1) * (y2 - y1));
+            if (area < bestArea) { bestArea = area; best = annot; }
+        }
     }
-    return null;
+    return best;
 }
 
 function showBboxEditor(rowIndex, label, clientX, clientY) {

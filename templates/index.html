@@ -550,16 +550,39 @@
                                 <div style="text-align: center; margin-bottom: 10px;">
                                     <strong id="annotation-current-image">No image</strong>
                                 </div>
-                                <canvas id="annotation-canvas"></canvas>
+                                <div id="annotation-canvas-container" class="annotation-canvas-container">
+                                    <canvas id="annotation-canvas"></canvas>
+                                </div>
                                 <div class="editor-controls">
-                                    <button class="btn btn-secondary" id="annotation-prev-btn">◀ Prev</button>
-                                    <button class="btn btn-tool active" id="brush-tool" data-tool="brush">🖌️
-                                        Brush</button>
-                                    <button class="btn btn-tool" id="eraser-tool" data-tool="eraser">🧹 Eraser</button>
-                                    <button class="btn btn-tool" id="clear-tool" data-tool="clear">🗑️ Clear</button>
-                                    <label>Size: <input type="range" id="brush-size" min="5" max="50"
-                                            value="20"></label>
-                                    <button class="btn btn-secondary" id="annotation-next-btn">Next ▶</button>
+                                    <div class="control-cluster">
+                                        <button class="btn btn-tool" id="zoom-out-btn" title="Zoom out">➖</button>
+                                        <span id="zoom-level" class="zoom-level">100%</span>
+                                        <button class="btn btn-tool" id="zoom-in-btn" title="Zoom in">➕</button>
+                                        <button class="btn btn-tool" id="zoom-fit-btn" title="Fit to view">⤢ Fit</button>
+                                    </div>
+                                    <div class="control-cluster">
+                                        <button class="btn btn-tool active" id="brush-tool" data-tool="brush">🖌️ Brush</button>
+                                        <button class="btn btn-tool" id="eraser-tool" data-tool="eraser">🧹 Eraser</button>
+                                        <button class="btn btn-tool" id="polygon-tool" data-tool="polygon"
+                                            title="Draw a polygon around a vessel the model missed (e.g. a vessel drawn inside another). Click to add points; click the first point or double-click to close.">📐 Polygon</button>
+                                        <button class="btn btn-tool" id="clear-tool" data-tool="clear">🗑️ Clear</button>
+                                    </div>
+                                    <div class="control-cluster">
+                                        <label class="size-control">Size <input type="range" id="brush-size" min="5" max="50" value="20"></label>
+                                    </div>
+                                    <div class="control-cluster nav-cluster">
+                                        <button class="btn btn-secondary" id="annotation-prev-btn">◀ Prev</button>
+                                        <button class="btn btn-secondary" id="annotation-next-btn">Next ▶</button>
+                                    </div>
+                                </div>
+
+                                <!-- Manually drawn vessels (polygons) -->
+                                <div id="vessels-panel" class="vessels-panel" style="display: none;">
+                                    <div class="vessels-panel-header">
+                                        <span>📐 Manually drawn vessels (<span id="vessels-count">0</span>)</span>
+                                        <span class="vessels-hint">Each polygon becomes a separate card when you extract.</span>
+                                    </div>
+                                    <div id="vessels-list" class="vessels-list"></div>
                                 </div>
                             </div>
                         </div>
@@ -686,9 +709,11 @@
                                 </div>
                                 <p style="font-size:0.78rem; color:#64748b; margin:0 0 0.5rem;">
                                     Describe publication-specific conventions or request extra fields.
-                                    E.g. <em>"Plate numbers are written as 'T. 12' at the bottom"</em>
-                                    or <em>"Also extract the ceramic class and write it as 'ceramic_class'"</em>.
-                                    Extra fields become new columns automatically. Leave blank to use the default prompt.
+                                    To add a column, put its <strong>exact name in square brackets</strong> —
+                                    e.g. <em>"Add also [Scale], which is on the bottom-left"</em> or
+                                    <em>"Extract the [Ceramic class]"</em>. The bracketed name becomes the
+                                    column header and stays identical across every page and batch run.
+                                    Leave blank to use the default prompt.
                                 </p>
                                 <textarea id="ai-prompt-suffix"
                                     placeholder="E.g.: Plate numbers appear as 'Tav. IV' at the top-left corner. Figure labels look like 'Fig. 3' in the bottom margin. Individual pottery numbers are small digits next to each drawing..."

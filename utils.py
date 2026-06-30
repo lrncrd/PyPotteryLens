@@ -50,7 +50,7 @@ class MaskExtractionConfig:
     """Configuration for mask extraction"""
     pdfimg_output_dir: Path  # Directory containing the original images
     pred_output_dir: Path    # Directory for predictions and output
-    min_area_ratio: float = 0.001 # 0.005
+    min_area_ratio: float = 0.0002 # keep small vessels; raise to drop more noise
     closing_kernel_size: int = 3
     output_suffix: str = "_card"
     mask_suffix: str = "_mask"
@@ -556,7 +556,9 @@ class MaskExtractor:
                 
                 # Process mask and get labeled regions
                 label_image = self._process_mask(mask_array)
-                total_area = mask_array.size
+                # Pixel area only (mask_array.size counts the 4 RGBA channels,
+                # which inflated the min-area cutoff 4x and dropped small vessels)
+                total_area = mask_array.shape[0] * mask_array.shape[1]
                 
                 # Process each region
                 for i, region in enumerate(regionprops(label_image)):
@@ -636,28 +638,57 @@ class MaskExtractor:
                 
                 # Process mask and get labeled regions
                 label_image = self._process_mask(mask_array)
-                total_area = mask_array.size
+                # Pixel area only (mask_array.size counts the 4 RGBA channels,
+                # which inflated the min-area cutoff 4x and dropped small vessels)
+                total_area = mask_array.shape[0] * mask_array.shape[1]
                 
+                # Manually drawn inner vessels for this image
+                drawn_polygons = read_vessels_sidecar(masks_path, base_filename)
+
                 # Process each region
+                next_index = 0
                 for i, region in enumerate(regionprops(label_image)):
+                    next_index = i + 1
                     result = self._extract_region(region, mask_array, orig_array, total_area)
                     if result is None:
                         continue
-                        
+
                     cropped, bbox = result
+                    # When a larger vessel contains a hand-drawn inner vessel,
+                    # erase the inner vessel from the larger card (fill white) so
+                    # the two pieces are not duplicated in the big card.
+                    # (region.bbox is in mask coords; valid only when mask and
+                    # original share resolution, which is the normal case.)
+                    if mask_array.shape[:2] == orig_array.shape[:2]:
+                        cropped = _whiteout_inner_polygons(cropped, bbox, region, drawn_polygons)
                     output_filename = f"{base_filename}_mask_layer_{i}.png"
-                    
+
                     # Save cropped image with padding
                     cropped = np.pad(cropped, ((50, 50), (50, 50), (0, 0)), mode='constant', constant_values=255)
                     Image.fromarray(cropped).save(cards_path / output_filename)
-                    
+
                     # Store metadata
                     metadata.append((base_filename, f"{base_filename}_mask_layer_{i}"))
                     annotations.append((bbox, output_filename))
 
+                # Extract manually drawn vessels (e.g. vessels drawn inside other
+                # vessels). Connected-component labelling cannot separate these,
+                # so each operator-drawn polygon is cropped on its own.
+                for polygon in drawn_polygons:
+                    result = extract_polygon_vessel(orig_array, polygon)
+                    if result is None:
+                        continue
+                    cropped, bbox = result
+                    output_filename = f"{base_filename}_mask_layer_{next_index}.png"
+                    cropped = np.pad(cropped, ((50, 50), (50, 50), (0, 0)), mode='constant', constant_values=255)
+                    Image.fromarray(cropped).save(cards_path / output_filename)
+                    metadata.append((base_filename, f"{base_filename}_mask_layer_{next_index}"))
+                    annotations.append((bbox, output_filename))
+                    next_index += 1
+
             # Save metadata
             self._save_metadata(metadata, annotations, cards_path)
-            
+
             if metadata:
                 return f"Successfully extracted {len(metadata)} cards from project masks"
             return "No cards were extracted. Check if masks are properly drawn."
@@ -1057,6 +1088,105 @@ def _export_mask(mask: np.ndarray,
     mask_repeated = np.repeat(np.expand_dims(mask * 128, 2), 4, axis=2)
     mask_rgba = Image.fromarray(mask_repeated.astype(np.uint8), mode="RGBA")
     mask_rgba.save(output_path / f"{img_name}_mask_layer.png")
+
+
+# ---------------------------------------------------------------------------
+# Manually drawn vessels (LabelMe-style polygons)
+#
+# Some draughtsmen draw a vessel INSIDE the section of another vessel. The YOLO
+# model is trained on isolated vessels, so it detects only the outer silhouette
+# and the inner vessel is lost. During review the operator draws a polygon
+# around each missed vessel; on extraction every polygon becomes its own card.
+# Polygons are stored as a JSON sidecar next to the mask, in ORIGINAL-image
+# coordinates: {"image": base, "polygons": [[[x, y], ...], ...]}.
+# ---------------------------------------------------------------------------
+
+VESSELS_SIDECAR_SUFFIX = "_vessels.json"
+
+
+def write_vessels_sidecar(masks_dir, base_filename: str, polygons: list) -> Path:
+    """Persist manually drawn vessel polygons next to the mask as JSON."""
+    import json
+    masks_dir = Path(masks_dir)
+    sidecar = masks_dir / f"{base_filename}{VESSELS_SIDECAR_SUFFIX}"
+    if polygons:
+        with open(sidecar, "w") as f:
+            json.dump({"image": base_filename, "polygons": polygons}, f)
+    elif sidecar.exists():
+        # No polygons left -> remove the sidecar to keep the folder clean
+        sidecar.unlink()
+    return sidecar
+
+
+def read_vessels_sidecar(masks_dir, base_filename: str) -> list:
+    """Load manually drawn vessel polygons for an image (empty list if none)."""
+    import json
+    sidecar = Path(masks_dir) / f"{base_filename}{VESSELS_SIDECAR_SUFFIX}"
+    if not sidecar.exists():
+        return []
+    try:
+        with open(sidecar) as f:
+            return json.load(f).get("polygons", [])
+    except Exception as e:
+        print(f"Error reading vessels sidecar for {base_filename}: {e}")
+        return []
+
+
+def _whiteout_inner_polygons(cropped: np.ndarray, bbox, region, polygons: list):
+    """White-out hand-drawn inner vessels that fall inside a larger region's card.
+
+    ``cropped`` is the region card before padding; ``bbox`` is ``(x1, y1, x2, y2)``
+    in ORIGINAL coordinates with ``(x1, y1)`` mapping to crop pixel ``(0, 0)``.
+    A polygon belongs to this region when its centroid lies inside the region
+    silhouette, so only the true container is cleared.
+    """
+    if not polygons:
+        return cropped
+    import cv2
+
+    x1, y1 = int(bbox[0]), int(bbox[1])
+    minr, minc, maxr, maxc = region.bbox  # region mask is in original coords here
+    out = np.ascontiguousarray(cropped).copy()
+
+    for polygon in polygons:
+        pts = np.array(polygon, dtype=np.float64).reshape(-1, 2)
+        if len(pts) < 3:
+            continue
+        cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
+        # centroid must fall inside this region's silhouette
+        rr, cc = int(round(cy)) - minr, int(round(cx)) - minc
+        if not (0 <= rr < region.image.shape[0] and 0 <= cc < region.image.shape[1]):
+            continue
+        if not region.image[rr, cc]:
+            continue
+        local = np.array([[int(px - x1), int(py - y1)] for px, py in polygon],
+                         dtype=np.int32)
+        cv2.fillPoly(out, [local], (255, 255, 255))
+    return out
+
+
+def extract_polygon_vessel(orig_array: np.ndarray, polygon: list):
+    """Crop a hand-drawn polygon from the original image as a card.
+
+    Everything outside the polygon is whitened, matching extracted cards.
+    Returns ``(cropped_rgb, (x1, y1, x2, y2))`` or ``None`` if degenerate.
+    """
+    import cv2
+
+    pts = np.array(polygon, dtype=np.int32).reshape(-1, 2)
+    if len(pts) < 3:
+        return None
+    x, y, w, h = cv2.boundingRect(pts)
+    if w == 0 or h == 0:
+        return None
+
+    rgb = orig_array[:, :, :3] if orig_array.ndim == 3 else \
+        np.repeat(orig_array[:, :, None], 3, axis=2)
+    region_mask = np.zeros(rgb.shape[:2], dtype=np.uint8)
+    cv2.fillPoly(region_mask, [pts], 1)
+    masked = np.where(region_mask[:, :, None] == 0, 255, rgb).astype(np.uint8)
+    cropped = masked[y:y + h, x:x + w]
+    return cropped, (x, y, x + w, y + h)
 
 
 # Update in utils_new.py
