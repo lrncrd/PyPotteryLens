@@ -12,7 +12,8 @@ let tabularState = {
     currentImageName: null,  // Track current image for saving
     imageList: [],  // List of all images with reviewed status
     isReviewed: false,  // Current image reviewed status
-    fullImageUrl: null  // Full resolution image URL for zoom
+    fullImageUrl: null,  // Full resolution image URL for zoom
+    showBoxes: true  // Toggle bounding-box overlay on the page image
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -51,7 +52,16 @@ function setupTabularListeners() {
 
     // Add column
     document.getElementById('add-column-btn')?.addEventListener('click', handleAddColumn);
-    
+
+    // Clear current page's table (keep ID/index)
+    document.getElementById('clear-table-btn')?.addEventListener('click', handleClearTable);
+
+    // Toggle bounding-box overlay
+    document.getElementById('toggle-boxes')?.addEventListener('change', (e) => {
+        tabularState.showBoxes = e.target.checked;
+        redrawTabularCanvas();
+    });
+
     // AI bibliographic extraction
     document.getElementById('ai-bibliographic-btn')?.addEventListener('click', handleAiBibliographic);
     document.getElementById('ai-bibliographic-batch-btn')?.addEventListener('click', handleAiBibliographicBatch);
@@ -269,6 +279,8 @@ function displayTabularData(data) {
 
 function _drawAnnotations(ctx, img, annotations, hoveredLabel) {
     ctx.drawImage(img, 0, 0);
+    // Boxes can be hidden to inspect the clean drawing
+    if (!tabularState.showBoxes) return;
     if (!annotations || annotations.length === 0) return;
 
     ctx.font = 'bold 16px Arial';
@@ -299,6 +311,14 @@ function _drawAnnotations(ctx, img, annotations, hoveredLabel) {
         ctx.fillStyle = '#ffffff';
         ctx.fillText(labelText, x1 + 4, y1 - 8);
     });
+}
+
+// Redraw the current page image + boxes using stored references
+function redrawTabularCanvas() {
+    const canvas = document.getElementById('tabular-canvas');
+    if (!canvas || !tabularState._bboxImg) return;
+    const ctx = canvas.getContext('2d');
+    _drawAnnotations(ctx, tabularState._bboxImg, tabularState.annotations, null);
 }
 
 function displayAnnotatedImage(imageData, annotations) {
@@ -495,7 +515,17 @@ function highlightTableRow(rowId) {
     const tr = document.querySelector(`#table-body tr[data-row-id="${rowId}"]`);
     if (tr) {
         tr.classList.add('bbox-highlighted');
-        tr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        // Scroll WITHIN the table container only — never move the whole page
+        const container = document.getElementById('tabular-table-container');
+        if (container) {
+            const cRect = container.getBoundingClientRect();
+            const rRect = tr.getBoundingClientRect();
+            if (rRect.top < cRect.top) {
+                container.scrollTop -= (cRect.top - rRect.top) + 8;
+            } else if (rRect.bottom > cRect.bottom) {
+                container.scrollTop += (rRect.bottom - cRect.bottom) + 8;
+            }
+        }
     }
 }
 
@@ -569,6 +599,27 @@ async function saveTabularData() {
     } catch (error) {
         console.error('Error saving table:', error);
     }
+}
+
+async function handleClearTable() {
+    if (!tabularState.tableData || tabularState.tableData.length === 0) {
+        window.PyPotteryUtils.showToast('Nothing to clear', 'warning');
+        return;
+    }
+    if (!confirm('Clear all values on this page? The index (ID) column is kept. This cannot be undone.')) {
+        return;
+    }
+    // Empty every column except the ID/index
+    tabularState.tableData = tabularState.tableData.map(row => {
+        const cleared = {};
+        for (const col of Object.keys(row)) {
+            cleared[col] = (col === 'ID') ? row[col] : '';
+        }
+        return cleared;
+    });
+    displayTable(tabularState.tableData, tabularState.columns);
+    await saveTabularData();
+    window.PyPotteryUtils.showToast('Table cleared', 'success');
 }
 
 async function handleAddColumn() {
@@ -897,14 +948,16 @@ function getPromptSuffix() {
 
 /** Return current AI backend params to include in every AI request body. */
 function getAiBackendParams() {
+    const numbers_from_crops = !!document.getElementById('numbers-from-crops')?.checked;
     const isOpenRouter = document.getElementById('ai-backend-openrouter')?.checked;
     if (!isOpenRouter) {
-        return { ai_backend: 'local' };
+        return { ai_backend: 'local', numbers_from_crops };
     }
     return {
         ai_backend: 'openrouter',
         openrouter_api_key: document.getElementById('ai-openrouter-apikey')?.value.trim() || '',
         openrouter_model: document.getElementById('ai-openrouter-model')?.value.trim() || 'google/gemini-flash-1.5',
+        numbers_from_crops,
     };
 }
 

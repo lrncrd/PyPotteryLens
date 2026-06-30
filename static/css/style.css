@@ -378,6 +378,15 @@ body {
     background: #475569;
 }
 
+.btn-danger {
+    background: var(--danger-color);
+    color: white;
+}
+
+.btn-danger:hover {
+    background: #b91c1c;
+}
+
 .btn-tool {
     background: white;
     color: var(--text-primary);
@@ -1975,12 +1984,72 @@ body {
 }
 
 .collapsible-panel.show {
-    max-height: 500px;
+    max-height: 80vh;
+    overflow-y: auto;
     opacity: 1;
     margin-top: 0.75rem !important;
     padding-top: 1rem !important;
     padding-bottom: 1rem !important;
     border-color: #334155 !important;
+}
+
+/* Tabular image box-toggle control */
+.tabular-image-controls {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.5rem;
+}
+
+/* Pretty switch toggle */
+.switch-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.switch-toggle input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.switch-track {
+    position: relative;
+    width: 40px;
+    height: 22px;
+    border-radius: 22px;
+    background: #cbd5e1;
+    transition: background 0.2s ease;
+    flex-shrink: 0;
+}
+
+.switch-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    transition: transform 0.2s ease;
+}
+
+.switch-toggle input:checked + .switch-track {
+    background: var(--primary-color);
+}
+
+.switch-toggle input:checked + .switch-track .switch-thumb {
+    transform: translateX(18px);
+}
+
+.switch-toggle input:focus-visible + .switch-track {
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.3);
 }
 
 .collapsible-content {

@@ -8,6 +8,10 @@ from pathlib import Path
 import os
 import re
 import json
+# Module-level aliases so shared helpers can use them (some routes also import
+# these names locally, which harmlessly shadows within those functions).
+_re = re
+_json = json
 import base64
 from io import BytesIO
 import pandas as pd
@@ -168,11 +172,12 @@ class VisionUnsupportedError(Exception):
     pass
 
 
-def call_openrouter_ai(image_pil, prompt, api_key, model_name):
+def call_openrouter_ai(image_pil, prompt, api_key, model_name, max_tokens=2048):
     """Send an image + text prompt to OpenRouter and return the raw text response.
 
     The image is base64-encoded and sent as an OpenAI-compatible vision message so
-    any vision-capable model available on OpenRouter can be used.
+    any vision-capable model available on OpenRouter can be used. ``max_tokens`` is
+    sized by the caller to the number of drawings so busy pages are not truncated.
     """
     import base64 as _base64
     import io as _io
@@ -201,7 +206,7 @@ def call_openrouter_ai(image_pil, prompt, api_key, model_name):
                     ],
                 }
             ],
-            max_tokens=1024,
+            max_tokens=max_tokens,
         )
     except Exception as _or_exc:
         _msg = str(_or_exc)
@@ -1942,6 +1947,7 @@ def ai_extract_bibliographic(project_id):
         ai_backend = str(data.get('ai_backend', 'local')).strip()
         openrouter_api_key = str(data.get('openrouter_api_key', '')).strip()
         openrouter_model = str(data.get('openrouter_model', 'deepseek/deepseek-v4-flash')).strip()
+        numbers_from_crops = bool(data.get('numbers_from_crops', False))
 
         cards_path = project_manager.get_project_path(project_id, 'cards')
         images_path = project_manager.get_project_path(project_id, 'images')
@@ -2063,7 +2069,7 @@ def ai_extract_bibliographic(project_id):
         if ai_backend == 'openrouter':
             if not openrouter_api_key:
                 return jsonify({'error': 'OpenRouter API key is required', 'success': False}), 400
-            raw_response = call_openrouter_ai(page_image, prompt, openrouter_api_key, openrouter_model)
+            raw_response = call_openrouter_ai(page_image, prompt, openrouter_api_key, openrouter_model, max_tokens)
             print(f"[AI OpenRouter] Raw response: {raw_response[:300]}")
         else:
             # Load Gemma 4 E2B-it and run inference
@@ -2147,6 +2153,16 @@ def ai_extract_bibliographic(project_id):
             else:
                 print(f"[AI] Warning: no row found in df_info for mask_id={mask_id!r}, expected file={exact_mask_file!r}")
 
+        # Optionally re-read inventory numbers from per-drawing crops (more
+        # reliable for tiny numbers), overwriting the globally-read 'number'.
+        if numbers_from_crops:
+            try:
+                _read_numbers_from_crops(
+                    original_image_path, image_annots, current_image_name,
+                    df_info, ai_backend, openrouter_api_key, openrouter_model)
+            except Exception as _ne:
+                print(f"[AI] numbers-from-crops failed: {_ne}")
+
         df_info.to_csv(mask_info_path, index=False)
 
         # Return updated table for current image
@@ -2198,6 +2214,7 @@ def ai_extract_bibliographic_batch(project_id):
         ai_backend = str(data.get('ai_backend', 'local')).strip()
         openrouter_api_key = str(data.get('openrouter_api_key', '')).strip()
         openrouter_model = str(data.get('openrouter_model', 'deepseek/deepseek-v4-flash')).strip()
+        numbers_from_crops = bool(data.get('numbers_from_crops', False))
 
         if ai_backend == 'openrouter' and not openrouter_api_key:
             return jsonify({'error': 'OpenRouter API key is required', 'success': False}), 400
@@ -2333,7 +2350,7 @@ def ai_extract_bibliographic_batch(project_id):
             # ---- Run inference (local Gemma or OpenRouter) ----
             if ai_backend == 'openrouter':
                 try:
-                    raw_response = call_openrouter_ai(page_image, prompt, openrouter_api_key, openrouter_model)
+                    raw_response = call_openrouter_ai(page_image, prompt, openrouter_api_key, openrouter_model, max_tokens)
                     print(f"[AI Batch OpenRouter] {current_image_name} response: {raw_response[:200]}")
                 except Exception as _or_err:
                     errors.append(f'OpenRouter error for {current_image_name}: {_or_err}')
@@ -2407,6 +2424,17 @@ def ai_extract_bibliographic_batch(project_id):
                         if val is not None:
                             df_info.loc[row_mask, col] = str(val)
 
+            # Per-image: optionally re-read inventory numbers from crops,
+            # overwriting the globally-read 'number' with a zoomed-in reading.
+            if numbers_from_crops:
+                try:
+                    _read_numbers_from_crops(
+                        original_image_path, image_annots, current_image_name,
+                        df_info, ai_backend, openrouter_api_key, openrouter_model,
+                        model=model, processor=processor)
+                except Exception as _ne:
+                    print(f"[AI Batch] numbers-from-crops failed for {current_image_name}: {_ne}")
+
         df_info.to_csv(mask_info_path, index=False)
         clear_operation_progress()
 
@@ -2424,6 +2452,96 @@ def ai_extract_bibliographic_batch(project_id):
         traceback.print_exc()
         clear_operation_progress()
         return jsonify({'error': str(e), 'success': False}), 500
+
+
+def _read_numbers_from_crops(original_image_path, image_annots, current_image_name,
+                             df_info, ai_backend, openrouter_api_key, openrouter_model,
+                             model=None, processor=None):
+    """Overwrite the 'number' column by reading each drawing's inventory number
+    from a zoomed-in crop of the FULL-resolution page (one focused AI call each).
+
+    Inventory numbers are tiny and printed right next to the drawing, so they are
+    easily missed on the full busy page. Mutates ``df_info`` in place and returns
+    how many numbers were updated.
+    """
+    from PIL import Image as PILImage
+
+    if ai_backend != 'openrouter' and model is None:
+        model, processor = load_gemma_model()
+
+    full_img = PILImage.open(original_image_path).convert('RGB')
+    W, H = full_img.size
+    if 'number' not in df_info.columns:
+        df_info['number'] = ''
+
+    number_prompt = (
+        "This is a cropped detail from an archaeological pottery catalogue. "
+        "It shows one pottery drawing and the area around it. Find the small "
+        "catalogue/inventory NUMBER printed next to or under the drawing — it is "
+        "a digit or short alphanumeric such as '1', '14', '2a', '7b'. "
+        "Reply with ONLY that number and nothing else. If there is no number, reply 'null'."
+    )
+
+    updated = 0
+    for _, row in image_annots.iterrows():
+        try:
+            bbox_str = str(row.get('bbox', '')).strip('()')
+            x1, y1, x2, y2 = [int(v.strip()) for v in bbox_str.split(',')]
+        except Exception:
+            continue
+
+        # Expand the box with margin ("gioco"); more below where the number sits.
+        bw, bh = x2 - x1, y2 - y1
+        mx = int(bw * 0.35) + 15
+        my_top = int(bh * 0.25) + 15
+        my_bot = int(bh * 0.50) + 15
+        cx1, cy1 = max(0, x1 - mx), max(0, y1 - my_top)
+        cx2, cy2 = min(W, x2 + mx), min(H, y2 + my_bot)
+        if cx2 <= cx1 or cy2 <= cy1:
+            continue
+
+        crop = full_img.crop((cx1, cy1, cx2, cy2))
+        longest = max(crop.size)
+        if longest < 768:
+            factor = 768.0 / longest
+            crop = crop.resize((int(crop.size[0] * factor), int(crop.size[1] * factor)),
+                               PILImage.LANCZOS)
+
+        try:
+            if ai_backend == 'openrouter':
+                raw = call_openrouter_ai(crop, number_prompt, openrouter_api_key,
+                                         openrouter_model, max_tokens=20)
+            else:
+                messages = [{"role": "user", "content": [
+                    {"type": "image", "image": crop},
+                    {"type": "text", "text": number_prompt}]}]
+                text = processor.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
+                inputs = processor(text=text, images=[crop], return_tensors="pt").to(model.device)
+                input_len = inputs["input_ids"].shape[-1]
+                with torch.no_grad():
+                    outputs = model.generate(**inputs, max_new_tokens=20, do_sample=False)
+                raw = processor.decode(outputs[0][input_len:], skip_special_tokens=True)
+        except Exception as _e:
+            print(f"[AI Numbers] error on ID {row['ID']}: {_e}")
+            continue
+
+        value = raw.strip().strip('".\'`').split()[0] if raw.strip() else ''
+        if value.lower() in ('null', 'none', 'n/a', ''):
+            continue
+
+        mask_id = str(row['ID'])
+        exact_mask_file = f"{current_image_name}_mask_layer_{mask_id}.png"
+        row_mask = df_info['mask_file'] == exact_mask_file
+        if not row_mask.any():
+            exact_no_ext = f"{current_image_name}_mask_layer_{mask_id}"
+            row_mask = df_info['mask_file'].apply(
+                lambda x: str(x).replace('.png', '') == exact_no_ext)
+        if row_mask.any():
+            df_info.loc[row_mask, 'number'] = value
+            updated += 1
+
+    return updated
 
 
 @app.route('/api/projects/<project_id>/tabular/export', methods=['POST'])
@@ -2818,22 +2936,34 @@ def flip_project_card(project_id):
         
         data = request.json
         img_num = int(data.get('img_num', 0))
+        card_filename = str(data.get('card_filename', '')).strip()
         flip_type = data.get('flip_type', 'vertical')
-        
+
         # Get project paths
         cards_path = project_manager.get_project_path(project_id, 'cards')
         cards_modified_path = project_manager.get_project_path(project_id, 'cards_modified')
-        
+
         if not cards_path or not cards_path.exists():
             return jsonify({'error': 'No cards folder found', 'success': False}), 404
-        
-        # Get list of card images
-        card_files = sorted([f for f in cards_path.iterdir() if f.suffix.lower() in ['.png', '.jpg', '.jpeg']])
-        
-        if img_num < 0 or img_num >= len(card_files):
-            return jsonify({'error': 'Invalid image number', 'success': False}), 400
-        
-        card_file = card_files[img_num]
+
+        # Resolve the target card. Prefer the explicit filename (robust); fall
+        # back to a NATURALLY-sorted index so it matches the /cards listing order
+        # (plain sort put _10 before _2 and flipped the wrong card).
+        card_file = None
+        if card_filename:
+            candidate = cards_path / os.path.basename(card_filename)
+            if candidate.exists():
+                card_file = candidate
+        if card_file is None:
+            def _natural_key(f):
+                return [int(c) if c.isdigit() else c.lower()
+                        for c in re.split(r'(\d+)', f.name)]
+            card_files = sorted([f for f in cards_path.iterdir()
+                                 if f.suffix.lower() in ['.png', '.jpg', '.jpeg']],
+                                key=_natural_key)
+            if img_num < 0 or img_num >= len(card_files):
+                return jsonify({'error': 'Invalid image number', 'success': False}), 400
+            card_file = card_files[img_num]
         
         # Check if a modified version already exists, use that instead
         modified_file = cards_modified_path / card_file.name

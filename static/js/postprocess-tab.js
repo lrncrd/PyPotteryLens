@@ -216,10 +216,17 @@ async function handleFlip(flipType) {
     try {
         window.PyPotteryUtils.showLoading(`Flipping image ${flipType}...`);
 
+        // Resolve the exact card by filename (robust against list ordering)
+        const cardData = postprocessState.cards[postprocessState.currentIndex];
+        const cardFilename = cardData
+            ? (cardData.filename || (cardData.url || cardData).split('/').pop())
+            : '';
+
         const response = await window.PyPotteryUtils.apiRequest(`/api/projects/${postprocessState.currentProject.project_id}/postprocess/flip`, {
             method: 'POST',
             body: JSON.stringify({
                 img_num: postprocessState.currentIndex,
+                card_filename: cardFilename,
                 flip_type: flipType
             })
         });

@@ -610,6 +610,13 @@
 
                         <!-- Image Display -->
                         <div class="tabular-image">
+                            <div class="tabular-image-controls">
+                                <label class="switch-toggle">
+                                    <span class="switch-text">Show boxes</span>
+                                    <input type="checkbox" id="toggle-boxes" checked>
+                                    <span class="switch-track"><span class="switch-thumb"></span></span>
+                                </label>
+                            </div>
                             <div class="tabular-canvas-wrapper">
                                 <canvas id="tabular-canvas"></canvas>
                                 <div class="zoom-hint">Click to zoom</div>
@@ -624,6 +631,8 @@
                                 <input type="text" id="new-column-name" placeholder="New column name..."
                                     class="form-control">
                                 <button class="btn btn-secondary" id="add-column-btn">➕ Add Column</button>
+                                <button class="btn btn-danger" id="clear-table-btn"
+                                    title="Clear all values on this page (keeps the index/ID column) to start over">🧹 Clear Table</button>
                                 <button class="btn btn-primary" id="export-csv-btn">📊 Export Combined CSV</button>
                             </div>
                             <div class="form-row" style="margin-top: 0.5rem; align-items: center; gap: 0.5rem;">
@@ -635,6 +644,12 @@
                                     title="Run AI bibliographic extraction on all images in the project (batch mode)">
                                     🔄 Extract All (Batch)
                                 </button>
+                                <label class="switch-toggle" id="numbers-from-crops-toggle"
+                                    title="When ON, both Extract buttons re-read the inventory numbers from a zoomed-in crop of each drawing (more accurate for tiny numbers, but one extra AI call per drawing).">
+                                    <span class="switch-text">🔢 Numbers from crops</span>
+                                    <input type="checkbox" id="numbers-from-crops">
+                                    <span class="switch-track"><span class="switch-thumb"></span></span>
+                                </label>
                                 <button class="btn btn-secondary" id="ai-backend-toggle-btn"
                                     title="Choose AI backend: local Gemma model or OpenRouter cloud API"
                                     style="padding:0.5rem 0.85rem; font-size:0.85rem;">
