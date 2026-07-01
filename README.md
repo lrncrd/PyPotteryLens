@@ -4,7 +4,7 @@
 <div align="center">
 <img src="imgs/LogoLens.png" width="350"/>
 
-[![Version](https://img.shields.io/badge/version-0.2.1-blue.svg)](https://lrncrd.github.io/PyPotteryLens/)
+[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://lrncrd.github.io/PyPotteryLens/)
 [![HuggingFace](https://img.shields.io/badge/🤗%20Models-PyPotteryLens-yellow.svg)](https://huggingface.co/lrncrd/PyPotteryLens)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![arXiv Preprint](https://img.shields.io/badge/arXiv-2412.11574-b31b1b.svg)](https://arxiv.org/abs/2412.11574)
@@ -34,12 +34,13 @@ As part of the [**PyPottery**](https://github.com/lrncrd/PyPottery) toolkit, `Py
 - **🗂️ Project Management**: Organize your work with project-based workflow - each archaeological dataset gets its own workspace with dedicated folders and metadata tracking
 - **📄 PDF Processing**: Convert multi-page PDF documents to high-quality images with support for split-page scanning
 - **🤖 Fragment Detection**: State-of-the-art computer vision model (YOLO-based) for automatic pottery drawings detection with customizable confidence thresholds
-- **✏️ Interactive Annotation Review**: Canvas-based editor for reviewing and adjusting detected masks with brush and eraser tools
-- **📊 Tabular Data Management**: Integrated spreadsheet interface for adding archaeological metadata to detected instances
-- **🔄 Post Processing**: Automatic classification and orientation correction using deep learning classifiers
+- **✏️ Interactive Annotation Review**: Canvas-based editor for reviewing and adjusting detected masks with brush and eraser tools, zoom/pan support, visible brush/eraser cursor ring, and a colorize mode to spot fused mask regions at a glance
+- **📐 Nested Vessel Handling**: LabelMe-style polygon drawing tool to manually outline vessels drawn inside other vessels; inner vessel areas are automatically subtracted from the outer card
+- **📊 Tabular Data Management**: Integrated spreadsheet interface for adding archaeological metadata to detected instances, with AI-assisted extraction, canonical column names via `[bracket]` syntax, and per-drawing crop mode for small inventory numbers
+- **🔄 Post Processing**: Grid view of all extracted pieces at real relative size with per-thumbnail flip, ENT/FRAG toggle, and exclude-from-export controls; automatic orientation correction using deep learning classifiers
 - **🌐 Modern Web Interface**: Clean, responsive web UI accessible from any browser
 - **💾 Auto-save**: Automatic progress saving ensures no data loss
-- **📦 Export Tools**: Generate standardized outputs with custom acronyms and optional PDF catalogs
+- **📦 Export Tools**: Generate standardized outputs with custom acronyms; tabular data is merged and exported automatically as all-text CSV
 
 ## Installation
 
@@ -268,17 +269,21 @@ Manually review and refine the automatic detections using an interactive canvas 
 
 **Tools Available**:
 
-- **Brush (🖌️)**: Add to masks, adjustable size
-- **Eraser (🧹)**: Remove parts of masks, adjustable size
+- **Brush (🖌️)**: Add to masks, adjustable size (visible ring cursor)
+- **Eraser (🧹)**: Remove parts of masks, adjustable size (visible dashed ring cursor)
+- **Polygon (📐)**: Draw free-form polygons to define vessels nested inside other vessels. Double-click (or click near the first vertex) to close. Each polygon becomes an independent card at extraction time; the inner vessel area is subtracted (whitened) from the containing card automatically.
+- **Colorize (🎨)**: Toggle political-map coloring — each disconnected mask region gets a distinct hue. Two regions sharing the same color are actually fused; use the eraser to separate them.
 
+**Zoom & Pan**: Use the zoom controls (+/−/fit) or the mouse wheel to inspect details. The canvas fits the full page on load.
 
 **Workflow**:
 
 1. Browse through detected images using the file explorer
 2. Click on any image to open the editor
-3. Use brush/eraser to refine mask boundaries
-4. Changes auto-save when you navigate away
-5. Click "Extract Masks" when review is complete
+3. Use brush/eraser to refine mask boundaries; use the Polygon tool to add nested vessels
+4. Toggle Colorize to verify no masks are accidentally fused
+5. Changes auto-save when you navigate away
+6. Click "Extract Masks" when review is complete
 
 **Output**: Individual pottery instances are saved to `{project}/cards/` with naming:
 
@@ -297,15 +302,19 @@ Add archaeological metadata to each detected pottery instance.
 
 **Features**:
 
-- View original images with bounding boxes highlighting each instance
+- View original images with bounding boxes highlighting each instance (toggle visibility with the switch)
 - Navigate between pages and select specific instances
 - Add custom columns for any metadata fields (e.g., "Fabric", "Chronology", "Context")
 - Auto-save: Every cell edit is immediately saved
 - Multi-instance pages: Easily switch between fragments on the same page
+- **AI-assisted extraction**: Use `🤖 Extract AI References` (single page) or `🔄 Extract All (Batch)` to fill columns automatically using an AI backend (OpenRouter or local Gemma)
+- **Canonical column names**: Write column names in `[square brackets]` inside the prompt to lock the exact JSON key the model will use — prevents column name drift across pages (e.g. `Add also [Scale], [Context]`)
+- **Numbers from crops**: Enable this toggle to extract inventory/reference numbers by cropping and upscaling each individual drawing, improving accuracy for small labels
+- **Clear Table**: Reset all values on the current page to start over without losing column structure
 
 **Data Management**:
 
-- Data is stored in `mask_info.csv`
+- Data is stored in `mask_info.csv` inside the `cards/` folder
 - Avoid commas in cell values (CSV format limitation)
 - For bulk editing, you can export and edit in Excel/Google Sheets
 
@@ -313,7 +322,7 @@ Add archaeological metadata to each detected pottery instance.
 
 1. Click "Add Column" to create new metadata fields
 2. Navigate through images using Previous/Next buttons
-3. Click cells to edit values
+3. Click cells to edit values, or use AI extraction
 4. Use instance selector for pages with multiple pottery fragments
 5. Mark pages as "Reviewed" to track progress
 
@@ -328,19 +337,19 @@ Automatically orient and classify pottery instances using deep learning.
 
 **Classification**: The model automatically categorizes each instance:
 
-- **ENT** (Entire/Complete): Substantially complete pottery profiles
-- **FRAG** (Fragment): Partial or fragmentary profiles
+- **ENT** (Entire/Complete): Substantially complete pottery profiles — shown with a **blue** card border
+- **FRAG** (Fragment): Partial or fragmentary profiles — shown with an **orange** card border
 
-**Manual Corrections**:
+**Review Interface** (grid view):
 
-- **Flip Vertical/Horizontal**: Override automatic orientation if needed
-- **Type Dropdown**: Change classification between ENT/FRAG
+After clicking "Process All Images", all pieces are displayed as a proportional grid — the largest piece maps to the maximum thumbnail size so that all cards are shown at their real relative dimensions.
 
-**Review Interface**:
+Hover over any card to reveal controls:
 
-- **Original vs. Processed**: Side-by-side comparison
-- **Navigation**: Browse through all instances
-- **Auto-save**: All changes immediately persisted
+- **↕ Flip Vertical / ↔ Flip Horizontal**: Override automatic orientation
+- **ENT / FRAG pill**: Toggle classification; border color updates immediately
+- **✕ Exclude**: Mark a card to be skipped at export time (card is greyed out)
+- **Click image**: Open a full-screen lightbox for detailed inspection
 
 **Output**: 
 
@@ -354,14 +363,14 @@ Generate final outputs with standardized naming.
 
 **Export Options**:
 
-- **Acronym**: Assign a short identifier (e.g., "CRD", "VEII") for systematic file naming: files will be named: `{acronym}_0.png`, `{acronym}_1.png`, etc.
-
+- **Acronym**: Assign a short identifier (e.g., "CRD", "VEII") for systematic file naming: files will be named: `{acronym}_1.png`, `{acronym}_2.png`, etc.
 
 **Output**: 
 
-- Exported files saved to `{project}/exports/{acronym}/`
-- Includes renamed images
-- Metadata CSV with final classifications
+- A single ZIP archive containing:
+  - Renamed images (excluded cards are omitted automatically)
+  - `{acronym}_metadata.csv` — merged tabular + classification data, all fields as plain text
+- Tabular data is read directly from the working `mask_info.csv` — no intermediate export step required
 
 ## Technology Stack
 
@@ -408,7 +417,39 @@ PyPotteryLens automatically detects and uses available hardware acceleration:
 
 ## Version History
 
-### 0.2.1 (Current - Flask Branch)
+### 0.3.0 (Current)
+
+**Annotation tab**
+   - **Nested vessel support**: New Polygon tool (LabelMe-style) to manually outline vessels drawn inside other vessels. Polygons are persisted as a sidecar JSON and extracted as independent cards at mask-extraction time; the inner vessel area is automatically whitened from the containing card (boolean subtraction)
+   - **Zoom & pan**: Canvas now fits the full page on load; zoom in/out with +/−/fit buttons or the mouse wheel
+   - **Brush/eraser cursor ring**: A visible size indicator ring follows the cursor so you always know what area you are painting or erasing
+   - **Colorize mode (🎨)**: Toggle a political-map coloring where every disconnected mask region gets a distinct hue. Fused/merged regions share a color, making accidents immediately visible. Color is recomputed live after each brush stroke
+
+**Tabular tab**
+   - **AI extraction improvements**: Dynamic token budget prevents JSON truncation on dense pages; robust parser recovers partial responses
+   - **Canonical column names**: Enclose column names in `[square brackets]` in the prompt to lock the exact JSON key the model will use — prevents key drift across batch runs
+   - **Numbers from crops**: Optional toggle to extract per-drawing values (e.g. inventory numbers) by cropping and upscaling each individual figure, improving accuracy for small labels; applies to both single-page and batch extraction
+   - **Box visibility toggle**: iOS-style switch to hide/show bounding boxes on the canvas
+   - **Clear Table**: Reset all values on the current page without losing column structure
+   - **Export Combined CSV removed**: Tabular data is now read directly from `cards/mask_info.csv` at export time — no manual intermediate step
+
+**Post Processing tab**
+   - **Grid view**: All extracted pieces are displayed together at real relative sizes (largest card = max thumbnail; proportional scaling for the rest), replacing the old one-at-a-time navigator
+   - **Per-card hover controls**: flip vertical, flip horizontal, ENT/FRAG toggle, exclude from export — all without leaving the grid
+   - **Border color coding**: blue border = ENT, orange border = FRAG for at-a-glance classification review
+   - **Lightbox**: Click any card image to open a full-screen zoom view
+   - **Exclude from export**: Cards marked with ✕ are skipped in the ZIP export (images and metadata rows)
+   - **Progress bar**: Only visible while "Process All Images" is running
+   - **Auto-flip toggles**: Replaced plain checkboxes with iOS-style toggle switches
+
+**Export**
+   - All metadata fields written as plain text in the output CSV (no implicit numeric coercion)
+
+**Bug fixes**
+   - Fixed flip endpoint applying to the wrong card when filenames sort lexicographically vs. naturally
+   - Fixed small vessel area filter (was 4× too large due to counting RGBA channels); lowered minimum area ratio to 0.0002
+
+### 0.2.1
 
    - **Major architectural change**: Migrated from Gradio to Flask web framework
    - **Project Management System**: Introduced project-based workflow with dedicated workspaces
