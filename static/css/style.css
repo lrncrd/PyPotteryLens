@@ -1379,6 +1379,238 @@ body {
     opacity: 0.8;
 }
 
+/* ===== Post Processing GRID (pieces at real relative size) ===== */
+.postprocess-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 1rem;
+    padding: 0.75rem 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+
+.postprocess-toolbar-left,
+.postprocess-toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.postprocess-toolbar .pp-count {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.postprocess-toolbar .pp-opt {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.postprocess-grid {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 14px;
+    margin-top: 1rem;
+    padding: 1rem;
+    height: 70vh;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+}
+
+.postprocess-grid .pp-empty {
+    width: 100%;
+    text-align: center;
+    color: var(--text-secondary);
+    padding: 3rem 1rem;
+}
+
+.pp-card {
+    position: relative;
+    border: 3px solid var(--border);
+    border-radius: 6px;
+    background: white;
+    overflow: hidden;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+    transition: box-shadow 0.2s, transform 0.2s;
+    flex: 0 0 auto;
+}
+
+/* Border colour = classification, readable at a glance */
+.pp-card.type-ent {
+    border-color: #2563eb;
+}
+
+.pp-card.type-frag {
+    border-color: #d97706;
+}
+
+.pp-card:hover {
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+    z-index: 5;
+}
+
+.pp-card-img {
+    display: block;
+    width: 100%;
+    height: auto;
+    /* Flat/small pieces get a min box + white padding so the drawing is visible;
+       very tall pieces are capped. object-fit keeps them centered, never distorted. */
+    min-height: 120px;
+    max-height: 320px;
+    object-fit: contain;
+    background: white;
+    cursor: zoom-in;
+}
+
+.pp-card.excluded {
+    opacity: 0.4;
+    filter: grayscale(0.6);
+}
+
+.pp-card-badge {
+    display: none;
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    background: var(--danger-color);
+    color: #fff;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    z-index: 3;
+}
+
+.pp-card.excluded .pp-card-badge {
+    display: block;
+}
+
+/* Hover overlay with controls */
+.pp-card-overlay {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 4px;
+    background: linear-gradient(to top, rgba(15, 23, 42, 0.92), rgba(15, 23, 42, 0));
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.pp-card:hover .pp-card-overlay {
+    opacity: 1;
+}
+
+.pp-overlay-row {
+    display: flex;
+    gap: 5px;
+    flex-wrap: nowrap;
+}
+
+.pp-type-pill {
+    white-space: nowrap;
+}
+
+.pp-btn {
+    width: 28px;
+    height: 26px;
+    border: none;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.92);
+    color: #1e293b;
+    font-size: 0.95rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.pp-btn:hover {
+    background: #fff;
+}
+
+.pp-btn.pp-exclude:hover {
+    background: var(--danger-color);
+    color: #fff;
+}
+
+/* ENT / FRAG segmented pill */
+.pp-type-pill {
+    display: inline-flex;
+    border-radius: 999px;
+    overflow: hidden;
+    cursor: pointer;
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    font-size: 0.68rem;
+    font-weight: 700;
+}
+
+.pp-type-pill span {
+    padding: 2px 9px;
+    background: rgba(255, 255, 255, 0.85);
+    color: #64748b;
+}
+
+.pp-type-pill .pp-type-ent.active {
+    background: var(--primary-color);
+    color: #fff;
+}
+
+.pp-type-pill .pp-type-frag.active {
+    background: #d97706;
+    color: #fff;
+}
+
+/* Lightbox */
+.postprocess-lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 10001;
+    background: rgba(0, 0, 0, 0.85);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+}
+
+.postprocess-lightbox img {
+    max-width: 92vw;
+    max-height: 88vh;
+    object-fit: contain;
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+.pp-lightbox-close {
+    position: absolute;
+    top: 18px;
+    right: 26px;
+    color: #fff;
+    font-size: 2rem;
+    cursor: pointer;
+    line-height: 1;
+    user-select: none;
+}
+
 /* Dialog */
 .dialog-overlay {
     position: fixed;

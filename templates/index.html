@@ -755,78 +755,34 @@
                     <h2>🔍 Post Processing</h2>
                     <p class="subtitle">Review and classify extracted cards from current project</p>
 
-                    <div class="navigation-bar">
-                        <div class="button-group">
-                            <button class="btn btn-secondary" id="postprocess-prev">◀ Previous</button>
-                            <button class="btn btn-secondary" id="postprocess-next">Next ▶</button>
+                    <!-- Toolbar -->
+                    <div class="postprocess-toolbar">
+                        <div class="postprocess-toolbar-left">
+                            <span class="pp-count">🖼️ Cards: <span id="postprocess-image-count">0</span></span>
+                            <label class="pp-opt"><input type="checkbox" id="auto-flip-vertical" checked> Auto V-flip</label>
+                            <label class="pp-opt"><input type="checkbox" id="auto-flip-horizontal" checked> Auto H-flip</label>
+                        </div>
+                        <div class="postprocess-toolbar-right">
+                            <button class="btn btn-primary" id="process-all-btn">🔍 Process All Images</button>
+                            <button class="btn btn-primary" id="export-btn">📦 Export Results</button>
                         </div>
                     </div>
-
-                    <div class="postprocess-layout">
-                        <!-- Left: Image List -->
-                        <div class="postprocess-sidebar">
-                            <h3>🖼️ Cards (<span id="postprocess-image-count">0</span>)</h3>
-                            <div id="postprocess-image-list" class="postprocess-image-list"></div>
-
-                            <!-- Processing Options -->
-                            <div class="postprocess-options">
-                                <h4>⚙️ Options</h4>
-                                <label>
-                                    <input type="checkbox" id="auto-flip-vertical" checked>
-                                    Auto Vertical Flip
-                                </label>
-                                <label>
-                                    <input type="checkbox" id="auto-flip-horizontal" checked>
-                                    Auto Horizontal Flip
-                                </label>
-                            </div>
-
-                            <!-- Actions -->
-                            <div class="postprocess-actions">
-                                <button class="btn btn-primary btn-block" id="process-all-btn">🔍 Process All
-                                    Images</button>
-                                <button class="btn btn-primary btn-block" id="export-btn">📦 Export Results</button>
-                                <div class="progress-bar-wrapper" style="margin-top: 1rem;">
-                                    <div class="progress-bar" id="postprocess-progress-bar">0%</div>
-                                </div>
-                                <div id="postprocess-status" class="status-message"></div>
-                            </div>
-                        </div>
-
-                        <!-- Right: Image Comparison -->
-                        <div class="postprocess-preview">
-                            <div class="image-comparison">
-                                <div class="image-container">
-                                    <h4>Original Image</h4>
-                                    <img id="postprocess-original" class="preview-image" alt="Original">
-                                </div>
-                                <div class="image-container">
-                                    <h4>Processed Image</h4>
-                                    <div class="processed-image-wrapper">
-                                        <img id="postprocess-transformed" class="preview-image" alt="Processed"
-                                            style="display: none;">
-                                        <div id="postprocess-placeholder" class="processed-placeholder">
-                                            <p>🔄 Not processed yet</p>
-                                            <p class="placeholder-hint">Click "Process All Images" to generate processed
-                                                versions</p>
-                                        </div>
-                                    </div>
-                                    <div class="button-group">
-                                        <button class="btn btn-tool" id="flip-vertical-btn">↕️ Flip Vertical</button>
-                                        <button class="btn btn-tool" id="flip-horizontal-btn">↔️ Flip
-                                            Horizontal</button>
-                                    </div>
-                                    <div class="form-group">
-                                        <label>Type</label>
-                                        <select id="type-select" class="form-control">
-                                            <option value="ENT">ENT</option>
-                                            <option value="FRAG">FRAG</option>
-                                        </select>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
+                    <div class="progress-bar-wrapper" style="margin-top: 0.75rem;">
+                        <div class="progress-bar" id="postprocess-progress-bar">0%</div>
                     </div>
+                    <div id="postprocess-status" class="status-message"></div>
+
+                    <!-- Grid of pieces at real relative size -->
+                    <div id="postprocess-grid" class="postprocess-grid">
+                        <div class="pp-empty" id="postprocess-empty">Select a project, then click "Process All Images" to review the pieces here.</div>
+                    </div>
+
+                    <!-- Lightbox (zoom on click) -->
+                    <div id="postprocess-lightbox" class="postprocess-lightbox" style="display: none;">
+                        <span class="pp-lightbox-close" id="postprocess-lightbox-close">✕</span>
+                        <img id="postprocess-lightbox-img" alt="Card">
+                    </div>
+
                 </div>
 
             </div>

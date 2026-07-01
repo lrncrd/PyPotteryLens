@@ -1506,17 +1506,33 @@ def get_project_cards(project_id):
         else:
             print(f"No classifications.csv found in cards or cards_modified")
         
+        # Modified cards + exclusion list (both live in cards_modified/)
+        cards_modified_dir = cards_path.parent / 'cards_modified'
+        excluded_set = set(_read_excluded_cards(cards_modified_dir))
+
         # Create URLs and metadata for cards
+        from PIL import Image as _PILImage
         card_data = []
         for card in cards:
             card_type = classifications.get(card, 'ENT')  # Default to ENT if not classified
-            print(f"Card {card} -> type {card_type}")
+            has_modified = (cards_modified_dir / card).exists()
+            # Read pixel dimensions (lazy header read) for real-size grid sizing
+            try:
+                src = (cards_modified_dir / card) if has_modified else (cards_path / card)
+                with _PILImage.open(src) as _im:
+                    w, h = _im.size
+            except Exception:
+                w, h = 0, 0
             card_data.append({
                 'url': f'/api/projects/{project_id}/card/{card}',
                 'filename': card,
-                'type': card_type
+                'type': card_type,
+                'width': w,
+                'height': h,
+                'has_modified': has_modified,
+                'excluded': card in excluded_set,
             })
-        
+
         return jsonify({
             'cards': card_data,
             'total': len(card_data),
@@ -3005,6 +3021,65 @@ def flip_project_card(project_id):
         return jsonify({'error': str(e), 'success': False}), 500
 
 
+# --- Excluded cards (cards the operator removes from the final export) -------
+
+def _excluded_cards_path(cards_modified_dir):
+    return Path(cards_modified_dir) / 'excluded_cards.json'
+
+
+def _read_excluded_cards(cards_modified_dir):
+    """Return the list of excluded card filenames (empty if none)."""
+    path = _excluded_cards_path(cards_modified_dir)
+    if not path.exists():
+        return []
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else data.get('excluded', [])
+    except Exception as e:
+        print(f"Error reading excluded_cards.json: {e}")
+        return []
+
+
+def _write_excluded_cards(cards_modified_dir, filenames):
+    cards_modified_dir = Path(cards_modified_dir)
+    cards_modified_dir.mkdir(parents=True, exist_ok=True)
+    with open(_excluded_cards_path(cards_modified_dir), 'w') as f:
+        json.dump(sorted(set(filenames)), f)
+
+
+@app.route('/api/projects/<project_id>/postprocess/exclude', methods=['POST'])
+def exclude_project_card(project_id):
+    """Mark a card as excluded/included from the final export."""
+    try:
+        if not project_manager.get_project(project_id):
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        data = request.json or {}
+        filename = os.path.basename(str(data.get('filename', '')).strip())
+        excluded = bool(data.get('excluded', True))
+        if not filename:
+            return jsonify({'error': 'Filename is required', 'success': False}), 400
+
+        cards_path = project_manager.get_project_path(project_id, 'cards')
+        if not cards_path:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+        cards_modified_dir = cards_path.parent / 'cards_modified'
+
+        current = set(_read_excluded_cards(cards_modified_dir))
+        if excluded:
+            current.add(filename)
+        else:
+            current.discard(filename)
+        _write_excluded_cards(cards_modified_dir, current)
+
+        return jsonify({'success': True, 'excluded': excluded, 'count': len(current)})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
 @app.route('/api/projects/<project_id>/postprocess/update-type', methods=['POST'])
 def update_project_card_type(project_id):
     """Update the type classification for a card"""
@@ -3248,8 +3323,12 @@ def export_project_results(project_id):
         
         try:
             # Get all card images sorted
-            card_images = sorted([f for f in export_folder.iterdir() if f.suffix.lower() in ['.png', '.jpg', '.jpeg']])
-            print(f"Found {len(card_images)} card images to export")
+            # Skip cards the operator excluded in Post Processing
+            excluded_set = set(_read_excluded_cards(cards_modified_path)) if cards_modified_path else set()
+            card_images = sorted([f for f in export_folder.iterdir()
+                                  if f.suffix.lower() in ['.png', '.jpg', '.jpeg']
+                                  and f.name not in excluded_set])
+            print(f"Found {len(card_images)} card images to export ({len(excluded_set)} excluded)")
             
             # Prepare final metadata with new IDs
             final_metadata = []
