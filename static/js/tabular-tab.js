@@ -138,9 +138,6 @@ function setupTabularListeners() {
         });
     }
 
-    // Export to CSV - use combined export endpoint
-    document.getElementById('export-csv-btn')?.addEventListener('click', exportCombinedCSV);
-    
     // Mark as reviewed
     document.getElementById('tabular-mark-reviewed-btn')?.addEventListener('click', markAsReviewed);
     
@@ -718,37 +715,6 @@ function exportToCSV() {
         window.PyPotteryUtils.showToast('CSV exported successfully', 'success');
         
     } catch (error) {
-        console.error('Error exporting CSV:', error);
-        window.PyPotteryUtils.showToast('Failed to export CSV', 'error');
-    }
-}
-
-async function exportCombinedCSV() {
-    if (!tabularState.currentProject || !tabularState.currentProject.project_id) {
-        window.PyPotteryUtils.showToast('No project selected', 'warning');
-        return;
-    }
-    
-    try {
-        window.PyPotteryUtils.showLoading('Saving combined CSV to project folder...');
-        
-        const response = await window.PyPotteryUtils.apiRequest(
-            `/api/projects/${tabularState.currentProject.project_id}/tabular/export`,
-            {
-                method: 'POST',
-                body: JSON.stringify({})
-            }
-        );
-        
-        window.PyPotteryUtils.hideLoading();
-        
-        if (response.success) {
-            window.PyPotteryUtils.showToast(`CSV saved: ${response.path}`, 'success');
-        } else {
-            window.PyPotteryUtils.showToast(response.error || 'Export failed', 'error');
-        }
-    } catch (error) {
-        window.PyPotteryUtils.hideLoading();
         console.error('Error exporting CSV:', error);
         window.PyPotteryUtils.showToast('Failed to export CSV', 'error');
     }

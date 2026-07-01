@@ -26,7 +26,9 @@ const annotationState = {
     mousePreview: null,      // {x, y} display coords for rubber-band line
     vesselsSummary: {},      // base -> count of drawn vessels
     canvasZoom: 1,           // CSS zoom multiplier over the canvas buffer
-    brushCursor: null        // {x, y} buffer coords for brush/eraser size ring
+    brushCursor: null,       // {x, y} buffer coords for brush/eraser size ring
+    colorize: false,         // colour each separate mask differently
+    colorizedCanvas: null    // cached offscreen canvas with the coloured masks
 };
 
 const POLYGON_CLOSE_THRESHOLD = 12; // display px to snap-close onto first point
@@ -89,14 +91,18 @@ function originalToDisplay(x, y) {
 }
 
 function initializeToolButtons() {
-    document.querySelectorAll('.btn-tool').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const tool = e.target.dataset.tool;
+    // Only real tools carry data-tool (brush/eraser/polygon/clear); zoom &
+    // colorize are toggles handled separately.
+    document.querySelectorAll('.btn-tool[data-tool]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tool = btn.dataset.tool;
             if (tool === 'clear') clearMask();
             else selectTool(tool);
         });
     });
-    
+
+    document.getElementById('colorize-toggle')?.addEventListener('click', toggleColorize);
+
     const slider = document.getElementById('brush-size');
     if (slider) {
         slider.addEventListener('input', (e) => {
@@ -428,6 +434,7 @@ async function selectImage(index) {
         
         annotationState.isModified = false;
         await loadVessels(img.baseName);
+        if (annotationState.colorize) computeColorized();
         redrawCanvas();
         showEditor();
         fitZoom();
@@ -473,11 +480,110 @@ function redrawCanvas() {
     // Direct rendering without requestAnimationFrame for immediate feedback
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(annotationState.backgroundImage, 0, 0);
-    ctx.globalAlpha = 0.5;
-    ctx.drawImage(annotationState.maskCanvas, 0, 0);
+    // Coloured connected-components view (except while actively painting, where
+    // we show the live red strokes and recolour on mouse-up).
+    if (annotationState.colorize && annotationState.colorizedCanvas && !annotationState.isDrawing) {
+        ctx.globalAlpha = 0.75;
+        ctx.drawImage(annotationState.colorizedCanvas, 0, 0);
+    } else {
+        ctx.globalAlpha = 0.5;
+        ctx.drawImage(annotationState.maskCanvas, 0, 0);
+    }
     ctx.globalAlpha = 1.0;
     drawPolygons(ctx);
     drawBrushCursor(ctx);
+}
+
+// Toggle the "political-map" colouring of separate masks
+function toggleColorize() {
+    annotationState.colorize = !annotationState.colorize;
+    const btn = document.getElementById('colorize-toggle');
+    if (btn) btn.classList.toggle('active', annotationState.colorize);
+    if (annotationState.colorize) computeColorized();
+    redrawCanvas();
+}
+
+// Label connected components of the current mask and paint each a distinct
+// colour into an offscreen canvas. Two touching (fused) masks share one colour,
+// which is exactly the anomaly the operator wants to spot.
+function computeColorized() {
+    const w = annotationState.displayWidth, h = annotationState.displayHeight;
+    if (!w || !h) { annotationState.colorizedCanvas = null; return; }
+
+    let src;
+    try {
+        src = annotationState.maskCtx.getImageData(0, 0, w, h);
+    } catch (e) {
+        console.warn('[Annotation] colorize failed:', e);
+        return;
+    }
+    const data = src.data;
+    const n = w * h;
+    const fg = new Uint8Array(n);
+    for (let i = 0; i < n; i++) fg[i] = data[i * 4 + 3] > 16 ? 1 : 0;
+
+    const labels = new Int32Array(n);
+    const stack = new Int32Array(n);
+    const colors = [null];
+    let label = 0;
+
+    for (let s = 0; s < n; s++) {
+        if (!fg[s] || labels[s]) continue;
+        label++;
+        const hue = (label * 137.508) % 360; // golden-angle → well-spread hues
+        colors.push(hslToRgb(hue / 360, 0.7, 0.5));
+        let sp = 0;
+        stack[sp++] = s;
+        labels[s] = label;
+        while (sp > 0) {
+            const p = stack[--sp];
+            const x = p % w;
+            if (x > 0)      { const q = p - 1; if (fg[q] && !labels[q]) { labels[q] = label; stack[sp++] = q; } }
+            if (x < w - 1)  { const q = p + 1; if (fg[q] && !labels[q]) { labels[q] = label; stack[sp++] = q; } }
+            if (p >= w)     { const q = p - w; if (fg[q] && !labels[q]) { labels[q] = label; stack[sp++] = q; } }
+            if (p < n - w)  { const q = p + w; if (fg[q] && !labels[q]) { labels[q] = label; stack[sp++] = q; } }
+        }
+    }
+
+    const out = new ImageData(w, h);
+    const od = out.data;
+    for (let i = 0; i < n; i++) {
+        const l = labels[i];
+        if (l) {
+            const c = colors[l];
+            od[i * 4] = c[0]; od[i * 4 + 1] = c[1]; od[i * 4 + 2] = c[2]; od[i * 4 + 3] = 255;
+        }
+    }
+
+    let cc = annotationState.colorizedCanvas;
+    if (!cc || cc.width !== w || cc.height !== h) {
+        cc = document.createElement('canvas');
+        cc.width = w; cc.height = h;
+        annotationState.colorizedCanvas = cc;
+    }
+    cc.getContext('2d').putImageData(out, 0, 0);
+}
+
+function hslToRgb(h, s, l) {
+    let r, g, b;
+    if (s === 0) {
+        r = g = b = l;
+    } else {
+        const hue2rgb = (p, q, t) => {
+            if (t < 0) t += 1;
+            if (t > 1) t -= 1;
+            if (t < 1 / 6) return p + (q - p) * 6 * t;
+            if (t < 1 / 2) return q;
+            if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+            return p;
+        };
+        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        const p = 2 * l - q;
+        r = hue2rgb(p, q, h + 1 / 3);
+        g = hue2rgb(p, q, h);
+        b = hue2rgb(p, q, h - 1 / 3);
+    }
+    return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
 }
 
 // Show the brush/eraser footprint as a ring so the user sees what is affected
@@ -627,7 +733,12 @@ function startDrawing(e) {
 }
 
 function stopDrawing() {
+    if (!annotationState.isDrawing) return;
     annotationState.isDrawing = false;
+    if (annotationState.colorize) {
+        computeColorized();
+        redrawCanvas();
+    }
 }
 
 function draw(e) {
@@ -666,11 +777,11 @@ function draw(e) {
 }
 
 function onCanvasMouseLeave() {
+    const wasDrawing = annotationState.isDrawing;
     annotationState.isDrawing = false;
-    if (annotationState.brushCursor) {
-        annotationState.brushCursor = null;
-        redrawCanvas();
-    }
+    annotationState.brushCursor = null;
+    if (wasDrawing && annotationState.colorize) computeColorized();
+    redrawCanvas();
 }
 
 function selectTool(tool) {
@@ -769,6 +880,7 @@ function clearMask() {
     const canvas = annotationState.maskCanvas;
     annotationState.maskCtx.clearRect(0, 0, canvas.width, canvas.height);
     annotationState.isModified = true;
+    if (annotationState.colorize) computeColorized();
     redrawCanvas();
 }
 

@@ -566,6 +566,8 @@
                                         <button class="btn btn-tool" id="polygon-tool" data-tool="polygon"
                                             title="Draw a polygon around a vessel the model missed (e.g. a vessel drawn inside another). Click to add points; click the first point or double-click to close.">📐 Polygon</button>
                                         <button class="btn btn-tool" id="clear-tool" data-tool="clear">🗑️ Clear</button>
+                                        <button class="btn btn-tool" id="colorize-toggle"
+                                            title="Colour each separate mask differently (like a political map) to spot masks that are fused together.">🎨 Colorize</button>
                                     </div>
                                     <div class="control-cluster">
                                         <label class="size-control">Size <input type="range" id="brush-size" min="5" max="50" value="20"></label>
@@ -633,7 +635,6 @@
                                 <button class="btn btn-secondary" id="add-column-btn">➕ Add Column</button>
                                 <button class="btn btn-danger" id="clear-table-btn"
                                     title="Clear all values on this page (keeps the index/ID column) to start over">🧹 Clear Table</button>
-                                <button class="btn btn-primary" id="export-csv-btn">📊 Export Combined CSV</button>
                             </div>
                             <div class="form-row" style="margin-top: 0.5rem; align-items: center; gap: 0.5rem;">
                                 <button class="btn btn-secondary" id="ai-bibliographic-btn"
@@ -759,15 +760,23 @@
                     <div class="postprocess-toolbar">
                         <div class="postprocess-toolbar-left">
                             <span class="pp-count">🖼️ Cards: <span id="postprocess-image-count">0</span></span>
-                            <label class="pp-opt"><input type="checkbox" id="auto-flip-vertical" checked> Auto V-flip</label>
-                            <label class="pp-opt"><input type="checkbox" id="auto-flip-horizontal" checked> Auto H-flip</label>
+                            <label class="switch-toggle">
+                                <input type="checkbox" id="auto-flip-vertical" checked>
+                                <span class="switch-track"><span class="switch-thumb"></span></span>
+                                Auto V-flip
+                            </label>
+                            <label class="switch-toggle">
+                                <input type="checkbox" id="auto-flip-horizontal" checked>
+                                <span class="switch-track"><span class="switch-thumb"></span></span>
+                                Auto H-flip
+                            </label>
                         </div>
                         <div class="postprocess-toolbar-right">
                             <button class="btn btn-primary" id="process-all-btn">🔍 Process All Images</button>
                             <button class="btn btn-primary" id="export-btn">📦 Export Results</button>
                         </div>
                     </div>
-                    <div class="progress-bar-wrapper" style="margin-top: 0.75rem;">
+                    <div class="progress-bar-wrapper" id="postprocess-progress-wrapper" style="margin-top: 0.75rem; display: none;">
                         <div class="progress-bar" id="postprocess-progress-bar">0%</div>
                     </div>
                     <div id="postprocess-status" class="status-message"></div>

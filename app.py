@@ -3221,8 +3221,8 @@ def export_project_results(project_id):
         if not cards_path or not cards_path.exists():
             return jsonify({'error': 'No cards folder found', 'success': False}), 404
         
-        # Auto-merge: check if combined CSV exists in project root
-        combined_csv_path = project_path / f"{project_id}_mask_info.csv"
+        # Auto-merge: read tabular data directly from cards/mask_info.csv (always up to date)
+        combined_csv_path = cards_path / 'mask_info.csv'
         if combined_csv_path.exists():
             print(f"Found combined CSV, merging with classifications...")
             try:
@@ -3395,8 +3395,9 @@ def export_project_results(project_id):
             cols.extend(remaining)
             final_df = final_df[cols]
             
-            # Save metadata to temp file
+            # Save metadata to temp file — all fields as text
             metadata_temp_path = Path(temp_dir) / f"{acronym}_metadata.csv"
+            final_df = final_df.astype(str).replace({'nan': '', 'None': ''})
             final_df.to_csv(metadata_temp_path, index=False)
             print(f"Created final metadata with {len(final_df)} rows and columns: {list(final_df.columns)}")
             

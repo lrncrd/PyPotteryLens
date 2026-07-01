@@ -232,6 +232,9 @@ async function handleProcessAll() {
     const flipVertical = document.getElementById('auto-flip-vertical').checked;
     const flipHorizontal = document.getElementById('auto-flip-horizontal').checked;
 
+    const progressWrapper = document.getElementById('postprocess-progress-wrapper');
+    if (progressWrapper) progressWrapper.style.display = '';
+
     try {
         window.PyPotteryUtils.showStatus('postprocess-status', 'Starting processing...', 'info');
         const response = await window.PyPotteryUtils.executeWithProgress(
@@ -246,6 +249,7 @@ async function handleProcessAll() {
             'postprocess-progress-bar'
         );
 
+        if (progressWrapper) progressWrapper.style.display = 'none';
         if (response.success) {
             window.PyPotteryUtils.showStatus('postprocess-status', response.message || 'Done', 'success');
             window.PyPotteryUtils.showToast(`Processed ${response.count || ''} images!`, 'success');
@@ -255,6 +259,7 @@ async function handleProcessAll() {
             window.PyPotteryUtils.showToast('Processing failed', 'error');
         }
     } catch (error) {
+        if (progressWrapper) progressWrapper.style.display = 'none';
         console.error('Error processing:', error);
         window.PyPotteryUtils.showStatus('postprocess-status', error.message, 'error');
         window.PyPotteryUtils.showToast(error.message, 'error');
