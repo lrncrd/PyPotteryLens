@@ -90,8 +90,16 @@ function setupTabularListeners() {
     // AI backend toggle panel
     document.getElementById('ai-backend-toggle-btn')?.addEventListener('click', () => {
         const panel = document.getElementById('ai-backend-panel');
-        if (panel) panel.classList.toggle('show');
+        if (panel) {
+            panel.classList.toggle('show');
+            if (panel.classList.contains('show')) {
+                checkLocalModelStatus();
+            }
+        }
     });
+
+    // Download local model button
+    document.getElementById('download-local-model-btn')?.addEventListener('click', triggerLocalModelDownload);
 
     // Show/hide OpenRouter config based on radio selection
     document.querySelectorAll('input[name="ai-backend-choice"]').forEach(radio => {
@@ -1024,18 +1032,22 @@ function showAiConfirmDialog(requirements, onConfirm) {
     // Remove any existing dialog
     document.getElementById('ai-requirements-dialog')?.remove();
 
-    const { cuda_available, vram_gb, gpu_name, model_cached, meets_requirements } = requirements;
+    const { cuda_available, vram_gb, gpu_name, model_cached, meets_requirements, ineligible_reason } = requirements;
 
     const gpuLine = cuda_available
-        ? `<p>GPU detected: <strong>${gpu_name}</strong> (${vram_gb.toFixed(1)} GB VRAM)</p>`
+        ? `<p>GPU detected: <strong>${gpu_name}</strong> (${vram_gb.toFixed(1)} GB free VRAM)</p>`
         : `<p style="color:#ef4444;">No CUDA GPU detected on this system.</p>`;
 
     const downloadNote = model_cached
         ? `<p style="color:#22c55e;">✅ Model already cached locally — no download needed.</p>`
         : `<p style="color:#f59e0b;">⚠️ The Gemma 4 E2B model (~10 GB) will be downloaded the first time. Make sure you have a stable internet connection and enough disk space.</p>`;
 
+    // Hardware gate: Gemma 4 E2B's multimodal architecture only runs reliably
+    // on genuinely comfortable hardware (see check_local_ai_hardware on the
+    // backend) - marginal GPU/CPU/RAM combos kept hitting device-dispatch
+    // crashes, so below the bar this is a hard block, not just a warning.
     const blocker = !meets_requirements
-        ? `<p style="color:#ef4444; font-weight:600;">This feature requires a CUDA GPU with at least 6 GB of VRAM. Your system does not meet this requirement.</p>`
+        ? `<p style="color:#ef4444; font-weight:600;">${ineligible_reason || 'Your system does not meet the minimum hardware requirements for local extraction.'} Consider using the OpenRouter API backend instead.</p>`
         : '';
 
     const overlay = document.createElement('div');
@@ -1057,9 +1069,9 @@ function showAiConfirmDialog(requirements, onConfirm) {
             </p>
             <div style="display:flex; justify-content:flex-end; gap:0.75rem; margin-top:1.5rem;">
                 <button id="ai-dialog-cancel" class="btn btn-secondary">Cancel</button>
-                <button id="ai-dialog-confirm" class="btn btn-primary"
-                    ${meets_requirements ? '' : 'disabled'}>
-                    ${model_cached ? 'Run Extraction' : 'Download & Run'}
+                <button id="ai-dialog-confirm" class="btn ${meets_requirements ? 'btn-primary' : 'btn-secondary'}"
+                    ${meets_requirements ? '' : 'disabled style="opacity:0.5; cursor:not-allowed;"'}>
+                    ${meets_requirements ? (model_cached ? 'Run Extraction' : 'Download & Run') : 'Requirements Not Met'}
                 </button>
             </div>
             <div id="ai-download-progress-wrapper" style="display:none; margin-top:1rem;">
@@ -1085,18 +1097,128 @@ function showAiConfirmDialog(requirements, onConfirm) {
     });
 }
 
-function startProgressPolling(labelEl, barEl, stopSignal) {
+function startProgressPolling(labelEl, barEl, stopSignal, percentTextEl = null) {
     const interval = setInterval(async () => {
         if (stopSignal.stopped) { clearInterval(interval); return; }
         try {
             const prog = await window.PyPotteryUtils.apiRequest('/api/operation-progress');
-            if (prog && prog.active) {
-                labelEl.textContent = prog.message || '';
-                barEl.style.width = (prog.percent || 0) + '%';
+            if (prog) {
+                if (labelEl && prog.message) {
+                    labelEl.textContent = prog.message;
+                    if (prog.message.includes('failed') || prog.message.includes('Error')) {
+                        labelEl.style.color = '#ef4444';
+                    }
+                }
+                const pct = prog.percent || 0;
+                if (barEl) barEl.style.width = pct + '%';
+                if (percentTextEl) percentTextEl.textContent = pct + '%';
+
+                if (!prog.active && (prog.message.includes('failed') || prog.message.includes('Error'))) {
+                    stopSignal.stopped = true;
+                    clearInterval(interval);
+                }
             }
         } catch (_) { /* ignore polling errors */ }
-    }, 800);
+    }, 400);
     return interval;
+}
+
+async function checkLocalModelStatus() {
+    const statusTextEl = document.getElementById('local-model-status-text');
+    const downloadBtn = document.getElementById('download-local-model-btn');
+    if (!statusTextEl || !downloadBtn) return null;
+
+    try {
+        const req = await checkAiRequirements();
+        if (req && req.model_cached) {
+            statusTextEl.textContent = '✅ Cached & ready locally';
+            statusTextEl.style.color = '#22c55e';
+            downloadBtn.textContent = '✓ Model Cached';
+            downloadBtn.disabled = true;
+        } else if (req && !req.meets_requirements) {
+            // Same hardware gate as the Extract dialog (check_local_ai_hardware) -
+            // don't let the user kick off a ~10 GB download that's guaranteed
+            // to fail server-side.
+            statusTextEl.textContent = '🚫 ' + (req.ineligible_reason || 'Hardware requirements not met');
+            statusTextEl.style.color = '#ef4444';
+            downloadBtn.textContent = 'Requirements not met';
+            downloadBtn.disabled = true;
+        } else {
+            statusTextEl.textContent = '⚠️ Not cached (~10 GB download required)';
+            statusTextEl.style.color = '#f59e0b';
+            downloadBtn.textContent = '⬇️ Download Model (~10 GB)';
+            downloadBtn.disabled = false;
+        }
+        return req;
+    } catch (e) {
+        statusTextEl.textContent = 'Status unknown';
+        statusTextEl.style.color = '#94a3b8';
+        return null;
+    }
+}
+
+async function triggerLocalModelDownload() {
+    const downloadBtn = document.getElementById('download-local-model-btn');
+    const progressBox = document.getElementById('local-model-download-progress');
+    const statusMsg = document.getElementById('local-download-status-msg');
+    const percentText = document.getElementById('local-download-percent-text');
+    const bar = document.getElementById('local-download-bar');
+
+    if (!downloadBtn) return;
+    downloadBtn.disabled = true;
+    if (progressBox) progressBox.style.display = 'block';
+    if (statusMsg) {
+        statusMsg.textContent = 'Connecting to download server...';
+        statusMsg.style.color = '#cbd5e1';
+    }
+    if (bar) bar.style.width = '0%';
+    if (percentText) percentText.textContent = '0%';
+
+    try {
+        await window.PyPotteryUtils.apiRequest('/api/tabular/download-model', { method: 'POST' });
+        const stopSignal = { stopped: false };
+        const pollInterval = startProgressPolling(statusMsg, bar, stopSignal, percentText);
+
+        const checkInterval = setInterval(async () => {
+            if (stopSignal.stopped) {
+                clearInterval(checkInterval);
+                return;
+            }
+            try {
+                const prog = await window.PyPotteryUtils.apiRequest('/api/operation-progress');
+                if (prog) {
+                    if (!prog.active && (prog.percent === 100 || prog.message === 'Model ready')) {
+                        stopSignal.stopped = true;
+                        clearInterval(pollInterval);
+                        clearInterval(checkInterval);
+                        if (statusMsg) {
+                            statusMsg.textContent = '✅ Download complete & model ready!';
+                            statusMsg.style.color = '#22c55e';
+                        }
+                        if (bar) bar.style.width = '100%';
+                        if (percentText) percentText.textContent = '100%';
+                        window.PyPotteryUtils.showToast('Local Gemma 4 model downloaded successfully!', 'success');
+                        await checkLocalModelStatus();
+                    } else if (!prog.active && (prog.message.includes('failed') || prog.message.includes('Error'))) {
+                        stopSignal.stopped = true;
+                        clearInterval(pollInterval);
+                        clearInterval(checkInterval);
+                        if (statusMsg) {
+                            statusMsg.textContent = '❌ ' + prog.message;
+                            statusMsg.style.color = '#ef4444';
+                        }
+                        downloadBtn.disabled = false;
+                    }
+                }
+            } catch (_) {}
+        }, 800);
+    } catch (err) {
+        if (statusMsg) {
+            statusMsg.textContent = '❌ Download failed: ' + err.message;
+            statusMsg.style.color = '#ef4444';
+        }
+        downloadBtn.disabled = false;
+    }
 }
 
 function showBatchProgressOverlay() {

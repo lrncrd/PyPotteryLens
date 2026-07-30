@@ -236,7 +236,7 @@
                 <div class="header-text">
                     <h1>PyPotteryLens</h1>
                     <span>Archaeological Pottery Documentation Tool
-                        <span class="version">v0.3.0</span>
+                        <span class="version">v{{ version }}</span>
                     </span>
                 </div>
                 <!-- Pixel Assistant -->
@@ -292,7 +292,7 @@
 
                             <!-- App Info -->
                             <div class="model-info-item">
-                                <strong>Version:</strong> v0.3.0
+                                <strong>Version:</strong> v{{ version }}
                             </div>
                             <div class="model-info-item">
                                 <strong>Author:</strong> Lorenzo Cardarelli
@@ -721,6 +721,29 @@
                                     <input type="radio" name="ai-backend-choice" id="ai-backend-openrouter" value="openrouter">
                                     <label for="ai-backend-openrouter">☁️ OpenRouter API</label>
                                 </div>
+
+                                <!-- Local Model Status & Download Box -->
+                                <div id="local-model-status-box" style="margin-top:0.75rem; background:#0f172a; border:1px solid #334155; border-radius:8px; padding:0.85rem;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+                                        <div>
+                                            <span style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.15rem;">Local Model Status</span>
+                                            <span id="local-model-status-text" style="font-size:0.85rem; font-weight:600; color:#f59e0b;">Checking model status...</span>
+                                        </div>
+                                        <button id="download-local-model-btn" class="btn btn-secondary" style="font-size:0.8rem; padding:0.4rem 0.85rem; border-radius:6px;">
+                                            ⬇️ Download Model (~10 GB)
+                                        </button>
+                                    </div>
+                                    <div id="local-model-download-progress" style="display:none; margin-top:0.75rem;">
+                                        <div style="display:flex; justify-content:space-between; font-size:0.78rem; color:#cbd5e1; margin-bottom:0.35rem;">
+                                            <span id="local-download-status-msg">Downloading...</span>
+                                            <span id="local-download-percent-text">0%</span>
+                                        </div>
+                                        <div style="background:#334155; border-radius:6px; overflow:hidden; height:10px;">
+                                            <div id="local-download-bar" style="height:100%; background:linear-gradient(90deg, #6366f1, #8b5cf6); width:0%; transition:width 0.3s ease;"></div>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div id="ai-openrouter-config" class="collapsible-content">
                                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.6rem;">
                                         <div>
@@ -866,18 +889,32 @@
         </div>
 
         <!-- Extract Masks Confirmation Dialog -->
-        <div id="extract-confirm-dialog" class="dialog-overlay" style="display: none;">
-            <div class="dialog">
-                <div class="dialog-header">
-                    <h2>📤 Extract Cards</h2>
-                    <p>This will extract cards from all annotated masks</p>
+        <div id="extract-confirm-dialog" class="dialog-overlay extract-dialog-overlay" style="display: none;">
+            <div class="dialog extract-confirm-card">
+                <div class="extract-dialog-header">
+                    <div class="extract-dialog-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                    </div>
+                    <div>
+                        <h2>Extract Cards from Masks</h2>
+                        <p class="extract-dialog-subtitle">Crop drawing cards from all annotated masks in the active project</p>
+                    </div>
                 </div>
-                <div class="dialog-body">
-                    <p>Any previously extracted cards will be overwritten. Do you want to continue?</p>
+                <div class="extract-dialog-body">
+                    <div class="extract-warning-box">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="warning-icon"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                        <div>
+                            <strong>Overwrite Warning</strong>
+                            <p>Any previously extracted cards in this project will be re-generated and overwritten.</p>
+                        </div>
+                    </div>
                 </div>
-                <div class="dialog-footer">
-                    <button class="btn btn-secondary" id="extract-confirm-cancel">❌ Cancel</button>
-                    <button class="btn btn-primary" id="extract-confirm-ok">📤 Extract Cards</button>
+                <div class="extract-dialog-footer">
+                    <button class="btn btn-secondary btn-cancel-extract" id="extract-confirm-cancel">Cancel</button>
+                    <button class="btn btn-primary btn-do-extract" id="extract-confirm-ok">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 16 12 12 8 16"></polyline><line x1="12" y1="12" x2="12" y2="21"></line><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path><polyline points="16 16 12 12 8 16"></polyline></svg>
+                        Extract Cards
+                    </button>
                 </div>
             </div>
         </div>

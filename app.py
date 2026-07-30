@@ -21,6 +21,9 @@ import torch
 import gc
 import threading
 import time
+import platform
+import subprocess
+import psutil
 
 from utils import (
     PDFProcessor,
@@ -55,59 +58,255 @@ app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max file size
 app.config['UPLOAD_FOLDER'] = Path('temp_uploads')
 app.config['UPLOAD_FOLDER'].mkdir(exist_ok=True)
 
+
+def _read_version(default: str) -> str:
+    """Read the release version from VERSION (bumped automatically by the
+    auto-release GitHub Action on every release), falling back to `default`
+    for local/dev runs where that file doesn't exist yet."""
+    version_file = Path(__file__).resolve().parent / "VERSION"
+    try:
+        return version_file.read_text(encoding="utf-8").strip() or default
+    except OSError:
+        return default
+
+
+VERSION = _read_version("0.3.0")
+
 # Initialize Project Manager
 project_manager = ProjectManager(projects_root="projects")
+
+# Where to cache the Gemma model: shared across the suite when launched by the
+# PyPottery Suite launcher (PYPOTTERY_MODEL_CACHE set, so a model already
+# downloaded by another app isn't fetched again), otherwise a self-contained
+# local folder as before.
+_suite_model_cache = os.environ.get('PYPOTTERY_MODEL_CACHE')
+MODELS_LLM_DIR = Path(_suite_model_cache) / "transformers" if _suite_model_cache else Path("models_llm")
+MODELS_LLM_DIR.mkdir(parents=True, exist_ok=True)
 
 # === Gemma 4 AI model (lazy loaded for bibliographic extraction) ===
 _gemma_model = None
 _gemma_processor = None
 _gemma_model_lock = threading.Lock()
 
+def _monitor_gemma_download(target_dir, total_expected_bytes=9800000000):
+    start_time = time.time()
+    search_dirs = [target_dir, MODELS_LLM_DIR]
+    while operation_progress.get('active') and operation_progress.get('operation') == 'model_download':
+        total_bytes = 0
+        visited_files = set()
+        for sdir in search_dirs:
+            if sdir and os.path.exists(sdir):
+                try:
+                    for root, dirs, files in os.walk(sdir):
+                        for f in files:
+                            try:
+                                fp = os.path.join(root, f)
+                                if fp not in visited_files:
+                                    visited_files.add(fp)
+                                    total_bytes += os.path.getsize(fp)
+                            except OSError:
+                                pass
+                except Exception:
+                    pass
+        
+        pct = min(88, int((total_bytes / total_expected_bytes) * 100))
+        gb_downloaded = round(total_bytes / (1024 * 1024 * 1024), 2)
+        gb_total = round(total_expected_bytes / (1024 * 1024 * 1024), 2)
+        mb_downloaded = round(total_bytes / (1024 * 1024), 1)
+        mb_total = round(total_expected_bytes / (1024 * 1024), 1)
+        
+        elapsed = max(1.0, time.time() - start_time)
+        speed_mbps = round((total_bytes / (1024 * 1024)) / elapsed, 1)
+        
+        operation_progress['percent'] = pct
+        operation_progress['downloaded_mb'] = mb_downloaded
+        operation_progress['total_mb'] = mb_total
+        operation_progress['message'] = f"Downloading Gemma 4 E2B model: {gb_downloaded} GB / {gb_total} GB ({pct}%) • {speed_mbps} MB/s"
+        time.sleep(0.5)
+
+_HIGH_TIER_CPU_PATTERN = re.compile(
+    r"(i7-|i9-|Core\(TM\)\s*i7|Core\(TM\)\s*i9|Ryzen\s*(7|9)|Threadripper|Xeon)",
+    re.IGNORECASE,
+)
+
+
+def _get_cpu_brand() -> str:
+    """Best-effort CPU model string, used only to gate CPU-only inference."""
+    try:
+        if platform.system() == "Linux":
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.lower().startswith("model name"):
+                        return line.split(":", 1)[1].strip()
+        elif platform.system() == "Darwin":
+            return subprocess.check_output(
+                ["sysctl", "-n", "machdep.cpu.brand_string"], text=True, timeout=3
+            ).strip()
+    except Exception:
+        pass
+    return platform.processor() or ""
+
+
+def check_local_ai_hardware() -> dict:
+    """
+    Hardware gate for the local Gemma 4 E2B backend.
+
+    Gemma 4 E2B is a brand-new, multimodal (vision+audio) architecture whose
+    device-dispatch support in transformers/accelerate is still rough at the
+    edges - splitting it across GPU+CPU (whether via low-VRAM quantization
+    offload or plain CPU fallback on an underpowered machine) has repeatedly
+    hit "tensor stuck on the meta device" crashes. Rather than keep chasing
+    dispatch bugs on marginal hardware, this gates eligibility so the model
+    only ever runs on genuinely comfortable hardware:
+      - CUDA GPU with >= 8 GB free VRAM, or
+      - Apple Silicon (MPS) with >= 16 GB unified memory, or
+      - a high-tier CPU (i7/i9/Ryzen 7/9/Threadripper/Xeon, or >= 8 physical
+        cores as a vendor-agnostic equivalent) with >= 16 GB system RAM.
+    """
+    cuda_available = torch.cuda.is_available()
+    vram_free_gb = 0.0
+    gpu_name = ""
+    if cuda_available and torch.cuda.device_count() > 0:
+        free_bytes, _total_bytes = torch.cuda.mem_get_info()
+        vram_free_gb = free_bytes / (1024 ** 3)
+        gpu_name = torch.cuda.get_device_properties(0).name
+
+    mps_available = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+    ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+    cpu_brand = _get_cpu_brand()
+    physical_cores = psutil.cpu_count(logical=False) or os.cpu_count() or 1
+    cpu_high_tier = bool(_HIGH_TIER_CPU_PATTERN.search(cpu_brand)) or physical_cores >= 8
+
+    eligible = (
+        (cuda_available and vram_free_gb >= 8.0)
+        or (mps_available and ram_gb >= 16.0)
+        or (cpu_high_tier and ram_gb >= 16.0)
+    )
+
+    reason = ""
+    if not eligible:
+        if mps_available:
+            reason = (
+                f"Apple Silicon detected with {ram_gb:.1f} GB unified memory - at least "
+                f"16 GB is required to run Gemma 4 E2B locally."
+            )
+        elif cuda_available:
+            reason = (
+                f"GPU '{gpu_name}' has {vram_free_gb:.1f} GB free VRAM - at least 8 GB is "
+                f"required. A high-tier CPU (i7/i9 or equivalent) with 16 GB+ RAM can be "
+                f"used instead, but yours ({cpu_brand or 'unknown CPU'}, {physical_cores} "
+                f"cores, {ram_gb:.1f} GB RAM) doesn't meet that bar either."
+            )
+        else:
+            reason = (
+                f"No compatible GPU detected, and your CPU ({cpu_brand or 'unknown'}, "
+                f"{physical_cores} cores, {ram_gb:.1f} GB RAM) doesn't meet the minimum "
+                f"for CPU-only inference (i7/i9 or equivalent, 16 GB+ RAM)."
+            )
+
+    return {
+        "cuda_available": cuda_available,
+        "vram_gb": round(vram_free_gb, 2),
+        "gpu_name": gpu_name,
+        "mps_available": mps_available,
+        "ram_gb": round(ram_gb, 2),
+        "cpu_name": cpu_brand,
+        "cpu_cores": physical_cores,
+        "cpu_high_tier": cpu_high_tier,
+        "eligible": eligible,
+        "reason": reason,
+    }
+
+
 def load_gemma_model(hf_token=None):
     """Lazy-load google/gemma-4-E2B-it for vision-based bibliographic extraction."""
     global _gemma_model, _gemma_processor
     with _gemma_model_lock:
         if _gemma_model is None:
-            from transformers import AutoProcessor, AutoModelForMultimodalLM
+            hw = check_local_ai_hardware()
+            if not hw["eligible"]:
+                raise RuntimeError(hw["reason"])
+
+            from transformers import AutoProcessor, AutoModelForImageTextToText
             model_id = "google/gemma-4-E2B-it"
             token = hf_token or os.environ.get('HF_TOKEN', '') or None
-            cache_dir = Path("models_llm")
-            cache_dir.mkdir(exist_ok=True)
+            cache_dir = MODELS_LLM_DIR
             print(f"[AI] Loading {model_id} into {cache_dir}...")
 
-            # Signal download progress to frontend (indeterminate — HF Hub manages the actual download)
+            # Signal download progress to frontend with background monitoring
             operation_progress['active'] = True
             operation_progress['operation'] = 'model_download'
-            operation_progress['message'] = 'Downloading Gemma 4 E2B model (~10 GB) — this may take a while...'
+            operation_progress['message'] = 'Downloading Gemma 4 E2B model (~10 GB)...'
             operation_progress['percent'] = 0
-            operation_progress['current'] = 0
-            operation_progress['total'] = 1
+            operation_progress['downloaded_mb'] = 0
+            operation_progress['total_mb'] = 9800
+
+            target_model_dir = cache_dir / "models--google--gemma-4-E2B-it"
+            monitor_thread = threading.Thread(
+                target=_monitor_gemma_download,
+                args=(target_model_dir,),
+                daemon=True
+            )
+            monitor_thread.start()
 
             _gemma_processor = AutoProcessor.from_pretrained(
                 model_id, token=token, cache_dir=cache_dir
             )
 
             operation_progress['message'] = 'Loading model weights into GPU memory...'
-            operation_progress['percent'] = 70
+            operation_progress['percent'] = 90
 
-            if torch.cuda.is_available():
-                device_map = "auto"
+            # check_local_ai_hardware() already gated us into one of three
+            # comfortable tiers - GPU with >=8 GB free VRAM, Apple Silicon
+            # with >=16 GB unified memory, or a high-tier CPU with >=16 GB
+            # RAM. Nothing here needs to attempt a GPU/CPU split anymore
+            # (that's exactly the path that kept hitting "tensor on meta
+            # device" crashes on marginal hardware), so every branch below
+            # loads onto a single device.
+            quantization_config = None
+            if hw["cuda_available"]:
+                if hw["vram_gb"] >= 12.0:
+                    # Comfortable headroom for the full ~10 GB bf16 weights plus
+                    # KV-cache/activations - best quality, no quantization needed.
+                    device_map = "auto"
+                else:
+                    # 8-12 GB free: bitsandbytes 8-bit (LLM.int8()) has real
+                    # overhead beyond naive per-weight-byte math (outlier
+                    # features are kept in fp16 via mixed-precision
+                    # decomposition), and this model also carries vision/audio
+                    # encoder towers a plain text-sizing table wouldn't count -
+                    # llm_int8_enable_fp32_cpu_offload stays on as a safety net
+                    # (graceful partial CPU offload) rather than a hard crash,
+                    # in case those towers don't quite fit.
+                    from transformers import BitsAndBytesConfig
+                    device_map = "auto"
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_8bit=True,
+                        llm_int8_enable_fp32_cpu_offload=True,
+                    )
             else:
-                # MPS (Apple Silicon) has a max single-buffer limit (~4GB) that
-                # prevents loading Gemma 4 E2B (5.1B params). Use CPU instead.
+                # Eligible via the MPS or high-tier-CPU path - both run on CPU
+                # (MPS has a ~4GB max single-buffer limit that this model
+                # exceeds, and bitsandbytes has no MPS backend at all either).
                 device_map = {"": "cpu"}
-            _gemma_model = AutoModelForMultimodalLM.from_pretrained(
-                model_id,
+
+            load_kwargs = dict(
                 token=token,
-                dtype="auto",
                 device_map=device_map,
                 cache_dir=cache_dir,
-                low_cpu_mem_usage=True
+                low_cpu_mem_usage=True,
             )
+            if quantization_config is not None:
+                load_kwargs["quantization_config"] = quantization_config
+            else:
+                load_kwargs["dtype"] = "auto"
+
+            _gemma_model = AutoModelForImageTextToText.from_pretrained(model_id, **load_kwargs)
             operation_progress['message'] = 'Model ready'
             operation_progress['percent'] = 100
             operation_progress['active'] = False
-            print(f"[AI] Gemma 4 E2B-it loaded (device_map={device_map})")
+            precision = "8-bit" if quantization_config is not None else "bf16" if hw["cuda_available"] else "fp32 (CPU)"
+            print(f"[AI] Gemma 4 E2B-it loaded (device_map={device_map}, precision={precision})")
     return _gemma_model, _gemma_processor
 
 
@@ -510,32 +709,27 @@ def get_system_info():
 
 @app.route('/api/check-ai-requirements')
 def check_ai_requirements():
-    """Check if the system meets requirements for AI bibliographic extraction:
-    - CUDA GPU with at least 6 GB VRAM
-    - Whether the Gemma model is already cached locally
+    """Check if the system meets the hardware bar for local Gemma 4 E2B
+    inference (see check_local_ai_hardware), and whether it's already cached.
     """
     try:
-        import torch
-        cuda_available = torch.cuda.is_available()
-        vram_gb = 0.0
-        gpu_name = ''
-        if cuda_available and torch.cuda.device_count() > 0:
-            props = torch.cuda.get_device_properties(0)
-            vram_gb = props.total_memory / (1024 ** 3)
-            gpu_name = props.name
+        hw = check_local_ai_hardware()
 
         # Check if model blobs exist in the local cache directory
-        model_cache_dir = Path("models_llm") / "models--google--gemma-4-E2B-it"
+        model_cache_dir = MODELS_LLM_DIR / "models--google--gemma-4-E2B-it"
         model_cached = model_cache_dir.exists() and any(model_cache_dir.rglob("*.safetensors"))
 
-        meets_requirements = cuda_available and vram_gb >= 6.0
-
         return jsonify({
-            'cuda_available': cuda_available,
-            'vram_gb': round(vram_gb, 2),
-            'gpu_name': gpu_name,
+            'cuda_available': hw['cuda_available'],
+            'vram_gb': hw['vram_gb'],
+            'gpu_name': hw['gpu_name'],
+            'mps_available': hw['mps_available'],
+            'ram_gb': hw['ram_gb'],
+            'cpu_name': hw['cpu_name'],
+            'cpu_high_tier': hw['cpu_high_tier'],
             'model_cached': model_cached,
-            'meets_requirements': meets_requirements
+            'meets_requirements': hw['eligible'],
+            'ineligible_reason': hw['reason'],
         })
     except Exception as e:
         return jsonify({'error': str(e), 'cuda_available': False,
@@ -543,10 +737,35 @@ def check_ai_requirements():
                         'meets_requirements': False}), 500
 
 
+@app.route('/api/tabular/download-model', methods=['POST'])
+def api_download_gemma_model():
+    """Explicitly trigger Gemma 4 model download in background thread."""
+    if operation_progress.get('active') and operation_progress.get('operation') == 'model_download':
+        return jsonify({'success': True, 'message': 'Download already in progress'})
+
+    operation_progress['active'] = True
+    operation_progress['operation'] = 'model_download'
+    operation_progress['message'] = 'Starting model download (~10 GB)...'
+    operation_progress['percent'] = 0
+    operation_progress['downloaded_mb'] = 0
+    operation_progress['total_mb'] = 9800
+
+    def _bg_download():
+        try:
+            load_gemma_model()
+        except Exception as e:
+            print(f"[AI] Error downloading Gemma model: {e}")
+            operation_progress['active'] = False
+            operation_progress['message'] = f"Download failed: {str(e)}"
+
+    threading.Thread(target=_bg_download, daemon=True).start()
+    return jsonify({'success': True, 'message': 'Model download started'})
+
+
 @app.route('/')
 def index():
     """Main page"""
-    return render_template('index.html')
+    return render_template('index.html', version=VERSION)
 
 # ============================================================================
 # PROJECT MANAGEMENT API ROUTES

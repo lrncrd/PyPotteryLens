@@ -103,25 +103,39 @@ body {
     left: 0;
     width: 100%;
     height: 100%;
-    background: rgba(0, 0, 0, 0.5);
-    display: none;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    display: flex;
     z-index: 10000;
     align-items: center;
     justify-content: center;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .model-info-popup.show {
-    display: flex;
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
 }
 
 .model-info-popup-content {
-    background: white;
-    border-radius: 12px;
-    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
-    max-width: 400px;
+    background: var(--surface, white);
+    border-radius: 16px;
+    box-shadow: 0 20px 45px rgba(0, 0, 0, 0.25);
+    max-width: 440px;
     width: 90%;
-    max-height: 80vh;
+    max-height: 85vh;
     overflow-y: auto;
+    transform: scale(0.92) translateY(12px);
+    transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.model-info-popup.show .model-info-popup-content {
+    transform: scale(1) translateY(0);
 }
 
 .model-info-popup-header {
@@ -611,26 +625,42 @@ body {
 
 /* Image Modal for Zoom */
 .image-modal {
-    display: none;
     position: fixed;
     z-index: 10000;
     left: 0;
     top: 0;
     width: 100%;
     height: 100%;
-    background: rgba(0, 0, 0, 0.9);
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    display: flex;
     justify-content: center;
     align-items: center;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .image-modal.active {
-    display: flex;
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
 }
 
 .image-modal img {
     max-width: 90%;
     max-height: 90%;
     object-fit: contain;
+    border-radius: 8px;
+    box-shadow: 0 25px 60px rgba(0, 0, 0, 0.5);
+    transform: scale(0.92);
+    transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.image-modal.active img {
+    transform: scale(1);
 }
 
 .image-modal .close-modal {
@@ -1756,6 +1786,155 @@ body {
     max-height: 80vh;
     overflow-y: auto;
     box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+}
+
+/* Extract Cards Custom Dialog Styling */
+.extract-dialog-overlay {
+    background: rgba(15, 23, 42, 0.65) !important;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    z-index: 10000 !important;
+}
+
+.extract-dialog-overlay.show {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+
+.extract-confirm-card {
+    background: var(--surface, #ffffff);
+    border-radius: 20px !important;
+    border: 1px solid rgba(226, 232, 240, 0.8);
+    box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.3), 0 0 1px rgba(0, 0, 0, 0.1);
+    max-width: 480px !important;
+    width: 90%;
+    overflow: hidden !important;
+    transform: scale(0.92) translateY(16px);
+    transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.extract-dialog-overlay.show .extract-confirm-card {
+    transform: scale(1) translateY(0);
+}
+
+.extract-dialog-header {
+    display: flex;
+    align-items: center;
+    gap: 1.15rem;
+    padding: 1.75rem 1.75rem 1.25rem;
+    border-bottom: 1px solid var(--border, #f1f5f9);
+}
+
+.extract-dialog-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.12), rgba(139, 92, 246, 0.2));
+    color: #6366f1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.extract-dialog-header h2 {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: var(--text-primary, #0f172a);
+    margin: 0 0 0.2rem 0;
+}
+
+.extract-dialog-subtitle {
+    font-size: 0.83rem;
+    color: var(--text-secondary, #64748b);
+    margin: 0;
+    line-height: 1.4;
+}
+
+.extract-dialog-body {
+    padding: 1.5rem 1.75rem;
+}
+
+.extract-warning-box {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.85rem;
+    background: #fffbe6;
+    border: 1px solid #ffe58f;
+    border-radius: 12px;
+    padding: 1rem 1.15rem;
+    color: #873800;
+}
+
+.extract-warning-box .warning-icon {
+    color: #d46b08;
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+
+.extract-warning-box strong {
+    display: block;
+    font-size: 0.88rem;
+    font-weight: 600;
+    margin-bottom: 0.2rem;
+    color: #612500;
+}
+
+.extract-warning-box p {
+    font-size: 0.82rem;
+    margin: 0;
+    line-height: 1.45;
+    color: #873800;
+}
+
+.extract-dialog-footer {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: flex-end;
+    padding: 1.25rem 1.75rem 1.5rem;
+    background: var(--surface-subtle, #f8fafc);
+    border-top: 1px solid var(--border, #f1f5f9);
+}
+
+.btn-cancel-extract {
+    border-radius: 10px !important;
+    padding: 0.6rem 1.25rem !important;
+    font-weight: 600 !important;
+    color: #64748b !important;
+    background: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    transition: all 0.2s ease !important;
+    cursor: pointer;
+}
+
+.btn-cancel-extract:hover {
+    background: #f1f5f9 !important;
+    color: #334155 !important;
+}
+
+.btn-do-extract {
+    border-radius: 10px !important;
+    padding: 0.6rem 1.35rem !important;
+    font-weight: 600 !important;
+    background: linear-gradient(135deg, #6366f1, #4f46e5) !important;
+    color: white !important;
+    border: none !important;
+    box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35) !important;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    transition: all 0.2s ease !important;
+    cursor: pointer;
+}
+
+.btn-do-extract:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(99, 102, 241, 0.45) !important;
 }
 
 .dialog-header {

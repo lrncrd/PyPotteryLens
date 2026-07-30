@@ -1362,19 +1362,37 @@ function showExtractConfirmDialog() {
         const okBtn = document.getElementById('extract-confirm-ok');
         const cancelBtn = document.getElementById('extract-confirm-cancel');
 
-        function cleanup(result) {
-            dialog.style.display = 'none';
-            okBtn.removeEventListener('click', onOk);
-            cancelBtn.removeEventListener('click', onCancel);
-            resolve(result);
+        if (!dialog || !okBtn || !cancelBtn) {
+            resolve(true);
+            return;
         }
 
-        function onOk() { cleanup(true); }
-        function onCancel() { cleanup(false); }
+        dialog.style.display = 'flex';
+        // Trigger reflow for CSS transition
+        void dialog.offsetWidth;
+        dialog.classList.add('show');
+
+        let isCleaningUp = false;
+        function cleanup(result) {
+            if (isCleaningUp) return;
+            isCleaningUp = true;
+            dialog.classList.remove('show');
+            okBtn.removeEventListener('click', onOk);
+            cancelBtn.removeEventListener('click', onCancel);
+            dialog.removeEventListener('click', onBackdrop);
+            setTimeout(() => {
+                dialog.style.display = 'none';
+                resolve(result);
+            }, 250);
+        }
+
+        function onOk(e) { e.stopPropagation(); cleanup(true); }
+        function onCancel(e) { e.stopPropagation(); cleanup(false); }
+        function onBackdrop(e) { if (e.target === dialog) cleanup(false); }
 
         okBtn.addEventListener('click', onOk);
         cancelBtn.addEventListener('click', onCancel);
-        dialog.style.display = 'flex';
+        dialog.addEventListener('click', onBackdrop);
     });
 }
 
