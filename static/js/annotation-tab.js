@@ -52,6 +52,27 @@ document.addEventListener('DOMContentLoaded', () => {
     initializeExtractButton();
     initializeZoomControls();
     initializeScalePopup();
+    initializeSidebarToggle();
+
+    // Auto-save when user switches away from the annotation tab
+    document.querySelectorAll('.tab-button').forEach(tabBtn => {
+        tabBtn.addEventListener('click', () => {
+            if (tabBtn.dataset.tab !== 'annotation' && annotationState.isModified) {
+                if (autoSaveTimeout) {
+                    clearTimeout(autoSaveTimeout);
+                    autoSaveTimeout = null;
+                }
+                saveMask(true);
+            }
+        });
+    });
+
+    // Auto-save before page unload
+    window.addEventListener('beforeunload', () => {
+        if (annotationState.isModified) {
+            saveMask(true);
+        }
+    });
 
     window.addEventListener('projectChanged', handleProjectChanged);
     loadCurrentProject();
@@ -113,11 +134,15 @@ function initializeToolButtons() {
     document.getElementById('colorize-toggle')?.addEventListener('click', toggleColorize);
 
     const slider = document.getElementById('brush-size');
+    const sizeVal = document.getElementById('brush-size-val');
     if (slider) {
-        slider.addEventListener('input', (e) => {
-            annotationState.brushSize = parseInt(e.target.value);
-        });
-        annotationState.brushSize = parseInt(slider.value);
+        const updateSize = () => {
+            const val = parseInt(slider.value) || 20;
+            annotationState.brushSize = val;
+            if (sizeVal) sizeVal.textContent = val + 'px';
+        };
+        slider.addEventListener('input', updateSize);
+        updateSize();
     }
 }
 
@@ -145,6 +170,31 @@ function initializeScalePopup() {
         if (e.key === 'Enter') { e.preventDefault(); confirmScaleInput(); }
         else if (e.key === 'Escape') { e.preventDefault(); cancelScaleDraft(); redrawCanvas(); }
     });
+}
+
+function initializeSidebarToggle() {
+    const sidebar = document.getElementById('annotation-sidebar-panel');
+    const toggleBtn = document.getElementById('annotation-toggle-sidebar');
+    const closeBtn = document.getElementById('annotation-close-sidebar');
+
+    const toggleSidebar = () => {
+        if (!sidebar) return;
+        const isCollapsed = sidebar.classList.toggle('collapsed');
+        if (toggleBtn) {
+            toggleBtn.classList.toggle('active', isCollapsed);
+            toggleBtn.innerHTML = isCollapsed 
+                ? '<i class="bi bi-layout-sidebar-inset"></i> Show Images' 
+                : '<i class="bi bi-layout-sidebar"></i> Images List';
+            toggleBtn.title = isCollapsed ? 'Show Images List sidebar' : 'Collapse Images List sidebar';
+        }
+        // Refit the canvas to the new width once CSS transition finishes
+        setTimeout(() => {
+            if (typeof fitZoom === 'function') fitZoom();
+        }, 340);
+    };
+
+    toggleBtn?.addEventListener('click', toggleSidebar);
+    closeBtn?.addEventListener('click', toggleSidebar);
 }
 
 function initializeZoomControls() {
@@ -355,11 +405,11 @@ function renderImageList() {
     }
     
     const html = annotationState.images.map((img, i) => {
-        const icon = img.hasMask ? '✅' : '⚪';
+        const icon = img.hasMask ? '<i class="bi bi-check-circle-fill" style="color:var(--teal)"></i>' : '<i class="bi bi-circle" style="color:var(--text-muted); opacity:0.5"></i>';
         const active = i === annotationState.currentIndex ? 'active' : '';
         const vCount = annotationState.vesselsSummary[img.baseName];
         const badge = vCount
-            ? `<span class="vessels-badge" title="${vCount} manually drawn vessel(s)">📐${vCount}</span>`
+            ? `<span class="vessels-badge" title="${vCount} manually drawn vessel(s)"><i class="bi bi-rulers"></i> ${vCount}</span>`
             : '';
         return `
             <div class="annotation-image-item ${active}" data-index="${i}">
@@ -379,8 +429,12 @@ function renderImageList() {
 async function selectImage(index) {
     if (index < 0 || index >= annotationState.images.length) return;
     
+    if (autoSaveTimeout) {
+        clearTimeout(autoSaveTimeout);
+        autoSaveTimeout = null;
+    }
     if (annotationState.isModified && annotationState.currentIndex >= 0) {
-        await saveMask();
+        await saveMask(true);
     }
     
     annotationState.currentIndex = index;
@@ -771,6 +825,9 @@ function stopDrawing(e) {
         computeColorized();
         redrawCanvas();
     }
+    if (annotationState.isModified) {
+        scheduleAutoSave(1200);
+    }
 }
 
 function draw(e) {
@@ -821,6 +878,9 @@ function onCanvasMouseLeave() {
     annotationState.scaleCursorPos = null;
     if (wasDrawing && annotationState.colorize) computeColorized();
     redrawCanvas();
+    if (annotationState.isModified) {
+        scheduleAutoSave(1200);
+    }
 }
 
 function selectTool(tool) {
@@ -836,6 +896,14 @@ function selectTool(tool) {
     document.querySelectorAll('.btn-tool').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.tool === tool);
     });
+
+    // Dim brush size control when not using brush or eraser
+    const sizeControl = document.getElementById('brush-size-control');
+    if (sizeControl) {
+        const isBrushOrEraser = (tool === 'brush' || tool === 'eraser');
+        sizeControl.classList.toggle('disabled', !isBrushOrEraser);
+    }
+
     const canvas = annotationState.canvas;
     if (canvas) canvas.style.cursor = 'crosshair';
 }
@@ -876,7 +944,7 @@ function renderVesselsPanel() {
     list.innerHTML = polys.map((p, i) => `
         <div class="vessel-item" data-index="${i}">
             <span class="vessel-item-label">#${i + 1} — polygon (${p.length} points)</span>
-            <button class="vessel-delete" data-index="${i}">🗑️ Delete</button>
+            <button class="vessel-delete" data-index="${i}"><i class="bi bi-trash3"></i> Delete</button>
         </div>
     `).join('');
 
@@ -962,13 +1030,13 @@ function renderScalesPanel() {
     list.innerHTML = scales.map((s, i) => {
         const ratio = computeScaleRatio(s);
         const ratioStr = ratio ? ratio.toFixed(1) + ' px/cm' : '—';
-        const zoneStr = s.zone ? '✓ zone set' : 'global';
+        const zoneStr = s.zone ? 'zone set' : 'global';
         return `
             <div class="vessel-item scale-line-item">
                 <span class="vessel-item-label">#${i + 1} · ${s.real_cm}cm → <code>${ratioStr}</code> <em>(${zoneStr})</em></span>
                 <div class="scale-item-actions">
-                    <button class="btn-scale-zone" data-idx="${i}" title="Draw a zone rectangle on canvas to limit this scale to a page region">📍</button>
-                    <button class="vessel-delete btn-scale-del" data-idx="${i}">🗑️</button>
+                    <button class="btn-scale-zone" data-idx="${i}" title="Draw a zone rectangle on canvas to limit this scale to a page region"><i class="bi bi-geo-alt"></i></button>
+                    <button class="vessel-delete btn-scale-del" data-idx="${i}"><i class="bi bi-trash3"></i></button>
                 </div>
             </div>
         `;
@@ -1185,16 +1253,43 @@ function drawScaleLines(ctx) {
     }
 }
 
-function clearMask() {
-    if (!confirm('Clear all annotations?')) return;
+async function clearMask() {
+    const confirmed = await window.PyPotteryUtils.showConfirmDialog({
+        title: 'Clear Annotations',
+        subtitle: 'Are you sure you want to clear all annotations on this canvas?',
+        icon: 'bi-eraser-fill',
+        iconColor: '#dc2626',
+        iconBg: '#fee2e2',
+        detailsLabel: 'This action will clear:',
+        details: [
+            'All drawn pottery contours and segmentations on this image'
+        ],
+        note: 'You can redraw the contours anytime before extracting cards.',
+        confirmText: 'Clear Canvas',
+        cancelText: 'Cancel',
+        confirmClass: 'btn-danger'
+    });
+    if (!confirmed) return;
     const canvas = annotationState.maskCanvas;
     annotationState.maskCtx.clearRect(0, 0, canvas.width, canvas.height);
     annotationState.isModified = true;
     if (annotationState.colorize) computeColorized();
     redrawCanvas();
+    scheduleAutoSave(600);
 }
 
-async function saveMask() {
+let autoSaveTimeout = null;
+
+function scheduleAutoSave(delay = 1200) {
+    if (autoSaveTimeout) clearTimeout(autoSaveTimeout);
+    autoSaveTimeout = setTimeout(async () => {
+        if (annotationState.isModified) {
+            await saveMask(true);
+        }
+    }, delay);
+}
+
+async function saveMask(silent = false) {
     if (!annotationState.currentProject || annotationState.currentIndex < 0) return;
     if (!annotationState.isModified) return;
     
@@ -1236,22 +1331,26 @@ async function saveMask() {
             renderImageList();
             // Force redraw of the main canvas to show the newly saved mask
             redrawCanvas();
-            if (window.PyPotteryUtils) {
+            if (!silent && window.PyPotteryUtils) {
                 window.PyPotteryUtils.showToast('Mask saved!', 'success');
             }
-            console.log(`[Annotation] Mask saved at original resolution: ${annotationState.originalWidth}x${annotationState.originalHeight}`);
+            console.log(`[Annotation] Mask auto-saved at original resolution: ${annotationState.originalWidth}x${annotationState.originalHeight}`);
         } else {
             throw new Error(result.error || 'Save failed');
         }
     } catch (error) {
         console.error('[Annotation] Save error:', error);
-        alert('Error: ' + error.message);
+        if (!silent) alert('Error: ' + error.message);
     }
 }
 
 async function extractCards() {
     if (!annotationState.currentProject) return;
-    if (annotationState.isModified) await saveMask();
+    if (autoSaveTimeout) {
+        clearTimeout(autoSaveTimeout);
+        autoSaveTimeout = null;
+    }
+    if (annotationState.isModified) await saveMask(true);
 
     // Show custom confirmation dialog instead of native confirm()
     const confirmed = await showExtractConfirmDialog();
@@ -1259,55 +1358,136 @@ async function extractCards() {
 
     const projectId = annotationState.currentProject.project_id;
     const btn = document.getElementById('extract-masks-btn');
-    
-    try {
-        if (btn) {
-            btn.disabled = true;
-            btn.textContent = '⏳ Extracting...';
-        }
-        
-        // Use progress tracking with status and progress bar
-        await window.PyPotteryUtils.executeWithProgress(
-            'extract_masks',
-            async () => {
-                const res = await fetch(`/api/projects/${projectId}/masks/extract`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({})
-                });
-                
-                const result = await res.json();
-                
-                if (!result.success) {
-                    throw new Error(result.error || 'Extract failed');
+
+    // Full-Screen Mask Extraction Overlay Elements
+    const overlay = document.getElementById('mask-extraction-overlay');
+    const percentageEl = document.getElementById('mask-extract-percentage');
+    const progressFill = document.getElementById('mask-extract-progress-fill');
+    const currentFileEl = document.getElementById('mask-extract-current-file');
+    const countEl = document.getElementById('mask-extract-count');
+
+    const totalImages = (annotationState.images && annotationState.images.length) || 0;
+
+    // Show and initialize Full-Screen Overlay
+    if (overlay) {
+        overlay.style.display = 'flex';
+        if (percentageEl) percentageEl.textContent = '0%';
+        if (progressFill) progressFill.style.width = '0%';
+        if (currentFileEl) currentFileEl.textContent = 'Initializing mask extraction...';
+        if (countEl) countEl.textContent = totalImages > 0 ? `0 / ${totalImages}` : 'Starting...';
+    }
+
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Extracting...';
+    }
+
+    // Also reset the mini progress bar in sidebar if present
+    const miniProgressBar = document.getElementById('extraction-progress-bar');
+    if (miniProgressBar) {
+        miniProgressBar.style.width = '0%';
+        miniProgressBar.textContent = '0%';
+    }
+
+    let isDone = false;
+
+    // Background polling for real-time progress
+    const pollProgress = async () => {
+        while (!isDone) {
+            try {
+                const response = await fetch('/api/operation-progress');
+                const progress = await response.json();
+
+                if (progress && (progress.operation === 'extract_masks' || progress.active)) {
+                    const total = progress.total || totalImages;
+                    const current = progress.current || 0;
+                    const pct = progress.percent !== undefined 
+                        ? progress.percent 
+                        : (total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0);
+
+                    if (percentageEl) percentageEl.textContent = `${pct}%`;
+                    if (progressFill) progressFill.style.width = `${pct}%`;
+                    if (countEl && total > 0) countEl.textContent = `${current} / ${total}`;
+                    if (currentFileEl && progress.message) {
+                        currentFileEl.textContent = progress.message;
+                    }
+
+                    if (miniProgressBar) {
+                        miniProgressBar.style.width = `${pct}%`;
+                        miniProgressBar.textContent = `${pct}%`;
+                    }
                 }
-                
-                return result;
-            },
-            'annotation-status',
-            'extraction-progress-bar'
-        );
-        
+            } catch (pollErr) {
+                // Ignore transient polling errors
+            }
+
+            if (!isDone) {
+                await new Promise(resolve => setTimeout(resolve, 350));
+            }
+        }
+    };
+
+    try {
+        // Start polling in background
+        pollProgress();
+
+        // Perform the mask extraction request
+        const res = await fetch(`/api/projects/${projectId}/masks/extract`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+
+        const result = await res.json();
+        isDone = true;
+
+        if (!result.success) {
+            throw new Error(result.error || 'Extract failed');
+        }
+
+        // Finalize 100% display
+        if (percentageEl) percentageEl.textContent = '100%';
+        if (progressFill) progressFill.style.width = '100%';
+        if (currentFileEl) currentFileEl.textContent = 'Mask extraction complete!';
+        if (miniProgressBar) {
+            miniProgressBar.style.width = '100%';
+            miniProgressBar.textContent = '100%';
+        }
+
+        // Brief pause to allow user to see 100% completion (consistent with YOLO experience)
+        await new Promise(resolve => setTimeout(resolve, 600));
+
+        if (overlay) {
+            overlay.style.display = 'none';
+        }
+
         if (btn) {
             btn.disabled = false;
-            btn.textContent = '📤 Extract Cards';
+            btn.innerHTML = '<i class="bi bi-crop"></i> Extract Cards';
         }
-        
+
         window.PyPotteryUtils.showStatus('annotation-status', 'Cards extracted successfully!', 'success');
         window.PyPotteryUtils.showToast('Cards extracted successfully!', 'success');
-        
+
         if (window.projectManager && window.projectManager.loadProjects) {
             window.projectManager.loadProjects();
         }
-        
+
     } catch (error) {
+        isDone = true;
         console.error('[Annotation] Extract error:', error);
-        window.PyPotteryUtils.showStatus('annotation-status', 'Error: ' + error.message, 'error');
-        window.PyPotteryUtils.showToast('Error: ' + error.message, 'error');
+
+        if (overlay) {
+            overlay.style.display = 'none';
+        }
+
         if (btn) {
             btn.disabled = false;
-            btn.textContent = '📤 Extract Cards';
+            btn.innerHTML = '<i class="bi bi-crop"></i> Extract Cards';
         }
+
+        window.PyPotteryUtils.showStatus('annotation-status', 'Error: ' + error.message, 'error');
+        window.PyPotteryUtils.showToast('Error: ' + error.message, 'error');
     }
 }
 
@@ -1324,7 +1504,7 @@ function clearImageList() {
 function showEditor() {
     const editor = document.getElementById('annotation-editor');
     const empty = document.getElementById('annotation-empty-msg');
-    if (editor) editor.style.display = 'block';
+    if (editor) editor.style.display = 'flex';
     if (empty) empty.style.display = 'none';
 }
 

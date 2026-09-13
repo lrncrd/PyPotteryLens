@@ -15,7 +15,21 @@ const refreshProjectsBtn = document.getElementById('refresh-projects-btn');
 const projectsList = document.getElementById('projects-list');
 const projectsStatus = document.getElementById('projects-status');
 const currentProjectName = document.getElementById('current-project-name');
+const headerProjectBadge = document.getElementById('header-project-badge');
 const iconSelector = document.getElementById('icon-selector');
+
+/**
+ * Update project badge in header
+ */
+function updateProjectBadge(name) {
+    if (currentProjectName) {
+        currentProjectName.textContent = name || 'No project selected';
+    }
+    if (headerProjectBadge) {
+        const hasProject = Boolean(name && name !== 'No project selected');
+        headerProjectBadge.classList.toggle('has-project', hasProject);
+    }
+}
 
 /**
  * Initialize project tab
@@ -31,6 +45,16 @@ function initProjectTab() {
     createProjectBtn.addEventListener('click', createNewProject);
     refreshProjectsBtn.addEventListener('click', loadProjects);
     
+    // Header badge click switches to projects tab
+    if (headerProjectBadge) {
+        headerProjectBadge.addEventListener('click', () => {
+            const projectsTabBtn = document.querySelector('.tab-button[data-tab="projects"]');
+            if (projectsTabBtn) {
+                projectsTabBtn.click();
+            }
+        });
+    }
+
     // Enter key to create project
     newProjectNameInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
@@ -123,7 +147,7 @@ function displayProjects(projects) {
     if (!projects || projects.length === 0) {
         projectsList.innerHTML = `
             <div class="empty-state">
-                <p>📁 No projects found</p>
+                <p><i class="bi bi-folder-x" style="font-size: 2.5rem; display: block; margin-bottom: 0.5rem; color: var(--text-muted);"></i> No projects found</p>
                 <p class="info-text">Create your first project using the form above</p>
             </div>
         `;
@@ -135,7 +159,7 @@ function displayProjects(projects) {
     // Add event listeners to all buttons
     document.querySelectorAll('.project-select-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
-            const projectId = e.target.dataset.projectId;
+            const projectId = e.currentTarget.dataset.projectId;
             selectProject(projectId);
         });
     });
@@ -143,8 +167,8 @@ function displayProjects(projects) {
     document.querySelectorAll('.project-delete-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
-            const projectId = e.target.dataset.projectId;
-            const projectName = e.target.dataset.projectName;
+            const projectId = e.currentTarget.dataset.projectId;
+            const projectName = e.currentTarget.dataset.projectName;
             deleteProject(projectId, projectName);
         });
     });
@@ -155,30 +179,19 @@ function displayProjects(projects) {
  */
 function createProjectCard(project) {
     const isActive = currentProject && currentProject.project_id === project.project_id;
-    const status = project.workflow_status;
+    const status = project.workflow_status || {};
     const icon = project.icon || '1.png';
     
-    // Calculate progress
-    const totalSteps = 5;
-    let completedSteps = 0;
-    if (status.pdf_processed) completedSteps++;
-    if (status.images_extracted > 0) completedSteps++;
-    if (status.model_applied) completedSteps++;
-    if (status.masks_extracted > 0) completedSteps++;
-    if (status.annotations_completed > 0) completedSteps++;
-    const progressPercent = (completedSteps / totalSteps) * 100;
-    
-    // Format dates
-    const createdDate = new Date(project.created_at).toLocaleDateString('it-IT');
-    const modifiedDate = new Date(project.last_modified).toLocaleDateString('it-IT');
-    
+    // Format dates safely
+    const createdDate = project.created_at ? new Date(project.created_at).toLocaleDateString('it-IT') : '—';
+    const modifiedDate = project.last_modified ? new Date(project.last_modified).toLocaleDateString('it-IT') : '—';
     return `
         <div class="project-card ${isActive ? 'project-active' : ''}" data-project-id="${project.project_id}">
             <div class="project-card-header">
                 <img src="/api/icons/${icon}" alt="Project Icon" class="project-icon">
                 <div class="project-header-content">
-                    <h4 class="project-title">${escapeHtml(project.project_name)}</h4>
-                    ${isActive ? '<span class="project-badge">✓ ACTIVE</span>' : ''}
+                    <h4 class="project-title">${escapeHtml(project.project_name || 'Unnamed Project')}</h4>
+                    ${isActive ? '<span class="project-badge"><i class="bi bi-check-circle-fill"></i> ACTIVE</span>' : ''}
                 </div>
             </div>
             
@@ -187,28 +200,25 @@ function createProjectCard(project) {
                 
                 <div class="project-stats">
                     <div class="project-stat">
-                        <span class="stat-label">📄 PDF:</span>
-                        <span class="stat-value">${status.pdf_count}</span>
+                        <span class="stat-label"><i class="bi bi-file-earmark-pdf"></i> PDF:</span>
+                        <span class="stat-value">
+                            ${Boolean((status.pdf_count && status.pdf_count > 0) || project.has_pdf || project.pdf_processed)
+                                ? '<i class="bi bi-check-circle-fill" style="color: #0d9488; font-size: 1rem;" title="PDF Ingested"></i>' 
+                                : '<span class="text-muted" style="font-weight: 500;" title="No PDF">—</span>'}
+                        </span>
                     </div>
                     <div class="project-stat">
-                        <span class="stat-label">🖼️ Images:</span>
-                        <span class="stat-value">${status.images_extracted}</span>
+                        <span class="stat-label"><i class="bi bi-images"></i> Images:</span>
+                        <span class="stat-value">${status.images_extracted || 0}</span>
                     </div>
                     <div class="project-stat">
-                        <span class="stat-label">🎭 Masks:</span>
-                        <span class="stat-value">${status.masks_extracted}</span>
+                        <span class="stat-label"><i class="bi bi-bounding-box"></i> Masks:</span>
+                        <span class="stat-value">${status.masks_extracted || 0}</span>
                     </div>
                     <div class="project-stat">
-                        <span class="stat-label">✓ Annotations:</span>
-                        <span class="stat-value">${status.annotations_completed}</span>
+                        <span class="stat-label"><i class="bi bi-check2-circle"></i> Annotations:</span>
+                        <span class="stat-value">${status.annotations_completed || 0}</span>
                     </div>
-                </div>
-                
-                <div class="project-progress">
-                    <div class="progress-bar">
-                        <div class="progress-fill" style="width: ${progressPercent}%"></div>
-                    </div>
-                    <span class="progress-text">${Math.round(progressPercent)}% completed</span>
                 </div>
                 
                 <div class="project-dates">
@@ -219,12 +229,12 @@ function createProjectCard(project) {
             
             <div class="project-card-footer">
                 <button class="btn btn-primary project-select-btn" data-project-id="${project.project_id}">
-                    ${isActive ? '✓ Selected' : '📂 Select'}
+                    ${isActive ? '<i class="bi bi-check-lg"></i> Selected' : '<i class="bi bi-folder2-open"></i> Select'}
                 </button>
                 <button class="btn btn-danger project-delete-btn" 
                         data-project-id="${project.project_id}"
-                        data-project-name="${escapeHtml(project.project_name)}">
-                    🗑️ Delete
+                        data-project-name="${escapeHtml(project.project_name || '')}">
+                    <i class="bi bi-trash3"></i> Delete
                 </button>
             </div>
         </div>
@@ -246,7 +256,7 @@ async function createNewProject() {
     
     try {
         createProjectBtn.disabled = true;
-        createProjectBtn.textContent = '⏳ Creating...';
+        createProjectBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Creating...';
 
         const response = await fetch('/api/projects', {
             method: 'POST',
@@ -266,7 +276,7 @@ async function createNewProject() {
             throw new Error(data.error || 'Error creating project');
         }
 
-        showStatus(`✓ Project "${projectName}" created successfully!`, 'success');
+        showStatus(`Project "${projectName}" created successfully!`, 'success');
 
         // Clear form
         newProjectNameInput.value = '';
@@ -284,7 +294,7 @@ async function createNewProject() {
         showStatus('Error: ' + error.message, 'error');
     } finally {
         createProjectBtn.disabled = false;
-        createProjectBtn.textContent = '➕ Create Project';
+        createProjectBtn.innerHTML = '<i class="bi bi-plus-circle"></i> Create Project';
     }
 }
 
@@ -303,7 +313,7 @@ async function selectProject(projectId) {
         currentProject = data.project;
         
         // Update UI
-        currentProjectName.textContent = currentProject.project_name;
+        updateProjectBadge(currentProject.project_name);
         
         // Save to localStorage
         localStorage.setItem('currentProjectId', projectId);
@@ -311,7 +321,7 @@ async function selectProject(projectId) {
         
         // Refresh project cards to show active state
         loadProjects();
-        showStatus(`✓ Project "${currentProject.project_name}" selected`, 'success');
+        showStatus(`Project "${currentProject.project_name}" selected`, 'success');
         
         // Notify other tabs about project change
         window.dispatchEvent(new CustomEvent('projectChanged', { 
@@ -328,15 +338,24 @@ async function selectProject(projectId) {
  * Delete a project
  */
 async function deleteProject(projectId, projectName) {
-    const confirmed = confirm(
-        `⚠️ WARNING!\n\nAre you sure you want to delete the project "${projectName}"?\n\n` +
-        `This action will delete:\n` +
-        `- All source PDFs\n` +
-        `- All extracted images\n` +
-        `- All masks and annotations\n` +
-        `- All exported data\n\n` +
-        `This action is IRREVERSIBLE!`
-    );
+    const confirmed = await window.PyPotteryUtils.showConfirmDialog({
+        title: 'Delete Project',
+        subtitle: `Are you sure you want to delete the project <strong>"${escapeHtml(projectName)}"</strong>?`,
+        icon: 'bi-trash3-fill',
+        iconColor: '#dc2626',
+        iconBg: '#fee2e2',
+        detailsLabel: 'This action will delete:',
+        details: [
+            'All source PDFs',
+            'All extracted images',
+            'All masks and annotations',
+            'All exported data'
+        ],
+        note: 'This action is IRREVERSIBLE and cannot be undone!',
+        confirmText: 'Delete Project',
+        cancelText: 'Cancel',
+        confirmClass: 'btn-danger'
+    });
     
     if (!confirmed) return;
     
@@ -351,12 +370,12 @@ async function deleteProject(projectId, projectName) {
             throw new Error(data.error || 'Error deleting project');
         }
         
-        showStatus(`✓ Project "${projectName}" deleted`, 'success');
+        showStatus(`Project "${projectName}" deleted`, 'success');
         
         // If deleted project was active, clear it
         if (currentProject && currentProject.project_id === projectId) {
             currentProject = null;
-            currentProjectName.textContent = 'No project selected';
+            updateProjectBadge(null);
             localStorage.removeItem('currentProjectId');
             localStorage.removeItem('currentProjectName');
             
@@ -411,7 +430,7 @@ function restoreSavedProject() {
     const savedProjectName = localStorage.getItem('currentProjectName');
     
     if (savedProjectId && savedProjectName) {
-        currentProjectName.textContent = savedProjectName;
+        updateProjectBadge(savedProjectName);
         // Set the current project without re-selecting (to avoid double loading)
         currentProject = {
             project_id: savedProjectId,
@@ -424,7 +443,7 @@ function restoreSavedProject() {
             .then(data => {
                 if (data.success) {
                     currentProject = data.project;
-                    currentProjectName.textContent = currentProject.project_name;
+                    updateProjectBadge(currentProject.project_name);
                     
                     // Notify other tabs about project (only once)
                     window.dispatchEvent(new CustomEvent('projectChanged', { 
@@ -438,7 +457,7 @@ function restoreSavedProject() {
                 // If project no longer exists, clear localStorage
                 localStorage.removeItem('currentProjectId');
                 localStorage.removeItem('currentProjectName');
-                currentProjectName.textContent = 'No project selected';
+                updateProjectBadge(null);
                 currentProject = null;
             });
     }

@@ -257,7 +257,8 @@ class ModelProcessor:
                                kernel_size: int,
                                iterations: int,
                                excluded_images: list = None,
-                               progress_callback=None) -> str:
+                               progress_callback=None,
+                               cancel_check=None) -> str:
         """Apply model to images in a project, saving masks to project folder"""
         try:
             images_path = Path(images_path)
@@ -306,6 +307,12 @@ class ModelProcessor:
             
             total = len(images)
             for idx, image_file in enumerate(images, 1):
+                if cancel_check and cancel_check():
+                    print(f"Processing cancelled by user before image {idx}/{total}")
+                    if progress_callback:
+                        progress_callback(idx - 1, total, "Processing cancelled by user")
+                    return f"Processing cancelled by user ({idx - 1} of {total} images processed)"
+
                 print(f"Processing image {idx}/{total}: {image_file}")
                 
                 # Call progress callback if provided

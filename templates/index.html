@@ -4,22 +4,36 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PyPotteryLens - Archaeological Pottery Documentation Tool</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <title>PyPotteryLens — Archaeological Pottery Documentation Tool</title>
+    <meta name="description" content="PyPotteryLens - Computer-vision extraction of ceramic figures and sherd drawings directly from published monograph PDFs">
+    <meta name="theme-color" content="#fbf9f5">
+
+    <!-- Local Offline Vendor Assets with CDN Fallback -->
+    <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css" onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css';">
+    <link rel="stylesheet" href="/static/vendor/fonts/fonts.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260912_000000">
     <style>
-        /* Splash Screen Styles */
+        /* Splash Screen - Archaeological Field Desk & Drafting Grid */
         .splash-screen {
             position: fixed;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background-color: #f7f4ed;
+            background-image:
+                linear-gradient(rgba(194, 65, 12, 0.045) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(194, 65, 12, 0.045) 1px, transparent 1px),
+                linear-gradient(rgba(194, 65, 12, 0.085) 1.5px, transparent 1.5px),
+                linear-gradient(90deg, rgba(194, 65, 12, 0.085) 1.5px, transparent 1.5px),
+                radial-gradient(circle at 50% 50%, rgba(251, 249, 245, 0.45) 0%, rgba(240, 232, 218, 0.9) 100%);
+            background-size: 16px 16px, 16px 16px, 80px 80px, 80px 80px, 100% 100%;
             z-index: 9999;
             display: flex;
             align-items: center;
             justify-content: center;
-            color: white;
+            color: #1c1917;
+            font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             transition: opacity 0.5s ease;
         }
 
@@ -30,80 +44,95 @@
 
         .splash-content {
             text-align: center;
-            max-width: 600px;
+            max-width: 540px;
             padding: 40px;
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid #e8e3d8;
+            border-radius: 20px;
+            box-shadow: 0 12px 32px -4px rgba(120, 53, 15, 0.1), 0 2px 6px rgba(0, 0, 0, 0.04);
         }
 
         .splash-logo {
-            max-width: 150px;
+            max-width: 110px;
             height: auto;
-            margin: 0 auto 20px;
-            animation: pulse 2s ease-in-out infinite;
+            margin: 0 auto 16px;
+            display: block;
+            filter: drop-shadow(0 4px 12px rgba(194, 65, 12, 0.15));
+            animation: splash-pulse 2.4s ease-in-out infinite;
         }
 
-        @keyframes pulse {
-
-            0%,
-            100% {
+        @keyframes splash-pulse {
+            0%, 100% {
                 transform: scale(1);
             }
-
             50% {
-                transform: scale(1.05);
+                transform: scale(1.04);
             }
         }
 
         .splash-spinner {
-            border: 4px solid rgba(255, 255, 255, 0.3);
-            border-top: 4px solid white;
+            border: 3px solid rgba(194, 65, 12, 0.15);
+            border-top: 3px solid #c2410c;
             border-radius: 50%;
-            width: 50px;
-            height: 50px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 20px;
+            width: 40px;
+            height: 40px;
+            animation: spin 0.9s linear infinite;
+            margin: 0 auto 18px;
         }
 
         @keyframes spin {
             0% {
                 transform: rotate(0deg);
             }
-
             100% {
                 transform: rotate(360deg);
             }
         }
 
         .splash-title {
-            font-size: 2.5rem;
-            font-weight: bold;
-            margin-bottom: 1rem;
+            font-size: 2.1rem;
+            font-weight: 800;
+            letter-spacing: -0.025em;
+            color: #1c1917;
+            margin-bottom: 0.35rem;
+        }
+
+        .splash-accent {
+            color: #c2410c;
         }
 
         .splash-message {
-            font-size: 1.1rem;
+            font-size: 0.95rem;
+            color: #57534e;
             margin-bottom: 1.5rem;
         }
 
         .splash-progress {
             width: 100%;
-            max-width: 500px;
-            margin: 20px auto;
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: 10px;
+            max-width: 420px;
+            margin: 18px auto 6px;
+            background: #e8e3d8;
+            border-radius: 9999px;
             overflow: hidden;
-            height: 30px;
+            height: 22px;
+            padding: 2.5px;
+            box-shadow: inset 0 1px 3px rgba(28, 25, 23, 0.12);
         }
 
         .splash-progress-bar {
             height: 100%;
-            background: linear-gradient(90deg, #10b981, #3b82f6);
-            border-radius: 10px;
-            transition: width 0.3s ease;
+            background: linear-gradient(90deg, #c2410c, #ea580c);
+            border-radius: 9999px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 0.9rem;
-            font-weight: bold;
+            font-size: 0.76rem;
+            font-weight: 700;
+            line-height: 1;
+            color: #ffffff;
+            letter-spacing: 0.03em;
         }
 
         .main-container {
@@ -115,7 +144,7 @@
         }
     </style>
     <style>
-        /* Pixel Assistant Styles */
+        /* Pixel Assistant Styles - Signature Retro Mascot */
         .pixel-assistant-container {
             display: inline-flex;
             align-items: center;
@@ -124,30 +153,29 @@
             cursor: pointer;
             transition: transform 0.3s ease;
             position: relative;
-            margin-right: 15px;
-            /* Added spacing from info button */
+            margin-right: 12px;
         }
 
         .pixel-assistant-container:hover {
-            transform: scale(1.1);
+            transform: scale(1.08);
         }
 
         /* Speech Bubble */
         .pixel-speech-bubble {
-            background: #fff;
-            color: #000;
-            padding: 6px 10px;
+            background: #ffffff;
+            color: #1c1917;
+            padding: 5px 9px;
             border-radius: 8px;
-            border: 2px solid #444;
-            font-weight: bold;
+            border: 1px solid #e8e3d8;
+            font-weight: 600;
             font-size: 11px;
-            font-family: 'Courier New', monospace;
+            font-family: 'Plus Jakarta Sans', sans-serif;
             opacity: 0;
-            transform: translateX(10px);
-            transition: all 0.3s ease;
+            transform: translateX(8px);
+            transition: all 0.25s ease;
             white-space: nowrap;
-            box-shadow: 2px 2px 0px rgba(0, 0, 0, 0.1);
-            margin-right: 5px;
+            box-shadow: 0 4px 10px rgba(120, 53, 15, 0.08);
+            margin-right: 4px;
         }
 
         .pixel-assistant-container:hover .pixel-speech-bubble {
@@ -198,12 +226,9 @@
         }
 
         @keyframes pixel-breathe {
-
-            0%,
-            100% {
+            0%, 100% {
                 opacity: 0.7;
             }
-
             50% {
                 opacity: 0.4;
             }
@@ -217,8 +242,8 @@
         <div class="splash-content">
             <img src="/static/imgs/LogoLens.png" alt="PyPotteryLens Logo" class="splash-logo">
             <div class="splash-spinner"></div>
-            <h1 class="splash-title">PyPotteryLens</h1>
-            <p class="splash-message" id="splash-message">Initializing application...</p>
+            <h1 class="splash-title">PyPottery <span class="splash-accent">Lens</span></h1>
+            <p class="splash-message" id="splash-message">Initializing ceramic documentation environment...</p>
 
             <div class="splash-progress">
                 <div class="splash-progress-bar" id="splash-progress-bar" style="width: 0%">
@@ -232,13 +257,18 @@
         <!-- Header -->
         <header class="app-header">
             <div class="header-content">
-                <img src="/static/imgs/LogoLens.png" alt="pottery icon" class="header-logo">
+                <img src="/static/imgs/LogoLens.png" alt="PyPotteryLens Logo" class="header-logo">
                 <div class="header-text">
-                    <h1>PyPotteryLens</h1>
-                    <span>Archaeological Pottery Documentation Tool
-                        <span class="version">v{{ version }}</span>
-                    </span>
+                    <h1>PyPottery <span class="brand-accent">Lens</span> <span class="version-badge">v{{ version }}</span></h1>
                 </div>
+
+                <!-- Active Project Pill in Header -->
+                <div id="header-project-badge" class="header-project-badge" title="Active Project (Click to manage projects)">
+                    <i class="bi bi-folder2-open header-project-icon"></i>
+                    <span class="header-project-label">Project:</span>
+                    <strong id="current-project-name" class="header-project-name">No project selected</strong>
+                </div>
+
                 <!-- Pixel Assistant -->
                 <a href="https://lrncrd.github.io/PyPottery/pypotterylens/usage.html" target="_blank"
                     class="pixel-assistant-container" title="Need help?">
@@ -275,39 +305,38 @@
                 </a>
 
                 <div class="model-info-button" id="model-info-button" title="App Information">
-                    <span class="model-info-label">ℹ️ Info</span>
+                    <span class="model-info-label"><i class="bi bi-info-circle"></i> Info</span>
                 </div>
                 <div class="model-info-popup" id="model-info-popup">
                     <div class="model-info-popup-content">
                         <div class="model-info-popup-header">
-                            <h4>PyPotteryLens</h4>
+                            <h4>PyPottery <span class="brand-accent">Lens</span></h4>
                             <button class="model-info-close" id="model-info-close">&times;</button>
                         </div>
                         <div class="model-info-popup-body">
-                            <!-- Logo centrato -->
-                            <div style="text-align: center; margin-bottom: 20px;">
-                                <img src="/static/imgs/LogoLens.png" alt="PyPotteryLens Logo"
-                                    style="width: 100px; height: auto;">
+                            <!-- Centered Hero Logo -->
+                            <div class="model-info-hero">
+                                <img src="/static/imgs/LogoLens.png" alt="PyPotteryLens Logo" class="model-info-logo">
                             </div>
 
                             <!-- App Info -->
-                            <div class="model-info-item">
-                                <strong>Version:</strong> v{{ version }}
-                            </div>
-                            <div class="model-info-item">
-                                <strong>Author:</strong> Lorenzo Cardarelli
+                            <div class="model-info-group">
+                                <div class="model-info-row">
+                                    <span class="info-label">Version</span>
+                                    <span class="info-value info-version">v{{ version }}</span>
+                                </div>
+                                <div class="model-info-row">
+                                    <span class="info-label">Author</span>
+                                    <span class="info-value">Lorenzo Cardarelli</span>
+                                </div>
                             </div>
 
                             <!-- System Info -->
-                            <div
-                                style="margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--border-color);">
-                                <div class="model-info-item">
-                                    <strong>System Information:</strong>
-                                </div>
-                                <div id="system-info-container">
-                                    <div class="model-info-item">
-                                        <em>Loading system info...</em>
-                                    </div>
+                            <div class="model-info-section-title">System Information</div>
+                            <div id="system-info-container" class="model-info-group">
+                                <div class="model-info-row">
+                                    <span class="info-label">Status</span>
+                                    <span class="info-value text-muted">Loading system info...</span>
                                 </div>
                             </div>
                         </div>
@@ -318,22 +347,14 @@
 
         <!-- Main Content -->
         <main class="app-main">
-            <!-- Project Info Bar -->
-            <div id="project-info-bar" class="project-info-bar">
-                <div class="project-info-content">
-                    <span class="project-label">Current Project:</span>
-                    <span id="current-project-name" class="project-name">No project selected</span>
-                </div>
-            </div>
-
             <!-- Tab Navigation -->
             <div class="tabs">
-                <button class="tab-button active" data-tab="projects">🗂️ Project Manager</button>
-                <button class="tab-button" data-tab="pdf">1. PDF document processing</button>
-                <button class="tab-button" data-tab="model">2. Apply Model</button>
-                <button class="tab-button" data-tab="annotation">3. Review Annotations and extract masks</button>
-                <button class="tab-button" data-tab="tabular">4. Tabular Information</button>
-                <button class="tab-button" data-tab="postprocess">5. Post Processing</button>
+                <button class="tab-button active" data-tab="projects"><i class="bi bi-folder2-open"></i> Project Manager</button>
+                <button class="tab-button" data-tab="pdf"><i class="bi bi-file-earmark-pdf"></i> 1. PDF Document Processing</button>
+                <button class="tab-button" data-tab="model"><i class="bi bi-cpu"></i> 2. Apply Model</button>
+                <button class="tab-button" data-tab="annotation"><i class="bi bi-pencil-square"></i> 3. Review Annotations &amp; Masks</button>
+                <button class="tab-button" data-tab="tabular"><i class="bi bi-table"></i> 4. Tabular Information</button>
+                <button class="tab-button" data-tab="postprocess"><i class="bi bi-grid-3x3-gap"></i> 5. Post Processing</button>
             </div>
 
             <!-- Tab Content -->
@@ -341,45 +362,56 @@
 
                 <!-- Project Manager Tab -->
                 <div class="tab-content active" id="projects-tab">
-                    <h2>🗂️ Projects </h2>
-                    <p class="subtitle">Create, select or delete your analysis projects</p>
-
-                    <!-- Create New Project Section -->
-                    <div class="project-create-section">
-                        <h3>Create New Project</h3>
-                        <div class="form-group">
-                            <label for="new-project-name">Project Name *</label>
-                            <input type="text" id="new-project-name" class="form-control"
-                                placeholder="E.g.: Scavi_Capena_2024">
-                        </div>
-                        <div class="form-group">
-                            <label for="new-project-description">Description (optional)</label>
-                            <textarea id="new-project-description" class="form-control" rows="3"
-                                placeholder="Project description..."></textarea>
-                        </div>
-                        <div class="form-group">
-                            <label>Project Icon</label>
-                            <div id="icon-selector" class="icon-selector">
-                                <!-- Icons will be loaded here -->
-                            </div>
-                        </div>
-                        <button class="btn btn-primary" id="create-project-btn">
-                            ➕ Create Project
-                        </button>
+                    <div class="tab-heading-group">
+                        <h2><i class="bi bi-folder2-open"></i> Project Manager</h2>
+                        <p class="subtitle">Create, configure, and activate your archaeological ceramic documentation projects</p>
                     </div>
 
-                    <!-- Projects List Section -->
-                    <div class="projects-list-section">
-                        <div class="projects-header">
-                            <h3>Your Projects</h3>
-                            <button class="btn btn-secondary" id="refresh-projects-btn">
-                                🔄 Refresh List
-                            </button>
-                        </div>
-                        <div id="projects-list" class="projects-grid">
-                            <!-- Projects will be loaded here dynamically -->
-                            <div class="loading-message">Loading projects...</div>
-                        </div>
+                    <div class="projects-workspace">
+                        <!-- Left: Create New Project Dossier Form -->
+                        <aside class="project-create-column">
+                            <div class="project-create-panel">
+                                <div class="panel-section-title">
+                                    <i class="bi bi-folder-plus"></i> New Project Dossier
+                                </div>
+                                <div class="form-group">
+                                    <label for="new-project-name">Project Name <span class="required-mark">*</span></label>
+                                    <input type="text" id="new-project-name" class="form-control"
+                                        placeholder="e.g. Scavi_Capena_2024">
+                                </div>
+                                <div class="form-group">
+                                    <label for="new-project-description">Description <span class="optional-label">(optional)</span></label>
+                                    <textarea id="new-project-description" class="form-control" rows="3"
+                                        placeholder="Site context, trench, or ceramic assemblage notes..." style="resize: none;"></textarea>
+                                </div>
+                                <div class="form-group">
+                                    <label>Project Icon Stamp</label>
+                                    <div id="icon-selector" class="icon-selector">
+                                        <!-- Icons will be loaded here -->
+                                    </div>
+                                </div>
+                                <button class="btn btn-primary btn-block" id="create-project-btn">
+                                    <i class="bi bi-plus-circle"></i> Create Project
+                                </button>
+                            </div>
+                        </aside>
+
+                        <!-- Right: Projects Collection Grid -->
+                        <section class="projects-collection-column">
+                            <div class="projects-header">
+                                <div class="collection-title-group">
+                                    <h3><i class="bi bi-collection"></i> Project Repository</h3>
+                                    <span class="collection-hint">Select a project card to activate it across all tabs</span>
+                                </div>
+                                <button class="btn btn-secondary btn-sm" id="refresh-projects-btn" title="Refresh project list">
+                                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                                </button>
+                            </div>
+                            <div id="projects-list" class="projects-grid">
+                                <!-- Projects will be loaded here dynamically -->
+                                <div class="loading-message"><i class="bi bi-hourglass-split"></i> Loading projects...</div>
+                            </div>
+                        </section>
                     </div>
 
                     <div id="projects-status" class="status-message"></div>
@@ -387,40 +419,105 @@
 
                 <!-- PDF Processing Tab -->
                 <div class="tab-content" id="pdf-tab">
-                    <h2>Select a PDF file</h2>
-                    <p class="subtitle">The PDF will be imported into the currently selected project and converted to
-                        images.</p>
-
-                    <div class="upload-section">
-                        <input type="file" id="pdf-upload" accept=".pdf" style="display: none;">
-                        <button class="btn btn-primary" id="pdf-upload-btn">
-                            Upload PDF to current project
-                        </button>
+                    <div class="tab-heading-group">
+                        <h2><i class="bi bi-file-earmark-pdf"></i> PDF Document Processing</h2>
+                        <p class="subtitle">Extract high-resolution plate illustrations and sherd drawings directly from published monograph PDFs</p>
                     </div>
 
-                    <div class="checkbox-section">
-                        <label>
-                            <input type="checkbox" id="split-pages">
-                            Split scanned pages
-                        </label>
-                        <p class="info-text">Enable if each PDF page contains two actual pages (left and right).</p>
-                    </div>
+                    <div class="pdf-workbench-layout">
+                        <!-- Main Extraction Console -->
+                        <div class="pdf-main-console">
+                            <!-- Drag and Drop Zone -->
+                            <div class="pdf-dropzone" id="pdf-dropzone">
+                                <input type="file" id="pdf-upload" accept=".pdf" style="display: none;">
+                                <div class="dropzone-icon">
+                                    <i class="bi bi-cloud-arrow-up"></i>
+                                </div>
+                                <h3 class="dropzone-title">Upload Ceramic Publication PDF</h3>
+                                <p class="dropzone-sub">Drag and drop your report or monograph PDF here, or click to browse files</p>
+                                <button type="button" class="btn btn-primary" id="pdf-upload-btn">
+                                    <i class="bi bi-file-earmark-arrow-up"></i> Select PDF File
+                                </button>
+                                <span class="dropzone-specs">Accepts standard .pdf documents · Extracts plates at native high resolution</span>
+                            </div>
 
-                    <div class="result-section">
-                        <label>Upload Info</label>
-                        <div id="pdf-selected-info" class="form-control"
-                            style="min-height:40px;display:flex;align-items:center;">
-                            <em>No file uploaded yet</em>
+                            <!-- Options Strip -->
+                            <div class="pdf-settings-strip">
+                                <div class="pdf-toggle-wrapper">
+                                    <label class="pdf-toggle-row" for="split-pages">
+                                        <input type="checkbox" id="split-pages">
+                                        <div class="toggle-row-content">
+                                            <span class="toggle-row-title">
+                                                <i class="bi bi-layout-split"></i> Split Scanned Spreads
+                                                <span class="spread-info-pill"><i class="bi bi-info-circle-fill"></i> Hover for visual comparison</span>
+                                            </span>
+                                            <span class="toggle-row-description">
+                                                Automatically bisect two-page book spreads into separate left and right plates
+                                            </span>
+                                        </div>
+                                    </label>
+
+                                    <!-- Visual Comparison Popover on Hover -->
+                                    <div class="spread-compare-popover" role="tooltip">
+                                        <div class="compare-popover-header">
+                                            <i class="bi bi-book-half"></i> PDF Page Structure Guide
+                                        </div>
+                                        <div class="compare-popover-grid">
+                                             <!-- Option 1: Standard Single Page -->
+                                             <div class="compare-col single-page-col">
+                                                 <div class="compare-card">
+                                                     <div class="sheet-preview single-sheet">
+                                                         <div class="sheet-dummy-header"></div>
+                                                         <div class="sheet-dummy-figure">
+                                                             <i class="bi bi-image"></i>
+                                                         </div>
+                                                         <div class="sheet-dummy-lines"></div>
+                                                     </div>
+                                                     <span class="compare-tag tag-standard"><i class="bi bi-file-earmark"></i> Single Page</span>
+                                                     <p class="compare-desc"><strong>1 sheet = 1 page</strong>. Standard digital monograph PDF or single-page crop. <em>Leave toggle OFF.</em></p>
+                                                 </div>
+                                             </div>
+
+                                             <!-- Option 2: Scanned Double Page Spread -->
+                                             <div class="compare-col spread-page-col">
+                                                 <div class="compare-card highlight">
+                                                     <div class="sheet-preview spread-sheet">
+                                                         <div class="spread-page left-page">
+                                                             <div class="sheet-dummy-header"></div>
+                                                             <div class="sheet-dummy-figure"><i class="bi bi-image"></i></div>
+                                                             <div class="sheet-dummy-lines"></div>
+                                                         </div>
+                                                         <div class="spread-split-axis" title="Bisected here">
+                                                             <span class="scissors-icon" aria-hidden="true"><i class="bi bi-scissors"></i></span>
+                                                         </div>
+                                                         <div class="spread-page right-page">
+                                                             <div class="sheet-dummy-header"></div>
+                                                             <div class="sheet-dummy-figure"><i class="bi bi-image"></i></div>
+                                                             <div class="sheet-dummy-lines"></div>
+                                                         </div>
+                                                     </div>
+                                                     <span class="compare-tag tag-split"><i class="bi bi-layout-split"></i> Scanned Spread</span>
+                                                    <p class="compare-desc"><strong>1 sheet = 2 facing pages</strong>. Open book on scanner bed. PyPottery bisects the spine into 2 individual plates. <em>Turn toggle ON.</em></p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Ingestion Dossier Status -->
+                            <div class="pdf-file-dossier">
+                                <div class="dossier-label">
+                                    <i class="bi bi-info-circle"></i> Ingestion Status &amp; Active Target
+                                </div>
+                                <div id="pdf-selected-info" class="pdf-info-display">
+                                    <span class="info-empty"><i class="bi bi-file-earmark"></i> No file uploaded yet</span>
+                                </div>
+                            </div>
+
+                            <div id="pdf-status" class="status-message"></div>
                         </div>
                     </div>
-
-                    <div class="info-box">
-                        <p><strong>Note:</strong></p>
-                        <p>When you upload a PDF, the server will automatically place the generated images inside the
-                            project folder. You don't need to set an output name — the project name will be used.</p>
-                    </div>
-
-                    <div id="pdf-status" class="status-message"></div>
                 </div>
 
                 <!-- Model Application Tab -->
@@ -430,64 +527,95 @@
                         <div class="controls-panel">
                             <!-- Model Selection -->
                             <div class="control-group">
-                                <h3>🤖 Model Selection</h3>
+                                <div class="section-title-wrap">
+                                    <h3><i class="bi bi-cpu"></i> Model Selection</h3>
+                                </div>
                                 <div class="form-group">
-                                    <label>Model</label>
-                                    <select id="model-select" class="form-control">
-                                        <option value="">Select model...</option>
-                                    </select>
-                                    <p class="info-text">Select the YOLO model to apply to project images</p>
+                                    <label for="model-select">Active Vision Model</label>
+                                    <div class="custom-select-wrapper">
+                                        <i class="bi bi-robot custom-select-icon"></i>
+                                        <select id="model-select" class="form-control custom-select">
+                                            <option value="">Select model...</option>
+                                        </select>
+                                        <i class="bi bi-chevron-down custom-select-chevron"></i>
+                                    </div>
+                                    <p class="info-text">Select the YOLO neural network model trained on archaeological profiles</p>
                                 </div>
                             </div>
 
+                            <div class="panel-divider"></div>
+
                             <!-- Model Parameters -->
                             <div class="control-group">
-                                <h3>⚙️ Model Parameters</h3>
+                                <div class="section-title-wrap">
+                                    <h3><i class="bi bi-sliders"></i> Model Parameters</h3>
+                                </div>
                                 <div class="form-group">
-                                    <label>Confidence Threshold</label>
+                                    <div class="range-header">
+                                        <label for="confidence">Confidence Threshold</label>
+                                        <span id="confidence-value" class="range-value-pill">0.50</span>
+                                    </div>
                                     <input type="range" id="confidence" min="0.1" max="1.0" step="0.05" value="0.5"
                                         class="form-range">
-                                    <span id="confidence-value">0.5</span>
-                                    <p class="info-text">Lower values detect more objects but may increase false
-                                        positives</p>
+                                    <p class="info-text">Lower values detect more objects but may increase false positives</p>
                                 </div>
                                 <div class="form-row">
                                     <div class="form-group">
-                                        <label>Kernel Size</label>
+                                        <label for="kernel-size">Kernel Size</label>
                                         <input type="number" id="kernel-size" min="1" max="10" value="2"
                                             class="form-control">
                                     </div>
                                     <div class="form-group">
-                                        <label>Iterations</label>
+                                        <label for="iterations">Iterations</label>
                                         <input type="number" id="iterations" min="1" max="50" value="10"
                                             class="form-control">
                                     </div>
                                 </div>
                             </div>
 
-                            <!-- Advanced Options -->
+                            <div class="panel-divider"></div>
+
+                            <!-- Execution Mode -->
                             <div class="control-group">
-                                <h3>🔧 Advanced Options</h3>
-                                <label>
-                                    <input type="checkbox" id="diagnostic-mode">
-                                    Diagnostic Mode
-                                </label>
-                                <p class="info-text">Process only first 25 images for testing</p>
+                                <div class="section-title-wrap">
+                                    <h3><i class="bi bi-gear"></i> Execution Mode</h3>
+                                </div>
+                                <div class="mode-radio-group">
+                                    <label class="mode-radio-card active" id="mode-card-full">
+                                        <input type="radio" name="processing-mode" value="full" checked>
+                                        <div class="mode-radio-icon">
+                                            <i class="bi bi-collection-play"></i>
+                                        </div>
+                                        <div class="mode-radio-content">
+                                            <div class="mode-radio-title">Full Dataset</div>
+                                            <div class="mode-radio-desc">Process all selected images in project</div>
+                                        </div>
+                                        <div class="mode-radio-indicator"><i class="bi bi-check-circle-fill"></i></div>
+                                    </label>
+
+                                    <label class="mode-radio-card" id="mode-card-diag">
+                                        <input type="radio" name="processing-mode" value="diagnostic">
+                                        <div class="mode-radio-icon">
+                                            <i class="bi bi-lightning-charge"></i>
+                                        </div>
+                                        <div class="mode-radio-content">
+                                            <div class="mode-radio-title">Diagnostic Test</div>
+                                            <div class="mode-radio-desc">Process first 25 images only for quick testing</div>
+                                        </div>
+                                        <div class="mode-radio-indicator"><i class="bi bi-check-circle-fill"></i></div>
+                                    </label>
+                                </div>
+                                <!-- Hidden checkbox kept for backwards compatibility if needed -->
+                                <input type="checkbox" id="diagnostic-mode" style="display: none;">
                             </div>
+
+                            <div class="panel-divider"></div>
 
                             <!-- Process Button -->
                             <div class="control-group">
-                                <button class="btn btn-primary btn-block" id="apply-model-btn">
-                                    🚀 Apply Model to Project
+                                <button class="btn btn-primary btn-block btn-apply-model" id="apply-model-btn">
+                                    <i class="bi bi-play-circle-fill"></i> Apply Model to Project
                                 </button>
-
-                                <!-- Progress Bar -->
-                                <div class="progress-container" id="model-progress">
-                                    <div class="progress-bar-wrapper">
-                                        <div class="progress-bar" id="model-progress-bar">0%</div>
-                                    </div>
-                                    <div class="progress-info" id="model-progress-info">Processing...</div>
-                                </div>
 
                                 <div id="model-status" class="status-message"></div>
                             </div>
@@ -496,10 +624,29 @@
                         <!-- Right Panel - Preview -->
                         <div class="preview-panel">
                             <div id="model-empty-msg" class="empty-message">
-                                <h3>📁 No project selected</h3>
+                                <h3><i class="bi bi-folder-x"></i> No project selected</h3>
                                 <p>Select a project to preview its images</p>
                             </div>
-                            <div id="model-gallery" class="image-gallery" style="display: none;"></div>
+                            <div id="model-gallery-container" style="display: none; width: 100%;">
+                                <div class="gallery-toolbar">
+                                    <div class="gallery-toolbar-left">
+                                        <div class="gallery-toolbar-title">
+                                            <i class="bi bi-images"></i> Project Figures
+                                        </div>
+                                        <span class="gallery-badge" id="model-gallery-count-badge">0 images</span>
+                                        <span class="gallery-badge gallery-badge-selected" id="model-gallery-selected-badge">0 to process</span>
+                                    </div>
+                                    <div class="gallery-toolbar-actions">
+                                        <button type="button" class="btn btn-secondary btn-sm" id="deselect-all-images-btn" title="Deselect all images so you can pick only a few">
+                                            <i class="bi bi-dash-square"></i> Deselect All
+                                        </button>
+                                        <button type="button" class="btn btn-secondary btn-sm" id="select-all-images-btn" title="Include all images in processing">
+                                            <i class="bi bi-check-square"></i> Select All
+                                        </button>
+                                    </div>
+                                </div>
+                                <div id="model-gallery" class="image-gallery"></div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -507,29 +654,26 @@
                 <!-- Annotation Tab -->
                 <div class="tab-content" id="annotation-tab">
                     <div class="tab-layout">
-                        <!-- Left Panel - Image List -->
-                        <div class="controls-panel">
-                            <!-- Image List with Checkboxes -->
-                            <div class="control-group"
-                                style="flex: 1; overflow: hidden; display: flex; flex-direction: column;">
-                                <h3>🖼️ Images (<span id="annotation-image-count">0</span>)</h3>
-                                <div class="annotation-image-list" id="annotation-image-list">
-                                    <!-- Empty state will be populated by JavaScript -->
-                                </div>
+                        <!-- Left Panel - Image List (Collapsible Sidebar) -->
+                        <div class="controls-panel" id="annotation-sidebar-panel">
+                            <div class="sidebar-header-row">
+                                <h3><i class="bi bi-images"></i> Images (<span id="annotation-image-count">0</span>)</h3>
+                                <button type="button" class="btn-icon" id="annotation-close-sidebar" title="Collapse sidebar">
+                                    <i class="bi bi-chevron-left"></i>
+                                </button>
+                            </div>
+                            <div class="annotation-image-list" id="annotation-image-list">
+                                <!-- Empty state will be populated by JavaScript -->
                             </div>
 
-                            <!-- Actions -->
-                            <div class="control-group">
-                                <button class="btn btn-primary btn-block" id="annotation-save"
-                                    style="margin-bottom: 8px;">
-                                    💾 Save Current Mask
-                                </button>
+                            <!-- Actions Footer (aligned with .editor-controls toolbar at bottom) -->
+                            <div class="sidebar-actions-footer">
                                 <button class="btn btn-primary btn-block" id="extract-masks-btn">
-                                    📤 Extract Cards
+                                    <i class="bi bi-crop"></i> Extract Cards
                                 </button>
 
                                 <!-- Extraction Progress Bar -->
-                                <div class="progress-container" id="extraction-progress" style="margin-top: 12px;">
+                                <div class="progress-container" id="extraction-progress" style="margin-top: 8px;">
                                     <div class="progress-bar-wrapper">
                                         <div class="progress-bar" id="extraction-progress-bar">0%</div>
                                     </div>
@@ -543,54 +687,86 @@
                         <!-- Right Panel - Editor -->
                         <div class="preview-panel">
                             <div id="annotation-empty-msg" class="empty-message">
-                                <h3>🖼️ No Mask Selected</h3>
+                                <h3><i class="bi bi-image"></i> No Mask Selected</h3>
                                 <p>Select a project with masks and click a mask to review</p>
                             </div>
                             <div id="annotation-editor" style="display: none;">
-                                <div style="text-align: center; margin-bottom: 10px;">
+                                <div class="annotation-editor-header">
+                                    <button type="button" class="btn btn-secondary btn-sm" id="annotation-toggle-sidebar" title="Toggle Images List sidebar">
+                                        <i class="bi bi-layout-sidebar"></i> Images List
+                                    </button>
                                     <strong id="annotation-current-image">No image</strong>
+                                    <div style="width: 95px;"></div>
                                 </div>
                                 <div id="annotation-canvas-container" class="annotation-canvas-container">
                                     <canvas id="annotation-canvas"></canvas>
                                     <!-- Scale calibration distance popup -->
                                     <div id="scale-input-popup" class="scale-input-popup" style="display:none;">
-                                        <span class="scale-popup-label">📏 Distance (cm):</span>
+                                        <span class="scale-popup-label"><i class="bi bi-rulers"></i> Distance (cm):</span>
                                         <input type="number" id="scale-cm-input" min="0.01" step="0.01" placeholder="e.g. 5">
-                                        <button id="scale-confirm-btn" class="btn btn-primary btn-sm">✓</button>
-                                        <button id="scale-cancel-btn" class="btn btn-secondary btn-sm">✗</button>
+                                        <button id="scale-confirm-btn" class="btn btn-primary btn-sm" title="Confirm"><i class="bi bi-check-lg"></i></button>
+                                        <button id="scale-cancel-btn" class="btn btn-secondary btn-sm" title="Cancel"><i class="bi bi-x-lg"></i></button>
                                     </div>
                                 </div>
                                 <div class="editor-controls">
-                                    <div class="control-cluster">
-                                        <button class="btn btn-tool" id="zoom-out-btn" title="Zoom out">➖</button>
-                                        <span id="zoom-level" class="zoom-level">100%</span>
-                                        <button class="btn btn-tool" id="zoom-in-btn" title="Zoom in">➕</button>
-                                        <button class="btn btn-tool" id="zoom-fit-btn" title="Fit to view">⤢ Fit</button>
+                                    <!-- Row 1: Viewport Zoom & Page Navigation -->
+                                    <div class="editor-controls-row editor-controls-top">
+                                        <div class="control-cluster view-cluster">
+                                            <div class="btn-group-pill">
+                                                <button class="btn btn-tool btn-sm" id="zoom-out-btn" title="Zoom out"><i class="bi bi-zoom-out"></i></button>
+                                                <span id="zoom-level" class="zoom-level">100%</span>
+                                                <button class="btn btn-tool btn-sm" id="zoom-in-btn" title="Zoom in"><i class="bi bi-zoom-in"></i></button>
+                                            </div>
+                                            <button class="btn btn-tool btn-sm" id="zoom-fit-btn" title="Fit to view"><i class="bi bi-arrows-angle-expand"></i> Fit</button>
+                                        </div>
+
+                                        <div class="control-cluster nav-cluster">
+                                            <button class="btn btn-secondary btn-sm" id="annotation-prev-btn"><i class="bi bi-chevron-left"></i> Prev</button>
+                                            <button class="btn btn-secondary btn-sm" id="annotation-next-btn">Next <i class="bi bi-chevron-right"></i></button>
+                                        </div>
                                     </div>
-                                    <div class="control-cluster">
-                                        <button class="btn btn-tool active" id="brush-tool" data-tool="brush">🖌️ Brush</button>
-                                        <button class="btn btn-tool" id="eraser-tool" data-tool="eraser">🧹 Eraser</button>
-                                        <button class="btn btn-tool" id="polygon-tool" data-tool="polygon"
-                                            title="Draw a polygon around a vessel the model missed (e.g. a vessel drawn inside another). Click to add points; click the first point or double-click to close.">📐 Polygon</button>
-                                        <button class="btn btn-tool" id="scale-tool" data-tool="scale"
-                                            title="Calibrate the graphic scale bar: click two endpoints, then enter the real distance in cm.">📏 Scale</button>
-                                        <button class="btn btn-tool" id="clear-tool" data-tool="clear">🗑️ Clear</button>
-                                        <button class="btn btn-tool" id="colorize-toggle"
-                                            title="Colour each separate mask differently (like a political map) to spot masks that are fused together.">🎨 Colorize</button>
-                                    </div>
-                                    <div class="control-cluster">
-                                        <label class="size-control">Size <input type="range" id="brush-size" min="5" max="50" value="20"></label>
-                                    </div>
-                                    <div class="control-cluster nav-cluster">
-                                        <button class="btn btn-secondary" id="annotation-prev-btn">◀ Prev</button>
-                                        <button class="btn btn-secondary" id="annotation-next-btn">Next ▶</button>
+
+                                    <!-- Row 2: Editing Tools Palette (Painting + Size, Geometry, Actions) -->
+                                    <div class="editor-controls-row editor-controls-bottom">
+                                        <!-- Group 1: Retouching (Brush, Eraser + Size slider together) -->
+                                        <div class="control-cluster retouch-cluster" title="Brush and Eraser tools (Size adjusts diameter)">
+                                            <div class="cluster-pill-group">
+                                                <button class="btn btn-tool active" id="brush-tool" data-tool="brush"><i class="bi bi-brush"></i> Brush</button>
+                                                <button class="btn btn-tool" id="eraser-tool" data-tool="eraser"><i class="bi bi-eraser"></i> Eraser</button>
+                                            </div>
+                                            <div class="size-control" id="brush-size-control" title="Adjust brush / eraser diameter">
+                                                <span class="size-label">Size</span>
+                                                <input type="range" id="brush-size" min="5" max="50" value="20">
+                                                <span id="brush-size-val" class="brush-size-badge">20px</span>
+                                            </div>
+                                        </div>
+
+                                        <div class="panel-divider-vertical"></div>
+
+                                        <!-- Group 2: Archaeological Geometry (Polygon & Scale) -->
+                                        <div class="control-cluster geometry-cluster" title="Archaeological vector and scale tools">
+                                            <button class="btn btn-tool" id="polygon-tool" data-tool="polygon"
+                                                title="Draw a polygon around a vessel the model missed. Click to add points; click the first point or double-click to close."><i class="bi bi-vector-pen"></i> Polygon</button>
+                                            <button class="btn btn-tool" id="scale-tool" data-tool="scale"
+                                                title="Calibrate the graphic scale bar: click two endpoints, then enter the real distance in cm."><i class="bi bi-rulers"></i> Scale</button>
+                                        </div>
+
+                                        <div class="panel-divider-vertical"></div>
+
+                                        <!-- Group 3: Visual Inspection & Reset -->
+                                        <div class="control-cluster actions-cluster">
+                                            <button class="btn btn-tool" id="colorize-toggle"
+                                                title="Color each separate mask differently (like a political map) to spot masks that are fused together."><i class="bi bi-palette"></i> Colorize</button>
+                                            <button class="btn btn-tool btn-tool-clear" id="clear-tool" data-tool="clear"
+                                                title="Reset current page mask"><i class="bi bi-trash3"></i> Clear</button>
+                                        </div>
                                     </div>
                                 </div>
 
                                 <!-- Manually drawn vessels (polygons) -->
                                 <div id="vessels-panel" class="vessels-panel" style="display: none;">
                                     <div class="vessels-panel-header">
-                                        <span>📐 Manually drawn vessels (<span id="vessels-count">0</span>)</span>
+                                        <span><i class="bi bi-vector-pen"></i> Manually drawn vessels (<span id="vessels-count">0</span>)</span>
                                         <span class="vessels-hint">Each polygon becomes a separate card when you extract.</span>
                                     </div>
                                     <div id="vessels-list" class="vessels-list"></div>
@@ -599,8 +775,8 @@
                                 <!-- Scale calibration entries -->
                                 <div id="scales-panel" class="vessels-panel" style="display: none;">
                                     <div class="vessels-panel-header">
-                                        <span>📏 Scale calibrations (<span id="scales-count">0</span>)</span>
-                                        <span class="vessels-hint">Ratio is used to populate <code>px_per_cm</code> when you Extract Cards. Use "📍 Zone" for multi-scale pages.</span>
+                                        <span><i class="bi bi-rulers"></i> Scale calibrations (<span id="scales-count">0</span>)</span>
+                                        <span class="vessels-hint">Ratio is used to populate <code>px_per_cm</code> when you Extract Cards. Use "<i class="bi bi-geo-alt"></i> Zone" for multi-scale pages.</span>
                                     </div>
                                     <div id="scales-list" class="vessels-list"></div>
                                 </div>
@@ -611,17 +787,35 @@
 
                 <!-- Tabular Tab -->
                 <div class="tab-content" id="tabular-tab">
-                    <h2>📊 Tabular Information</h2>
-                    <p class="subtitle">View and edit data associated with extracted cards from current project</p>
+                    <div class="tab-heading-group">
+                        <h2><i class="bi bi-table"></i> Tabular Information</h2>
+                        <p class="subtitle">View, edit, and transcribe archaeological metadata associated with detected ceramic drawings</p>
+                    </div>
 
-                    <div class="navigation-bar">
-                        <div class="button-group">
-                            <button class="btn btn-secondary" id="tabular-toggle-sidebar" title="Toggle Images List">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 4px;"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
-                                Images List
+                    <!-- Unified Workbench Toolbar -->
+                    <div class="tabular-toolbar">
+                        <div class="tabular-toolbar-nav">
+                            <button class="btn btn-secondary btn-sm" id="tabular-toggle-sidebar" title="Toggle Images List sidebar">
+                                <i class="bi bi-layout-sidebar"></i> Images List
                             </button>
-                            <button class="btn btn-secondary" id="tabular-prev">◀ Previous</button>
-                            <button class="btn btn-secondary" id="tabular-next">Next ▶</button>
+                            <div class="tabular-nav-cluster">
+                                <button class="btn btn-secondary btn-sm" id="tabular-prev" title="Previous Plate"><i class="bi bi-chevron-left"></i> Prev</button>
+                                <span class="tabular-page-badge" id="tabular-current-page"><i class="bi bi-card-image"></i> Plate 0 of 0</span>
+                                <button class="btn btn-secondary btn-sm" id="tabular-next" title="Next Plate">Next <i class="bi bi-chevron-right"></i></button>
+                            </div>
+                            <span class="tabular-filename-chip" id="tabular-current-filename" title="Current Plate Drawing">No image loaded</span>
+                        </div>
+
+                        <div class="tabular-toolbar-actions">
+                            <button class="btn btn-sm tabular-btn-reviewed" id="tabular-mark-reviewed-btn">
+                                <i class="bi bi-eye"></i> Mark as Reviewed
+                            </button>
+                            <div class="panel-divider-vertical-sm"></div>
+                            <label class="switch-toggle" title="Toggle detected vessel bounding boxes on plate">
+                                <input type="checkbox" id="toggle-boxes" checked>
+                                <span class="switch-track"><span class="switch-thumb"></span></span>
+                                <span class="switch-text">Show boxes</span>
+                            </label>
                         </div>
                     </div>
 
@@ -629,9 +823,9 @@
                         <!-- Image List Sidebar -->
                         <div class="tabular-sidebar" id="tabular-sidebar-panel">
                             <div class="tabular-sidebar-header">
-                                <h3>Images</h3>
-                                <button class="btn-icon" id="tabular-close-sidebar" title="Close sidebar">
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                                <h3><i class="bi bi-images"></i> Project Plates</h3>
+                                <button type="button" class="btn-icon" id="tabular-close-sidebar" title="Collapse sidebar">
+                                    <i class="bi bi-chevron-left"></i>
                                 </button>
                             </div>
                             <div id="tabular-image-list" class="tabular-image-list"></div>
@@ -640,171 +834,152 @@
                         <!-- Overlay for mobile/sidebar -->
                         <div class="tabular-sidebar-overlay" id="tabular-sidebar-overlay"></div>
 
-                        <!-- Image Display -->
+                        <!-- Image Display Canvas -->
                         <div class="tabular-image">
-                            <div class="tabular-image-controls">
-                                <label class="switch-toggle">
-                                    <span class="switch-text">Show boxes</span>
-                                    <input type="checkbox" id="toggle-boxes" checked>
-                                    <span class="switch-track"><span class="switch-thumb"></span></span>
-                                </label>
-                            </div>
                             <div class="tabular-canvas-wrapper">
                                 <canvas id="tabular-canvas"></canvas>
-                                <div class="zoom-hint">Click to zoom</div>
+                                <div class="zoom-hint"><i class="bi bi-zoom-in"></i> Click to inspect vessel</div>
                             </div>
                         </div>
 
-                        <!-- Table Display -->
+                        <!-- Table Workbench & Command Controls -->
                         <div class="tabular-table">
-                            <div class="form-row tabular-action-row">
-                                <div class="action-group primary-actions">
-                                    <button class="btn tabular-btn-primary" id="tabular-mark-reviewed-btn">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-                                        Mark as Reviewed
-                                    </button>
+                            <!-- Table Command Action Bar -->
+                            <div class="tabular-command-bar">
+                                <!-- Top Row: Column Controls -->
+                                <div class="tabular-cmd-row tabular-table-tools-row">
+                                    <div class="tabular-cmd-group">
+                                        <div class="tabular-input-wrap">
+                                            <input type="text" id="new-column-name" placeholder="New column name..." class="form-control tabular-input">
+                                            <button class="btn btn-secondary btn-sm" id="add-column-btn" title="Add persistent column to project">
+                                                <i class="bi bi-plus-lg"></i> Add Column
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="tabular-cmd-group">
+                                        <button class="btn btn-danger-soft btn-sm" id="clear-table-btn" title="Clear all transcription values on this page (preserves ID column)">
+                                            <i class="bi bi-trash3"></i> Clear Page Data
+                                        </button>
+                                    </div>
                                 </div>
-                                
-                                <div class="action-group table-actions">
-                                    <input type="text" id="new-column-name" placeholder="New column name..." class="form-control tabular-input">
-                                    <button class="btn tabular-btn-outline" id="add-column-btn">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                                        Add Column
-                                    </button>
-                                    <button class="btn tabular-btn-danger" id="clear-table-btn" title="Clear all values on this page (keeps the index/ID column) to start over">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
-                                    </button>
+
+                                <!-- Bottom Row: AI Transcriber / Extraction Actions -->
+                                <div class="tabular-cmd-row tabular-ai-row">
+                                    <div class="tabular-cmd-group">
+                                        <button class="btn tabular-btn-ai btn-sm" id="ai-bibliographic-btn" title="Use Vision AI to extract references (plate, figure, number) from current plate">
+                                            <i class="bi bi-magic"></i> Extract References
+                                        </button>
+                                        <button class="btn tabular-btn-ai-outline btn-sm" id="ai-bibliographic-batch-btn" title="Run Vision AI extraction across all plates in project">
+                                            <i class="bi bi-collection-play"></i> Batch Extract
+                                        </button>
+                                    </div>
+
+                                    <div class="tabular-cmd-group tabular-ai-options">
+                                        <label class="switch-toggle tabular-switch" id="numbers-from-crops-toggle" title="When ON, extracts inventory numbers from high-magnification crops of each drawing for superior accuracy">
+                                            <input type="checkbox" id="numbers-from-crops">
+                                            <span class="switch-track"><span class="switch-thumb"></span></span>
+                                            <span class="switch-text">Use Crops</span>
+                                        </label>
+                                        <button class="btn btn-secondary btn-sm tabular-drawer-btn" id="ai-backend-toggle-btn" title="Configure AI engine (Local Gemma vs OpenRouter)">
+                                            <i class="bi bi-sliders"></i> Backend
+                                        </button>
+                                        <button class="btn btn-secondary btn-sm tabular-drawer-btn" id="ai-prompt-toggle-btn" title="Configure archaeological prompt context and brackets">
+                                            <i class="bi bi-chat-left-text"></i> Prompt
+                                        </button>
+                                        <span id="ai-bibliographic-status" class="tabular-status-text"></span>
+                                    </div>
                                 </div>
                             </div>
 
-                            <div class="form-row tabular-action-row" style="margin-top: 1rem;">
-                                <div class="action-group ai-actions">
-                                    <button class="btn tabular-btn-ai" id="ai-bibliographic-btn" title="Use AI to extract bibliographic references (plate, figure, number) from the current page">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-                                        Extract References
-                                    </button>
-                                    <button class="btn tabular-btn-ai-outline" id="ai-bibliographic-batch-btn" title="Run AI bibliographic extraction on all images in the project (batch mode)">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-                                        Batch Extract
-                                    </button>
+                            <!-- AI Backend Console Drawer -->
+                            <div id="ai-backend-panel" class="collapsible-panel tabular-dark-console">
+                                <div class="console-section-header">
+                                    <span><i class="bi bi-cpu"></i> AI Extraction Engine</span>
+                                    <span class="console-sub-hint">Select local offline Gemma or remote OpenRouter vision backend</span>
                                 </div>
-                                
-                                <div class="action-group config-actions">
-                                    <label class="switch-toggle tabular-switch" id="numbers-from-crops-toggle" title="When ON, both Extract buttons re-read the inventory numbers from a zoomed-in crop of each drawing (more accurate for tiny numbers, but one extra AI call per drawing).">
-                                        <span class="switch-text">Use Crops</span>
-                                        <input type="checkbox" id="numbers-from-crops">
-                                        <span class="switch-track"><span class="switch-thumb"></span></span>
-                                    </label>
-                                    <button class="btn tabular-btn-icon" id="ai-backend-toggle-btn" title="Choose AI backend">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-                                        Backend
-                                    </button>
-                                    <button class="btn tabular-btn-icon" id="ai-prompt-toggle-btn" title="Customise the AI prompt">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
-                                        Prompt
-                                    </button>
-                                    <span id="ai-bibliographic-status" class="tabular-status-text"></span>
-                                </div>
-                            </div>
 
-                            <!-- AI Backend selector panel -->
-                            <div id="ai-backend-panel" class="collapsible-panel" style="margin-top:0.75rem;
-                                 background:#1e293b; border:1px solid #334155; border-radius:8px;
-                                 padding:1rem;">
-                                <span style="font-size:0.85rem; font-weight:600; color:#94a3b8; display:block; margin-bottom:0.75rem;">
-                                    ⚙️ AI Backend
-                                </span>
                                 <div class="ai-backend-segmented-control">
                                     <input type="radio" name="ai-backend-choice" id="ai-backend-local" value="local" checked>
-                                    <label for="ai-backend-local">🖥️ Local (Gemma 4 E2B)</label>
+                                    <label for="ai-backend-local"><i class="bi bi-display"></i> Local (Gemma 4 E2B)</label>
                                     
                                     <input type="radio" name="ai-backend-choice" id="ai-backend-openrouter" value="openrouter">
-                                    <label for="ai-backend-openrouter">☁️ OpenRouter API</label>
+                                    <label for="ai-backend-openrouter"><i class="bi bi-cloud"></i> OpenRouter API</label>
                                 </div>
 
                                 <!-- Local Model Status & Download Box -->
-                                <div id="local-model-status-box" style="margin-top:0.75rem; background:#0f172a; border:1px solid #334155; border-radius:8px; padding:0.85rem;">
-                                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+                                <div id="local-model-status-box" class="console-sub-card">
+                                    <div class="console-card-row">
                                         <div>
-                                            <span style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.15rem;">Local Model Status</span>
-                                            <span id="local-model-status-text" style="font-size:0.85rem; font-weight:600; color:#f59e0b;">Checking model status...</span>
+                                            <span class="console-meta-label">Local Model Status</span>
+                                            <span id="local-model-status-text" class="console-status-val status-checking"><i class="bi bi-hourglass-split"></i> Checking model status...</span>
                                         </div>
-                                        <button id="download-local-model-btn" class="btn btn-secondary" style="font-size:0.8rem; padding:0.4rem 0.85rem; border-radius:6px;">
-                                            ⬇️ Download Model (~10 GB)
+                                        <button id="download-local-model-btn" class="btn btn-secondary btn-sm">
+                                            <i class="bi bi-download"></i> Download Model (~10 GB)
                                         </button>
                                     </div>
                                     <div id="local-model-download-progress" style="display:none; margin-top:0.75rem;">
-                                        <div style="display:flex; justify-content:space-between; font-size:0.78rem; color:#cbd5e1; margin-bottom:0.35rem;">
+                                        <div class="console-progress-header">
                                             <span id="local-download-status-msg">Downloading...</span>
                                             <span id="local-download-percent-text">0%</span>
                                         </div>
-                                        <div style="background:#334155; border-radius:6px; overflow:hidden; height:10px;">
-                                            <div id="local-download-bar" style="height:100%; background:linear-gradient(90deg, #6366f1, #8b5cf6); width:0%; transition:width 0.3s ease;"></div>
+                                        <div class="console-progress-track">
+                                            <div id="local-download-bar" class="console-progress-fill" style="width:0%;"></div>
                                         </div>
                                     </div>
                                 </div>
 
-                                <div id="ai-openrouter-config" class="collapsible-content">
-                                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.6rem;">
-                                        <div>
-                                            <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.25rem;">
-                                                API Key
+                                <!-- OpenRouter Configuration Box -->
+                                <div id="ai-openrouter-config" class="console-sub-card" style="display: none;">
+                                    <div class="console-grid-form" style="margin-top: 0;">
+                                        <div class="form-group">
+                                            <label for="ai-openrouter-apikey" class="console-meta-label">
+                                                <i class="bi bi-key"></i> OpenRouter API Key
                                             </label>
                                             <input type="password" id="ai-openrouter-apikey"
-                                                   placeholder="sk-or-..."
-                                                   style="width:100%; box-sizing:border-box; background:#0f172a;
-                                                          color:#e2e8f0; border:1px solid #475569; border-radius:6px;
-                                                          padding:0.45rem 0.65rem; font-size:0.82rem; font-family:monospace;">
+                                                   placeholder="sk-or-v1-..."
+                                                   class="form-control console-mono-input"
+                                                   autocomplete="off">
                                         </div>
-                                        <div>
-                                            <label style="font-size:0.78rem; color:#94a3b8; display:block; margin-bottom:0.25rem;">
-                                                Model name
+                                        <div class="form-group">
+                                            <label for="ai-openrouter-model" class="console-meta-label">
+                                                <i class="bi bi-robot"></i> Vision Model Name
                                             </label>
                                             <input type="text" id="ai-openrouter-model"
-                                                   placeholder="e.g. google/gemini-flash-1.5"
-                                                   style="width:100%; box-sizing:border-box; background:#0f172a;
-                                                          color:#e2e8f0; border:1px solid #475569; border-radius:6px;
-                                                          padding:0.45rem 0.65rem; font-size:0.82rem; font-family:monospace;">
+                                                   placeholder="e.g. deepseek/deepseek-v4-flash"
+                                                   class="form-control console-mono-input">
                                         </div>
                                     </div>
-                                    <p style="font-size:0.75rem; color:#64748b; margin:0.55rem 0 0;">
-                                        The API key is stored only in your browser session (not persisted).
-                                        <strong style="color:#f59e0b;">The model must support vision (image) inputs.</strong>
-                                        Full list at <a href="https://openrouter.ai/models" target="_blank"
-                                        style="color:#6366f1;">openrouter.ai/models</a>.
-                                    </p>
+
+                                    <div class="console-footer-note">
+                                        <div class="console-models-link">
+                                            <i class="bi bi-box-arrow-up-right"></i> Browse vision-capable models at
+                                            <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer">openrouter.ai/models</a>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
 
-                            <!-- Collapsible prompt customisation panel -->
-                            <div id="ai-prompt-panel" class="collapsible-panel" style="margin-top:0.75rem;
-                                 background:#1e293b; border:1px solid #334155; border-radius:8px;
-                                 padding:1rem;">
-                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
-                                    <span style="font-size:0.85rem; font-weight:600; color:#94a3b8;">
-                                        ✏️ Custom prompt context
-                                    </span>
-                                    <button id="ai-prompt-reset-btn" class="btn btn-secondary"
-                                            style="padding:0.25rem 0.65rem; font-size:0.75rem;">
-                                        ↺ Reset
+                            <!-- Collapsible Prompt Customisation Drawer -->
+                            <div id="ai-prompt-panel" class="collapsible-panel tabular-dark-console">
+                                <div class="console-section-header">
+                                    <span><i class="bi bi-chat-left-text"></i> Archaeological Prompt Context</span>
+                                    <button id="ai-prompt-reset-btn" class="btn btn-secondary btn-sm">
+                                        <i class="bi bi-arrow-counterclockwise"></i> Reset
                                     </button>
                                 </div>
-                                <p style="font-size:0.78rem; color:#64748b; margin:0 0 0.5rem;">
-                                    Describe publication-specific conventions or request extra fields.
-                                    To add a column, put its <strong>exact name in square brackets</strong> —
-                                    e.g. <em>"Add also [Scale], which is on the bottom-left"</em> or
-                                    <em>"Extract the [Ceramic class]"</em>. The bracketed name becomes the
-                                    column header and stays identical across every page and batch run.
-                                    Leave blank to use the default prompt.
+                                <p class="console-help-text">
+                                    Describe publication-specific ceramic conventions or request extra metadata fields.
+                                    To create or populate a column, enclose its <strong>exact header name in square brackets</strong> —
+                                    e.g. <em>"Extract also [Scale] indicated next to the rim"</em> or
+                                    <em>"Transcribe the [Ceramic Class]"</em>. The bracketed name automatically becomes the table column header.
                                 </p>
                                 <textarea id="ai-prompt-suffix"
                                     placeholder="E.g.: Plate numbers appear as 'Tav. IV' at the top-left corner. Figure labels look like 'Fig. 3' in the bottom margin. Individual pottery numbers are small digits next to each drawing..."
-                                    rows="5"
-                                    style="width:100%; box-sizing:border-box; background:#0f172a;
-                                           color:#e2e8f0; border:1px solid #475569; border-radius:6px;
-                                           padding:0.6rem 0.75rem; font-size:0.82rem; resize:vertical;
-                                           font-family:inherit; line-height:1.5;"></textarea>
+                                    rows="4"
+                                    class="form-control console-textarea"></textarea>
                             </div>
+
+                            <!-- Table Container -->
                             <div id="tabular-table-container">
                                 <table id="data-table" class="data-table">
                                     <thead id="table-header"></thead>
@@ -819,13 +994,13 @@
 
                 <!-- Post Processing Tab -->
                 <div class="tab-content" id="postprocess-tab">
-                    <h2>🔍 Post Processing</h2>
+                    <h2><i class="bi bi-grid-3x3-gap"></i> Post Processing</h2>
                     <p class="subtitle">Review and classify extracted cards from current project</p>
 
                     <!-- Toolbar -->
                     <div class="postprocess-toolbar">
                         <div class="postprocess-toolbar-left">
-                            <span class="pp-count">🖼️ Cards: <span id="postprocess-image-count">0</span></span>
+                            <span class="pp-count"><i class="bi bi-card-image"></i> Cards: <span id="postprocess-image-count">0</span></span>
                             <label class="switch-toggle">
                                 <input type="checkbox" id="auto-flip-vertical" checked>
                                 <span class="switch-track"><span class="switch-thumb"></span></span>
@@ -838,8 +1013,8 @@
                             </label>
                         </div>
                         <div class="postprocess-toolbar-right">
-                            <button class="btn btn-primary" id="process-all-btn">🔍 Process All Images</button>
-                            <button class="btn btn-primary" id="export-btn">📦 Export Results</button>
+                            <button class="btn btn-primary" id="process-all-btn"><i class="bi bi-magic"></i> Process All Images</button>
+                            <button class="btn btn-primary" id="export-btn"><i class="bi bi-box-arrow-up-right"></i> Export Results</button>
                         </div>
                     </div>
                     <div class="progress-bar-wrapper" id="postprocess-progress-wrapper" style="margin-top: 0.75rem; display: none;">
@@ -854,7 +1029,7 @@
 
                     <!-- Lightbox (zoom on click) -->
                     <div id="postprocess-lightbox" class="postprocess-lightbox" style="display: none;">
-                        <span class="pp-lightbox-close" id="postprocess-lightbox-close">✕</span>
+                        <span class="pp-lightbox-close" id="postprocess-lightbox-close"><i class="bi bi-x-lg"></i></span>
                         <img id="postprocess-lightbox-img" alt="Card">
                     </div>
 
@@ -867,12 +1042,12 @@
         <div id="export-dialog" class="dialog-overlay" style="display: none;">
             <div class="dialog">
                 <div class="dialog-header">
-                    <h2>📦 Export Options</h2>
+                    <h2><i class="bi bi-box-arrow-up-right"></i> Export Options</h2>
                     <p>Configure your export settings</p>
                 </div>
                 <div class="dialog-body">
                     <div class="form-group">
-                        <h3>🏷️ Basic Settings</h3>
+                        <h3><i class="bi bi-sliders"></i> Basic Settings</h3>
                         <label>Export Acronym</label>
                         <input type="text" id="export-acronym" class="form-control"
                             placeholder="Enter acronym (e.g., OSA_2024)...">
@@ -882,18 +1057,18 @@
                     <div id="export-dialog-status" class="status-message"></div>
                 </div>
                 <div class="dialog-footer">
-                    <button class="btn btn-secondary" id="export-cancel">❌ Cancel</button>
-                    <button class="btn btn-primary" id="export-confirm">📦 Export ZIP</button>
+                    <button class="btn btn-secondary" id="export-cancel"><i class="bi bi-x-circle"></i> Cancel</button>
+                    <button class="btn btn-primary" id="export-confirm"><i class="bi bi-file-earmark-zip"></i> Export ZIP</button>
                 </div>
             </div>
         </div>
 
         <!-- Extract Masks Confirmation Dialog -->
         <div id="extract-confirm-dialog" class="dialog-overlay extract-dialog-overlay" style="display: none;">
-            <div class="dialog extract-confirm-card">
+            <div class="dialog extract-confirm-modal">
                 <div class="extract-dialog-header">
                     <div class="extract-dialog-icon">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                        <i class="bi bi-crop" style="font-size: 1.5rem;"></i>
                     </div>
                     <div>
                         <h2>Extract Cards from Masks</h2>
@@ -902,7 +1077,7 @@
                 </div>
                 <div class="extract-dialog-body">
                     <div class="extract-warning-box">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="warning-icon"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                        <i class="bi bi-exclamation-triangle-fill warning-icon" style="font-size: 1.25rem;"></i>
                         <div>
                             <strong>Overwrite Warning</strong>
                             <p>Any previously extracted cards in this project will be re-generated and overwritten.</p>
@@ -910,11 +1085,126 @@
                     </div>
                 </div>
                 <div class="extract-dialog-footer">
-                    <button class="btn btn-secondary btn-cancel-extract" id="extract-confirm-cancel">Cancel</button>
+                    <button class="btn btn-secondary btn-cancel-extract" id="extract-confirm-cancel"><i class="bi bi-x-lg"></i> Cancel</button>
                     <button class="btn btn-primary btn-do-extract" id="extract-confirm-ok">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 16 12 12 8 16"></polyline><line x1="12" y1="12" x2="12" y2="21"></line><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path><polyline points="16 16 12 12 8 16"></polyline></svg>
+                        <i class="bi bi-crop"></i>
                         Extract Cards
                     </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- App Universal Confirmation Dialog -->
+        <div id="app-confirm-dialog" class="dialog-overlay app-confirm-overlay" style="display: none;">
+            <div class="dialog app-confirm-modal" role="dialog" aria-modal="true">
+                <div class="confirm-modal-header">
+                    <div class="confirm-modal-icon" id="app-confirm-icon-wrap">
+                        <i class="bi bi-trash3-fill" id="app-confirm-icon"></i>
+                    </div>
+                    <div class="confirm-modal-titles">
+                        <h2 id="app-confirm-title">Delete Project</h2>
+                        <p class="confirm-modal-subtitle" id="app-confirm-subtitle">Are you sure you want to delete this project?</p>
+                    </div>
+                    <button class="confirm-modal-close" id="app-confirm-x" title="Close">&times;</button>
+                </div>
+                <div class="confirm-modal-body">
+                    <div class="confirm-details-box" id="app-confirm-details-box">
+                        <span class="confirm-details-label">This action will delete:</span>
+                        <ul class="confirm-details-list" id="app-confirm-details-list">
+                            <li><i class="bi bi-x-circle text-danger"></i> <span>All source PDFs</span></li>
+                            <li><i class="bi bi-x-circle text-danger"></i> <span>All extracted images</span></li>
+                            <li><i class="bi bi-x-circle text-danger"></i> <span>All masks and annotations</span></li>
+                            <li><i class="bi bi-x-circle text-danger"></i> <span>All exported data</span></li>
+                        </ul>
+                    </div>
+                    <div class="confirm-note-box" id="app-confirm-note-box">
+                        <i class="bi bi-exclamation-octagon-fill"></i>
+                        <span id="app-confirm-note">This action is IRREVERSIBLE and cannot be undone!</span>
+                    </div>
+                </div>
+                <div class="confirm-modal-footer">
+                    <button type="button" class="btn btn-secondary" id="app-confirm-cancel">
+                        <i class="bi bi-x-lg"></i> Cancel
+                    </button>
+                    <button type="button" class="btn btn-danger" id="app-confirm-ok">
+                        <i class="bi bi-trash3"></i> Delete Project
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Full-Screen Model Processing Overlay (Minimal & Archaeological) -->
+        <div id="model-processing-overlay" class="model-processing-overlay" style="display: none;">
+            <div class="processing-backdrop-blur"></div>
+            <div class="processing-modal-card" role="dialog" aria-modal="true">
+                <div class="processing-icon-container">
+                    <i class="bi bi-cpu processing-main-icon"></i>
+                </div>
+                
+                <h2 class="processing-modal-title">Applying Vision Model</h2>
+                <p class="processing-modal-model" id="processing-model-badge">YOLO Model</p>
+                
+                <div class="processing-stat-box">
+                    <div class="processing-percentage-display" id="fullscreen-percentage">0%</div>
+                    <div class="processing-progress-track">
+                        <div class="processing-progress-fill" id="fullscreen-progress-fill" style="width: 0%;"></div>
+                    </div>
+                    <div class="processing-detail-row">
+                        <span class="processing-detail-file" id="fullscreen-current-file">Initializing inference...</span>
+                        <span class="processing-detail-count" id="fullscreen-image-count">0 / 0</span>
+                    </div>
+                </div>
+                
+                <div class="processing-footer">
+                    <button type="button" class="btn btn-danger processing-cancel-btn" id="model-cancel-btn">
+                        <i class="bi bi-stop-circle-fill"></i> Stop Processing
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Full-Screen Mask Extraction Overlay (Matching YOLO Overlay Style) -->
+        <div id="mask-extraction-overlay" class="model-processing-overlay" style="display: none;">
+            <div class="processing-backdrop-blur"></div>
+            <div class="processing-modal-card" role="dialog" aria-modal="true">
+                <div class="processing-icon-container">
+                    <i class="bi bi-crop processing-main-icon"></i>
+                </div>
+                
+                <h2 class="processing-modal-title" style="margin-bottom: 1.5rem;">Extracting Cards from Masks</h2>
+                
+                <div class="processing-stat-box">
+                    <div class="processing-percentage-display" id="mask-extract-percentage">0%</div>
+                    <div class="processing-progress-track">
+                        <div class="processing-progress-fill" id="mask-extract-progress-fill" style="width: 0%;"></div>
+                    </div>
+                    <div class="processing-detail-row">
+                        <span class="processing-detail-file" id="mask-extract-current-file">Initializing extraction...</span>
+                        <span class="processing-detail-count" id="mask-extract-count">0 / 0</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Full-Screen Post-Processing Overlay (Matching YOLO Overlay Style) -->
+        <div id="postprocess-processing-overlay" class="model-processing-overlay" style="display: none;">
+            <div class="processing-backdrop-blur"></div>
+            <div class="processing-modal-card" role="dialog" aria-modal="true">
+                <div class="processing-icon-container">
+                    <i class="bi bi-magic processing-main-icon"></i>
+                </div>
+                
+                <h2 class="processing-modal-title" style="margin-bottom: 1.5rem;">Processing Extracted Cards</h2>
+                
+                <div class="processing-stat-box">
+                    <div class="processing-percentage-display" id="postprocess-percentage">0%</div>
+                    <div class="processing-progress-track">
+                        <div class="processing-progress-fill" id="postprocess-progress-fill" style="width: 0%;"></div>
+                    </div>
+                    <div class="processing-detail-row">
+                        <span class="processing-detail-file" id="postprocess-current-file">Initializing classification...</span>
+                        <span class="processing-detail-count" id="postprocess-count">0 / 0</span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -937,14 +1227,14 @@
     </div> <!-- Close main-container -->
 
     <!-- Scripts -->
-    <script src="/static/js/utils.js?v=20251024163500"></script>
-    <script src="/static/js/project-tab.js?v=20251024163500"></script>
-    <script src="/static/js/pdf-tab.js?v=20251024163500"></script>
-    <script src="/static/js/model-tab.js?v=20251024163500"></script>
-    <script src="/static/js/annotation-tab.js?v=20251024163500"></script>
-    <script src="/static/js/tabular-tab.js?v=20251024163500"></script>
-    <script src="/static/js/postprocess-tab.js?v=20251024163500"></script>
-    <script src="/static/js/main.js?v=20251024163500"></script>
+    <script src="/static/js/utils.js?v=20260911_235500"></script>
+    <script src="/static/js/project-tab.js?v=20260911_235500"></script>
+    <script src="/static/js/pdf-tab.js?v=20260911_235500"></script>
+    <script src="/static/js/model-tab.js?v=20260911_235500"></script>
+    <script src="/static/js/annotation-tab.js?v=20260911_235500"></script>
+    <script src="/static/js/tabular-tab.js?v=20260911_235500"></script>
+    <script src="/static/js/postprocess-tab.js?v=20260911_235500"></script>
+    <script src="/static/js/main.js?v=20260912_000000"></script>
 </body>
 
 </html>

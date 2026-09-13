@@ -776,6 +776,13 @@ def list_projects():
     """Get list of all projects"""
     try:
         projects = project_manager.list_projects()
+        for p in projects:
+            pid = p.get('project_id')
+            if pid:
+                pdf_source_path = project_manager.get_project_path(pid, 'pdf_source')
+                pdf_files = list(pdf_source_path.glob('*.pdf')) if pdf_source_path and pdf_source_path.exists() else []
+                p['pdf_filename'] = pdf_files[0].name if pdf_files else None
+                p['has_pdf'] = len(pdf_files) > 0
         return jsonify({'projects': projects, 'success': True})
     except Exception as e:
         return jsonify({'error': str(e), 'success': False}), 500
@@ -808,6 +815,12 @@ def get_project(project_id):
         metadata = project_manager.get_project(project_id)
         if metadata is None:
             return jsonify({'error': 'Project not found', 'success': False}), 404
+        
+        pdf_source_path = project_manager.get_project_path(project_id, 'pdf_source')
+        pdf_files = list(pdf_source_path.glob('*.pdf')) if pdf_source_path and pdf_source_path.exists() else []
+        metadata['pdf_filename'] = pdf_files[0].name if pdf_files else None
+        metadata['has_pdf'] = len(pdf_files) > 0
+        
         return jsonify({'project': metadata, 'success': True})
     except Exception as e:
         return jsonify({'error': str(e), 'success': False}), 500
@@ -822,6 +835,53 @@ def delete_project(project_id):
             return jsonify({'error': 'Project not found or could not be deleted', 'success': False}), 404
         return jsonify({'success': True})
     except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/pdf', methods=['DELETE'])
+def delete_project_pdf(project_id):
+    """Delete the PDF document and its extracted page images from a project"""
+    try:
+        project_metadata = project_manager.get_project(project_id)
+        if not project_metadata:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+        
+        pdf_source_path = project_manager.get_project_path(project_id, 'pdf_source')
+        images_path = project_manager.get_project_path(project_id, 'images')
+        
+        deleted_pdf_count = 0
+        if pdf_source_path and pdf_source_path.exists():
+            for f in pdf_source_path.glob('*.pdf'):
+                try:
+                    f.unlink()
+                    deleted_pdf_count += 1
+                except Exception as e:
+                    print(f"Error removing PDF {f}: {e}")
+        
+        deleted_img_count = 0
+        if images_path and images_path.exists():
+            for img in images_path.iterdir():
+                if img.is_file():
+                    try:
+                        img.unlink()
+                        deleted_img_count += 1
+                    except Exception as e:
+                        print(f"Error removing image {img}: {e}")
+        
+        # Reset project workflow status for PDF
+        project_manager.update_workflow_status(project_id, {
+            'pdf_processed': False,
+            'pdf_count': 0,
+            'images_extracted': 0,
+            'total_images': 0
+        })
+        
+        return jsonify({
+            'message': f'PDF and {deleted_img_count} extracted page images removed successfully.',
+            'success': True
+        })
+    except Exception as e:
+        print(f"Error in delete_project_pdf: {e}")
         return jsonify({'error': str(e), 'success': False}), 500
 
 
@@ -1037,9 +1097,15 @@ def extract_project_masks(project_id):
                 try:
                     parts = msg.split()
                     idx = parts.index('mask') + 1
-                    current = int(parts[idx].split('/')[0])
-                    update_operation_progress('extract_masks', current, total_masks, 
-                                             f'Extracting mask {current}/{total_masks}')
+                    current = int(parts[idx].split('/')[0].rstrip(':'))
+                    filename = ''
+                    if ':' in msg:
+                        filename = msg.split(':', 1)[1].strip()
+                        filename = filename.replace('_mask_layer.png', '')
+                    status_msg = f'Extracting mask {current}/{total_masks}'
+                    if filename:
+                        status_msg = f'{status_msg} • {filename}'
+                    update_operation_progress('extract_masks', current, total_masks, status_msg)
                 except:
                     pass
             original_print(*args, **kwargs)
@@ -1285,9 +1351,18 @@ def upload_pdf():
             print("Error: Not a PDF file")
             return jsonify({'error': 'Only PDF files are allowed', 'success': False}), 400
         
+        # Check if project already has a PDF (1 project = 1 PDF policy)
+        pdf_source_path = project_manager.get_project_path(project_id, 'pdf_source')
+        existing_pdfs = list(pdf_source_path.glob('*.pdf')) if pdf_source_path and pdf_source_path.exists() else []
+        if existing_pdfs:
+            print(f"Error: Project already contains PDF {existing_pdfs[0].name}")
+            return jsonify({
+                'error': f'This project already contains a PDF document ("{existing_pdfs[0].name}"). You must remove it before uploading a new one.',
+                'success': False
+            }), 400
+
         # Save PDF to project's pdf_source folder
         filename = secure_filename(file.filename)
-        pdf_source_path = project_manager.get_project_path(project_id, 'pdf_source')
         pdf_filepath = pdf_source_path / filename
         print(f"Saving PDF to project: {pdf_filepath}")
         file.save(pdf_filepath)
@@ -1329,6 +1404,15 @@ def upload_pdf():
 
 # ==================== MODEL APPLICATION ====================
 
+model_cancel_requested = False
+model_progress = {
+    'total': 0,
+    'current': 0,
+    'message': 'Idle',
+    'active': False,
+    'cancelled': False
+}
+
 @app.route('/api/model/apply', methods=['POST'])
 def apply_model():
     """Apply model to images in a project"""
@@ -1359,13 +1443,15 @@ def apply_model():
         
         print(f"Applying model to project {project_id} with excluded_images: {excluded_images}")
         
-        # Reset progress
-        global model_progress
+        # Reset progress and cancellation state
+        global model_progress, model_cancel_requested
+        model_cancel_requested = False
         model_progress = {
             'total': 0,
             'current': 0,
             'message': 'Starting...',
-            'active': True
+            'active': True,
+            'cancelled': False
         }
         
         # Progress callback
@@ -1377,7 +1463,7 @@ def apply_model():
         
         # Run model in background thread
         def run_model():
-            global model_progress
+            global model_progress, model_cancel_requested
             try:
                 result = model_processor.apply_model_to_project(
                     str(images_path),
@@ -1388,7 +1474,8 @@ def apply_model():
                     kernel_size,
                     iterations,
                     excluded_images,
-                    progress_callback=update_progress
+                    progress_callback=update_progress,
+                    cancel_check=lambda: model_cancel_requested
                 )
                 
                 # Update project workflow status
@@ -1420,6 +1507,20 @@ def apply_model():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/model/cancel', methods=['POST'])
+def cancel_model():
+    """Cancel currently running model processing"""
+    global model_cancel_requested, model_progress
+    model_cancel_requested = True
+    if 'model_progress' in globals() and model_progress:
+        model_progress['cancelled'] = True
+        model_progress['message'] = 'Cancelling processing...'
+    return jsonify({
+        'message': 'Cancellation requested',
+        'success': True
+    })
 
 
 @app.route('/api/model/progress')
@@ -3145,8 +3246,9 @@ def process_project_cards(project_id):
         for idx, card_file in enumerate(card_files):
             try:
                 # Update progress
+                card_name = card_file.stem
                 update_operation_progress('postprocess', idx + 1, total_cards, 
-                                        f'Processing image {idx + 1} of {total_cards}')
+                                        f'Processing card {idx + 1} of {total_cards} • {card_name}')
                 
                 # Process the image
                 type_pred, pos_pred, rot_pred, transformed_image = second_step_processor.process_image(str(card_file))

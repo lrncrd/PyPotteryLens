@@ -27,6 +27,36 @@ document.addEventListener('DOMContentLoaded', () => {
         confidenceValue.textContent = parseFloat(confidenceSlider.value).toFixed(2);
     }
     
+    // Execution mode radio cards
+    const modeCards = document.querySelectorAll('.mode-radio-card');
+    modeCards.forEach(card => {
+        card.addEventListener('click', () => {
+            const radio = card.querySelector('input[type="radio"]');
+            if (radio) {
+                radio.checked = true;
+                modeCards.forEach(c => c.classList.remove('active'));
+                card.classList.add('active');
+                
+                // Sync legacy checkbox if present
+                const legacyCheckbox = document.getElementById('diagnostic-mode');
+                if (legacyCheckbox) {
+                    legacyCheckbox.checked = (radio.value === 'diagnostic');
+                }
+            }
+        });
+    });
+
+    // Gallery Toolbar buttons
+    const deselectAllBtn = document.getElementById('deselect-all-images-btn');
+    if (deselectAllBtn) {
+        deselectAllBtn.addEventListener('click', deselectAllImages);
+    }
+
+    const selectAllBtn = document.getElementById('select-all-images-btn');
+    if (selectAllBtn) {
+        selectAllBtn.addEventListener('click', selectAllImages);
+    }
+
     // Apply model button
     const applyBtn = document.getElementById('apply-model-btn');
     if (applyBtn) {
@@ -80,17 +110,20 @@ async function loadProjectImages() {
     console.log('[Model] Current project:', modelState.currentProject);
     
     const emptyMsg = document.getElementById('model-empty-msg');
+    const galleryContainer = document.getElementById('model-gallery-container');
     const gallery = document.getElementById('model-gallery');
     
     if (!modelState.currentProject || !modelState.currentProject.project_id) {
         console.log('[Model] No project - showing empty state');
         if (emptyMsg) {
-            emptyMsg.innerHTML = '<h3>📁 No project selected</h3><p>Select a project from the Project Manager tab</p>';
+            emptyMsg.innerHTML = '<h3><i class="bi bi-folder-x"></i> No project selected</h3><p>Select a project from the Project Manager tab</p>';
             emptyMsg.style.display = 'flex';
         }
+        if (galleryContainer) galleryContainer.style.display = 'none';
         if (gallery) gallery.style.display = 'none';
         modelState.images = [];
         modelState.excludedImages.clear();
+        updateGalleryStats();
         return;
     }
     
@@ -123,24 +156,97 @@ async function loadProjectImages() {
             displayGallery(imagesResponse.images);
             
             if (emptyMsg) emptyMsg.style.display = 'none';
+            if (galleryContainer) galleryContainer.style.display = 'block';
             if (gallery) gallery.style.display = 'grid';
         } else {
             console.log('[Model] No images found in response');
             if (emptyMsg) {
-                emptyMsg.innerHTML = '<h3>📁 No images found</h3><p>Upload a PDF in the PDF tab to generate images</p>';
+                emptyMsg.innerHTML = '<h3><i class="bi bi-images"></i> No images found</h3><p>Upload a PDF in the PDF tab to generate images</p>';
                 emptyMsg.style.display = 'flex';
             }
+            if (galleryContainer) galleryContainer.style.display = 'none';
             if (gallery) gallery.style.display = 'none';
+            updateGalleryStats();
         }
     } catch (error) {
         window.PyPotteryUtils.hideLoading();
         console.error('[Model] Error loading project images:', error);
         if (emptyMsg) {
-            emptyMsg.innerHTML = `<h3>❌ Error</h3><p>${error.message}</p>`;
+            emptyMsg.innerHTML = `<h3><i class="bi bi-exclamation-triangle"></i> Error</h3><p>${error.message}</p>`;
             emptyMsg.style.display = 'flex';
         }
+        if (galleryContainer) galleryContainer.style.display = 'none';
         if (gallery) gallery.style.display = 'none';
     }
+}
+
+function updateGalleryStats() {
+    const totalCount = modelState.images ? modelState.images.length : 0;
+    const excludedCount = modelState.excludedImages ? modelState.excludedImages.size : 0;
+    const selectedCount = Math.max(0, totalCount - excludedCount);
+    
+    const countBadge = document.getElementById('model-gallery-count-badge');
+    const selectedBadge = document.getElementById('model-gallery-selected-badge');
+    
+    if (countBadge) {
+        countBadge.textContent = `${totalCount} ${totalCount === 1 ? 'figure' : 'figures'}`;
+    }
+    
+    if (selectedBadge) {
+        if (selectedCount === 0) {
+            selectedBadge.textContent = 'None selected (all excluded)';
+            selectedBadge.classList.add('gallery-badge-warning');
+        } else {
+            selectedBadge.textContent = `${selectedCount} to process`;
+            selectedBadge.classList.remove('gallery-badge-warning');
+        }
+    }
+}
+
+function deselectAllImages() {
+    if (!modelState.images || modelState.images.length === 0) return;
+    
+    modelState.images.forEach(imageUrl => {
+        modelState.excludedImages.add(imageUrl);
+    });
+    
+    const gallery = document.getElementById('model-gallery');
+    if (gallery) {
+        gallery.querySelectorAll('.gallery-item').forEach(item => {
+            item.classList.add('excluded');
+            const btn = item.querySelector('.delete-btn');
+            if (btn) {
+                btn.innerHTML = '<i class="bi bi-check-lg"></i>';
+                btn.title = 'Include in processing';
+            }
+        });
+    }
+    
+    updateGalleryStats();
+    saveExcludedImages();
+    window.PyPotteryUtils.showToast('All figures excluded. Click figures you wish to process.', 'info');
+}
+
+function selectAllImages() {
+    if (!modelState.images || modelState.images.length === 0) return;
+    
+    modelState.excludedImages.clear();
+    
+    const gallery = document.getElementById('model-gallery');
+    if (gallery) {
+        gallery.querySelectorAll('.gallery-item').forEach(item => {
+            item.classList.remove('excluded');
+            const btn = item.querySelector('.delete-btn');
+            if (btn) {
+                btn.innerHTML = '<i class="bi bi-x-lg"></i>';
+                btn.title = 'Exclude from processing';
+            }
+        });
+    }
+    
+    updateGalleryStats();
+    saveExcludedImages();
+    window.PyPotteryUtils.showToast('All figures selected for model processing.', 'success');
 }
 
 function displayGallery(images) {
@@ -156,11 +262,11 @@ function displayGallery(images) {
     
     if (!images || images.length === 0) {
         gallery.innerHTML = '<div class="empty-list">No images in project</div>';
+        updateGalleryStats();
         return;
     }
     
     images.forEach((imageUrl, index) => {
-        console.log('[Model] Adding image', index + 1, ':', imageUrl);
         const itemDiv = document.createElement('div');
         itemDiv.className = 'gallery-item';
         itemDiv.dataset.imageUrl = imageUrl;
@@ -180,12 +286,12 @@ function displayGallery(images) {
         
         img.addEventListener('click', (e) => {
             e.stopPropagation();
-            showImageModal(imageUrl);  // Still show full-size in modal
+            showImageModal(imageUrl);
         });
         
         const deleteBtn = document.createElement('button');
         deleteBtn.className = 'delete-btn';
-        deleteBtn.innerHTML = isExcluded ? '✓' : '×';
+        deleteBtn.innerHTML = isExcluded ? '<i class="bi bi-check-lg"></i>' : '<i class="bi bi-x-lg"></i>';
         deleteBtn.title = isExcluded ? 'Include in processing' : 'Exclude from processing';
         
         deleteBtn.addEventListener('click', (e) => {
@@ -195,9 +301,16 @@ function displayGallery(images) {
         
         itemDiv.appendChild(img);
         itemDiv.appendChild(deleteBtn);
+        
+        const pageLabel = document.createElement('span');
+        pageLabel.className = 'gallery-item-label';
+        pageLabel.textContent = imageUrl.split('/').pop().replace(/\.[^/.]+$/, '');
+        itemDiv.appendChild(pageLabel);
+        
         gallery.appendChild(itemDiv);
     });
     
+    updateGalleryStats();
     console.log('[Model] Gallery rendered with', gallery.children.length, 'items');
 }
 
@@ -205,16 +318,16 @@ function toggleImageExclusion(imageUrl, itemDiv, deleteBtn) {
     if (modelState.excludedImages.has(imageUrl)) {
         modelState.excludedImages.delete(imageUrl);
         itemDiv.classList.remove('excluded');
-        deleteBtn.innerHTML = '×';
+        deleteBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
         deleteBtn.title = 'Exclude from processing';
     } else {
         modelState.excludedImages.add(imageUrl);
         itemDiv.classList.add('excluded');
-        deleteBtn.innerHTML = '✓';
+        deleteBtn.innerHTML = '<i class="bi bi-check-lg"></i>';
         deleteBtn.title = 'Include in processing';
     }
     
-    // Save excluded images to project settings
+    updateGalleryStats();
     saveExcludedImages();
 }
 
@@ -285,45 +398,97 @@ async function handleApplyModel() {
     const confidence = parseFloat(document.getElementById('confidence').value);
     const kernelSize = parseInt(document.getElementById('kernel-size').value);
     const iterations = parseInt(document.getElementById('iterations').value);
-    const diagnostic = document.getElementById('diagnostic-mode').checked;
+    
+    const modeRadio = document.querySelector('input[name="model-execution-mode"]:checked') || document.querySelector('input[name="processing-mode"]:checked');
+    const diagnostic = modeRadio ? (modeRadio.value === 'diagnostic') : false;
     
     if (!model) {
-        window.PyPotteryUtils.showToast('Please select a model', 'warning');
+        window.PyPotteryUtils.showToast('Please select a vision model first', 'warning');
         return;
     }
     
     const excludedImagesArray = Array.from(modelState.excludedImages);
     const totalImages = modelState.images.length;
-    const imagesToProcess = totalImages - excludedImagesArray.length;
+    let imagesToProcess = totalImages - excludedImagesArray.length;
+    if (diagnostic && imagesToProcess > 25) {
+        imagesToProcess = 25;
+    }
     
-    if (excludedImagesArray.length > 0) {
-        const confirmed = confirm(
-            `You are excluding ${excludedImagesArray.length} image(s).\n` +
-            `${imagesToProcess} image(s) will be processed.\n\n` +
-            `Continue?`
-        );
+    if (imagesToProcess <= 0) {
+        window.PyPotteryUtils.showToast('No figures selected for processing! Click figures in the gallery to include them.', 'warning');
+        return;
+    }
+    
+    if (excludedImagesArray.length > 0 && !diagnostic) {
+        const confirmed = await window.PyPotteryUtils.showConfirmDialog({
+            title: 'Confirm Model Inference',
+            subtitle: `You have excluded <strong>${excludedImagesArray.length}</strong> image(s) from this run.`,
+            icon: 'bi-exclamation-triangle-fill',
+            iconColor: '#d97706',
+            iconBg: '#fef3c7',
+            detailsLabel: 'Processing plan:',
+            details: [
+                `${imagesToProcess} image(s) will be processed`,
+                `${excludedImagesArray.length} image(s) will be skipped`
+            ],
+            note: 'Model inference may take some time depending on your hardware.',
+            confirmText: 'Continue Inference',
+            cancelText: 'Cancel',
+            confirmClass: 'btn-primary'
+        });
         
         if (!confirmed) return;
     }
+
+    // Full-Screen Processing Overlay Elements
+    const overlay = document.getElementById('model-processing-overlay');
+    const percentageEl = document.getElementById('fullscreen-percentage');
+    const progressFill = document.getElementById('fullscreen-progress-fill');
+    const currentFileEl = document.getElementById('fullscreen-current-file');
+    const countEl = document.getElementById('fullscreen-image-count');
+    const modelBadge = document.getElementById('processing-model-badge');
+    const cancelBtn = document.getElementById('model-cancel-btn');
+    const applyBtn = document.getElementById('apply-model-btn');
+    
+    // Show and initialize Full-Screen Overlay
+    if (overlay) {
+        overlay.style.display = 'flex';
+        if (percentageEl) percentageEl.textContent = '0%';
+        if (progressFill) progressFill.style.width = '0%';
+        if (currentFileEl) currentFileEl.textContent = 'Initializing inference pipeline...';
+        if (countEl) countEl.textContent = `0 / ${imagesToProcess}`;
+        if (modelBadge) modelBadge.textContent = `${model} (${diagnostic ? 'Diagnostic 25' : 'Full'})`;
+        if (cancelBtn) {
+            cancelBtn.disabled = false;
+            cancelBtn.innerHTML = '<i class="bi bi-stop-circle-fill"></i> Stop Processing';
+        }
+    }
+    
+    if (applyBtn) {
+        applyBtn.disabled = true;
+        applyBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Processing...';
+    }
+
+    // Cancel Button click handler
+    let isCancelled = false;
+    if (cancelBtn) {
+        cancelBtn.onclick = async () => {
+            if (isCancelled) return;
+            isCancelled = true;
+            cancelBtn.disabled = true;
+            cancelBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Stopping...';
+            if (currentFileEl) {
+                currentFileEl.textContent = 'Stopping process at current image boundary...';
+            }
+            try {
+                await fetch('/api/model/cancel', { method: 'POST' });
+            } catch (err) {
+                console.error('[Model] Error requesting cancel:', err);
+            }
+        };
+    }
     
     try {
-        const progressContainer = document.getElementById('model-progress');
-        const progressBar = document.getElementById('model-progress-bar');
-        const progressInfo = document.getElementById('model-progress-info');
-        
-        if (progressContainer) {
-            progressContainer.classList.add('active');
-            progressBar.style.width = '0%';
-            progressBar.textContent = '0%';
-            progressInfo.textContent = `Processing 0/${imagesToProcess} images...`;
-        }
-        
-        const applyBtn = document.getElementById('apply-model-btn');
-        if (applyBtn) {
-            applyBtn.disabled = true;
-            applyBtn.textContent = '⏳ Processing...';
-        }
-        
         const response = await window.PyPotteryUtils.apiRequest('/api/model/apply', {
             method: 'POST',
             body: JSON.stringify({
@@ -337,21 +502,37 @@ async function handleApplyModel() {
             })
         });
         
-        // Poll for real-time progress
+        let finalResult = { success: false, cancelled: false, message: '' };
+        
+        // Poll for real-time progress while overlay is visible
         if (response.success) {
-            await pollModelProgress();
+            finalResult = await pollModelProgress(imagesToProcess, {
+                percentageEl,
+                progressFill,
+                currentFileEl,
+                countEl
+            });
+        } else {
+            finalResult.message = response.error || 'Failed to start inference';
         }
         
-        if (progressContainer) {
-            progressContainer.classList.remove('active');
+        // Brief pause to allow user to see 100% or final status
+        await new Promise(resolve => setTimeout(resolve, 700));
+        
+        if (overlay) {
+            overlay.style.display = 'none';
         }
         
         if (applyBtn) {
             applyBtn.disabled = false;
-            applyBtn.textContent = '🚀 Apply Model to Project';
+            applyBtn.innerHTML = '<i class="bi bi-play-circle-fill"></i> Apply Model to Project';
         }
         
-        if (response.success) {
+        if (finalResult.cancelled) {
+            window.PyPotteryUtils.showStatus('model-status', 'Model processing was stopped by user.', 'info');
+            window.PyPotteryUtils.showToast('Model processing stopped.', 'info');
+            loadProjectImages();
+        } else if (response.success && finalResult.success) {
             window.PyPotteryUtils.showStatus('model-status', 'Model applied successfully!', 'success');
             window.PyPotteryUtils.showToast('Model applied successfully!', 'success');
             
@@ -363,22 +544,21 @@ async function handleApplyModel() {
                 window.projectManager.loadProjects();
             }
         } else {
-            window.PyPotteryUtils.showStatus('model-status', response.error || 'Failed to apply model', 'error');
-            window.PyPotteryUtils.showToast('Failed to apply model', 'error');
+            const errMsg = finalResult.message || response.error || 'Failed to apply model';
+            window.PyPotteryUtils.showStatus('model-status', errMsg, 'error');
+            window.PyPotteryUtils.showToast(errMsg, 'error');
         }
         
     } catch (error) {
-        console.error('Error applying model:', error);
+        console.error('[Model] Error applying model:', error);
         
-        const progressContainer = document.getElementById('model-progress');
-        if (progressContainer) {
-            progressContainer.classList.remove('active');
+        if (overlay) {
+            overlay.style.display = 'none';
         }
         
-        const applyBtn = document.getElementById('apply-model-btn');
         if (applyBtn) {
             applyBtn.disabled = false;
-            applyBtn.textContent = '🚀 Apply Model to Project';
+            applyBtn.innerHTML = '<i class="bi bi-play-circle-fill"></i> Apply Model to Project';
         }
         
         window.PyPotteryUtils.showStatus('model-status', error.message, 'error');
@@ -386,44 +566,53 @@ async function handleApplyModel() {
     }
 }
 
-async function pollModelProgress() {
-    const progressBar = document.getElementById('model-progress-bar');
-    const progressInfo = document.getElementById('model-progress-info');
-    
-    if (!progressBar || !progressInfo) return;
-    
+async function pollModelProgress(totalExpected, elements) {
+    const { percentageEl, progressFill, currentFileEl, countEl } = elements;
     let isActive = true;
+    let finalResult = { success: true, cancelled: false, message: '' };
     
     while (isActive) {
         try {
             const response = await fetch('/api/model/progress');
             const progress = await response.json();
             
-            if (progress.total > 0) {
-                const percentage = Math.round((progress.current / progress.total) * 100);
-                progressBar.style.width = `${percentage}%`;
-                progressBar.textContent = `${percentage}%`;
-                progressInfo.textContent = `Processing ${progress.current}/${progress.total} - ${progress.message}`;
+            const total = progress.total > 0 ? progress.total : totalExpected;
+            const current = progress.current || 0;
+            const percentage = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
+            
+            if (percentageEl) percentageEl.textContent = `${percentage}%`;
+            if (progressFill) progressFill.style.width = `${percentage}%`;
+            if (countEl) countEl.textContent = `${current} / ${total}`;
+            if (currentFileEl && progress.message) {
+                currentFileEl.textContent = progress.message;
+            }
+            
+            if (progress.cancelled) {
+                finalResult.cancelled = true;
+                finalResult.message = progress.message || 'Processing cancelled by user';
             }
             
             // Check if processing is complete
             if (!progress.active) {
                 isActive = false;
-                progressBar.style.width = '100%';
-                progressBar.textContent = '100%';
-                progressInfo.textContent = progress.message || 'Complete';
-            }
-            
-            // Wait before next poll
-            if (isActive) {
-                await new Promise(resolve => setTimeout(resolve, 500));
+                if (!progress.cancelled) {
+                    if (percentageEl) percentageEl.textContent = '100%';
+                    if (progressFill) progressFill.style.width = '100%';
+                    finalResult.message = progress.message || 'Inference complete!';
+                }
+            } else {
+                await new Promise(resolve => setTimeout(resolve, 400));
             }
             
         } catch (error) {
-            console.error('Error polling progress:', error);
+            console.error('[Model] Error polling progress:', error);
             isActive = false;
+            finalResult.success = false;
+            finalResult.message = error.message;
         }
     }
+    
+    return finalResult;
 }
 
 console.log('[Model] Module loaded');

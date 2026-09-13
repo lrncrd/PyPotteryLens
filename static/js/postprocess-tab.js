@@ -57,7 +57,10 @@ function setupPostprocessListeners() {
 }
 
 function projectId() {
-    return postprocessState.currentProject && postprocessState.currentProject.project_id;
+    if (postprocessState.currentProject && postprocessState.currentProject.project_id) {
+        return postprocessState.currentProject.project_id;
+    }
+    return localStorage.getItem('currentProjectId');
 }
 
 async function loadProjectCards() {
@@ -128,9 +131,9 @@ function renderGrid(cards) {
             <div class="pp-card-badge">EXCLUDED</div>
             <div class="pp-card-overlay">
                 <div class="pp-overlay-row">
-                    <button class="pp-btn" data-act="flipv" title="Flip vertical">↕</button>
-                    <button class="pp-btn" data-act="fliph" title="Flip horizontal">↔</button>
-                    <button class="pp-btn pp-exclude" data-act="exclude" title="Exclude / include from export">✕</button>
+                    <button class="pp-btn" data-act="flipv" title="Flip vertical"><i class="bi bi-arrow-down-up"></i></button>
+                    <button class="pp-btn" data-act="fliph" title="Flip horizontal"><i class="bi bi-arrow-left-right"></i></button>
+                    <button class="pp-btn pp-exclude" data-act="exclude" title="Exclude / include from export"><i class="bi bi-x-lg"></i></button>
                 </div>
                 <div class="pp-type-pill" data-act="type" title="Toggle ENT / FRAG">
                     <span class="pp-type-ent ${card.type === 'ENT' ? 'active' : ''}">ENT</span>
@@ -150,8 +153,24 @@ function renderGrid(cards) {
     });
 }
 
+function showCardBadge(item, text) {
+    item.querySelectorAll('.pp-card-toast-flash').forEach(el => el.remove());
+    const badge = document.createElement('div');
+    badge.className = 'pp-card-toast-flash';
+    badge.textContent = text;
+    item.appendChild(badge);
+    setTimeout(() => badge.remove(), 900);
+}
+
 async function flipCard(card, item, flipType) {
     if (!projectId()) return;
+    const actSelector = flipType === 'vertical' ? '[data-act="flipv"]' : '[data-act="fliph"]';
+    const btn = item.querySelector(actSelector);
+    const img = item.querySelector('.pp-card-img');
+
+    if (btn) btn.classList.add('is-loading');
+    if (img) img.classList.add(flipType === 'vertical' ? 'flipping-v' : 'flipping-h');
+
     try {
         const res = await window.PyPotteryUtils.apiRequest(`/api/projects/${projectId()}/postprocess/flip`, {
             method: 'POST',
@@ -159,20 +178,31 @@ async function flipCard(card, item, flipType) {
         });
         if (res.success) {
             card.has_modified = true;
-            const img = item.querySelector('.pp-card-img');
-            // Returned base64 reflects the flip immediately (avoids cache issues)
-            img.src = res.image || `/api/projects/${projectId()}/card-modified/${encodeURIComponent(card.filename)}?v=${Date.now()}`;
+            if (img) {
+                img.src = res.image || `/api/projects/${projectId()}/card-modified/${encodeURIComponent(card.filename)}?v=${Date.now()}`;
+            }
+            showCardBadge(item, flipType === 'vertical' ? '↕ Flipped Vertical' : '↔ Flipped Horizontal');
         } else {
             window.PyPotteryUtils.showToast(res.error || 'Flip failed', 'error');
         }
     } catch (error) {
         window.PyPotteryUtils.showToast(error.message, 'error');
+    } finally {
+        if (btn) btn.classList.remove('is-loading');
+        if (img) {
+            setTimeout(() => {
+                img.classList.remove('flipping-v', 'flipping-h');
+            }, 140);
+        }
     }
 }
 
 async function toggleType(card, item) {
     if (!projectId()) return;
     const newType = (card.type === 'ENT') ? 'FRAG' : 'ENT';
+    const pill = item.querySelector('.pp-type-pill');
+    if (pill) pill.style.opacity = '0.7';
+
     try {
         const res = await window.PyPotteryUtils.apiRequest(`/api/projects/${projectId()}/postprocess/update-type`, {
             method: 'POST',
@@ -184,17 +214,23 @@ async function toggleType(card, item) {
             item.querySelector('.pp-type-frag').classList.toggle('active', newType === 'FRAG');
             item.classList.toggle('type-ent', newType === 'ENT');
             item.classList.toggle('type-frag', newType === 'FRAG');
+            showCardBadge(item, `Set ${newType}`);
         } else {
             window.PyPotteryUtils.showToast(res.error || 'Run "Process All Images" first to set types', 'error');
         }
     } catch (error) {
         window.PyPotteryUtils.showToast(error.message, 'error');
+    } finally {
+        if (pill) pill.style.opacity = '1';
     }
 }
 
 async function toggleExclude(card, item) {
     if (!projectId()) return;
     const newExcluded = !card.excluded;
+    const btn = item.querySelector('[data-act="exclude"]');
+    if (btn) btn.classList.add('is-loading');
+
     try {
         const res = await window.PyPotteryUtils.apiRequest(`/api/projects/${projectId()}/postprocess/exclude`, {
             method: 'POST',
@@ -203,11 +239,14 @@ async function toggleExclude(card, item) {
         if (res.success) {
             card.excluded = newExcluded;
             item.classList.toggle('excluded', newExcluded);
+            showCardBadge(item, newExcluded ? '✕ Excluded' : '✓ Included');
         } else {
             window.PyPotteryUtils.showToast(res.error || 'Failed to exclude', 'error');
         }
     } catch (error) {
         window.PyPotteryUtils.showToast(error.message, 'error');
+    } finally {
+        if (btn) btn.classList.remove('is-loading');
     }
 }
 
@@ -231,36 +270,111 @@ async function handleProcessAll() {
     }
     const flipVertical = document.getElementById('auto-flip-vertical').checked;
     const flipHorizontal = document.getElementById('auto-flip-horizontal').checked;
+    const processBtn = document.getElementById('process-all-btn');
 
-    const progressWrapper = document.getElementById('postprocess-progress-wrapper');
-    if (progressWrapper) progressWrapper.style.display = '';
+    // Full-Screen Post-Processing Overlay Elements
+    const overlay = document.getElementById('postprocess-processing-overlay');
+    const percentageEl = document.getElementById('postprocess-percentage');
+    const progressFill = document.getElementById('postprocess-progress-fill');
+    const currentFileEl = document.getElementById('postprocess-current-file');
+    const countEl = document.getElementById('postprocess-count');
+
+    const totalExpected = (postprocessState.cards && postprocessState.cards.length) || 0;
+
+    // Show and initialize Full-Screen Overlay
+    if (overlay) {
+        overlay.style.display = 'flex';
+        if (percentageEl) percentageEl.textContent = '0%';
+        if (progressFill) progressFill.style.width = '0%';
+        if (currentFileEl) currentFileEl.textContent = 'Initializing card classification...';
+        if (countEl) countEl.textContent = totalExpected > 0 ? `0 / ${totalExpected}` : 'Starting...';
+    }
+
+    if (processBtn) {
+        processBtn.disabled = true;
+        processBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Processing...';
+    }
+
+    let isDone = false;
+
+    // Background polling for real-time progress
+    const pollProgress = async () => {
+        while (!isDone) {
+            try {
+                const response = await fetch('/api/operation-progress');
+                const progress = await response.json();
+
+                if (progress && (progress.operation === 'postprocess' || progress.active)) {
+                    const total = progress.total || totalExpected;
+                    const current = progress.current || 0;
+                    const pct = progress.percent !== undefined
+                        ? progress.percent
+                        : (total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0);
+
+                    if (percentageEl) percentageEl.textContent = `${pct}%`;
+                    if (progressFill) progressFill.style.width = `${pct}%`;
+                    if (countEl && total > 0) countEl.textContent = `${current} / ${total}`;
+                    if (currentFileEl && progress.message) {
+                        currentFileEl.textContent = progress.message;
+                    }
+                }
+            } catch (pollErr) {
+                // Ignore transient polling errors
+            }
+
+            if (!isDone) {
+                await new Promise(resolve => setTimeout(resolve, 350));
+            }
+        }
+    };
 
     try {
-        window.PyPotteryUtils.showStatus('postprocess-status', 'Starting processing...', 'info');
-        const response = await window.PyPotteryUtils.executeWithProgress(
-            'postprocess',
-            async () => {
-                return await window.PyPotteryUtils.apiRequest(`/api/projects/${projectId()}/postprocess`, {
-                    method: 'POST',
-                    body: JSON.stringify({ flip_vertical: flipVertical, flip_horizontal: flipHorizontal })
-                });
-            },
-            'postprocess-status',
-            'postprocess-progress-bar'
-        );
+        // Start polling in background
+        pollProgress();
 
-        if (progressWrapper) progressWrapper.style.display = 'none';
+        const response = await window.PyPotteryUtils.apiRequest(`/api/projects/${projectId()}/postprocess`, {
+            method: 'POST',
+            body: JSON.stringify({ flip_vertical: flipVertical, flip_horizontal: flipHorizontal })
+        });
+        isDone = true;
+
         if (response.success) {
+            // Finalize 100% display
+            if (percentageEl) percentageEl.textContent = '100%';
+            if (progressFill) progressFill.style.width = '100%';
+            if (currentFileEl) currentFileEl.textContent = 'Card processing complete!';
+
+            // Brief pause to allow user to see 100% completion (consistent with YOLO experience)
+            await new Promise(resolve => setTimeout(resolve, 600));
+
+            if (overlay) {
+                overlay.style.display = 'none';
+            }
+
+            if (processBtn) {
+                processBtn.disabled = false;
+                processBtn.innerHTML = '<i class="bi bi-magic"></i> Process All Images';
+            }
+
             window.PyPotteryUtils.showStatus('postprocess-status', response.message || 'Done', 'success');
             window.PyPotteryUtils.showToast(`Processed ${response.count || ''} images!`, 'success');
             await loadProjectCards();  // reloads cards (now has_modified) and re-renders the grid
         } else {
-            window.PyPotteryUtils.showStatus('postprocess-status', response.error, 'error');
-            window.PyPotteryUtils.showToast('Processing failed', 'error');
+            throw new Error(response.error || 'Processing failed');
         }
     } catch (error) {
-        if (progressWrapper) progressWrapper.style.display = 'none';
+        isDone = true;
         console.error('Error processing:', error);
+
+        if (overlay) {
+            overlay.style.display = 'none';
+        }
+
+        if (processBtn) {
+            processBtn.disabled = false;
+            processBtn.innerHTML = '<i class="bi bi-magic"></i> Process All Images';
+        }
+
         window.PyPotteryUtils.showStatus('postprocess-status', error.message, 'error');
         window.PyPotteryUtils.showToast(error.message, 'error');
     }

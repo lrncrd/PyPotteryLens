@@ -65,10 +65,10 @@ function showToast(message, type = 'info') {
 
 function getToastIcon(type) {
     const icons = {
-        success: '✅',
-        error: '❌',
-        info: 'ℹ️',
-        warning: '⚠️'
+        success: '<i class="bi bi-check-circle-fill"></i>',
+        error: '<i class="bi bi-x-circle-fill"></i>',
+        info: '<i class="bi bi-info-circle-fill"></i>',
+        warning: '<i class="bi bi-exclamation-triangle-fill"></i>'
     };
     return icons[type] || icons.info;
 }
@@ -321,6 +321,108 @@ async function executeWithProgress(operation, executeFunc, statusElementId, prog
     }
 }
 
+/**
+ * Universal Confirmation Modal matching the archaeological design system
+ */
+function showConfirmDialog({
+    title = 'Confirm Action',
+    subtitle = '',
+    icon = 'bi-exclamation-triangle-fill',
+    iconColor = '#dc2626',
+    iconBg = '#fee2e2',
+    detailsLabel = 'This action will delete:',
+    details = [],
+    note = '',
+    confirmText = 'Confirm',
+    cancelText = 'Cancel',
+    confirmClass = 'btn-danger'
+} = {}) {
+    return new Promise((resolve) => {
+        const dialog = document.getElementById('app-confirm-dialog');
+        if (!dialog) {
+            resolve(window.confirm(`${title}\n\n${subtitle}`));
+            return;
+        }
+
+        const titleEl = dialog.querySelector('#app-confirm-title');
+        const subtitleEl = dialog.querySelector('#app-confirm-subtitle');
+        const iconWrap = dialog.querySelector('#app-confirm-icon-wrap');
+        const iconEl = dialog.querySelector('#app-confirm-icon');
+        const detailsBox = dialog.querySelector('#app-confirm-details-box');
+        const detailsLabelEl = dialog.querySelector('.confirm-details-label');
+        const detailsList = dialog.querySelector('#app-confirm-details-list');
+        const noteBox = dialog.querySelector('#app-confirm-note-box');
+        const noteEl = dialog.querySelector('#app-confirm-note');
+        const okBtn = dialog.querySelector('#app-confirm-ok');
+        const cancelBtn = dialog.querySelector('#app-confirm-cancel');
+        const xBtn = dialog.querySelector('#app-confirm-x');
+
+        if (titleEl) titleEl.textContent = title;
+        if (subtitleEl) subtitleEl.innerHTML = subtitle;
+        if (iconWrap) iconWrap.style.background = iconBg;
+        if (iconEl) {
+            iconEl.className = `bi ${icon}`;
+            iconEl.style.color = iconColor;
+        }
+
+        if (details && details.length > 0) {
+            if (detailsBox) detailsBox.style.display = 'block';
+            if (detailsLabelEl) detailsLabelEl.textContent = detailsLabel;
+            if (detailsList) {
+                detailsList.innerHTML = details.map(d => `<li><i class="bi bi-x-circle text-danger"></i> <span>${d}</span></li>`).join('');
+            }
+        } else if (detailsBox) {
+            detailsBox.style.display = 'none';
+        }
+
+        if (note) {
+            if (noteBox) noteBox.style.display = 'flex';
+            if (noteEl) noteEl.textContent = note;
+        } else if (noteBox) {
+            noteBox.style.display = 'none';
+        }
+
+        if (okBtn) {
+            okBtn.className = `btn ${confirmClass}`;
+            okBtn.innerHTML = `<i class="bi ${icon}"></i> ${confirmText}`;
+        }
+        if (cancelBtn) {
+            cancelBtn.innerHTML = `<i class="bi bi-x-lg"></i> ${cancelText}`;
+        }
+
+        dialog.style.display = 'flex';
+        void dialog.offsetWidth;
+        dialog.classList.add('show');
+
+        let isClosed = false;
+        function cleanup(result) {
+            if (isClosed) return;
+            isClosed = true;
+            dialog.classList.remove('show');
+            okBtn.removeEventListener('click', onOk);
+            cancelBtn.removeEventListener('click', onCancel);
+            if (xBtn) xBtn.removeEventListener('click', onCancel);
+            dialog.removeEventListener('click', onBackdrop);
+            window.removeEventListener('keydown', onKeyDown);
+            setTimeout(() => {
+                dialog.style.display = 'none';
+                resolve(result);
+            }, 250);
+        }
+
+        function onOk(e) { e.stopPropagation(); cleanup(true); }
+        function onCancel(e) { e.stopPropagation(); cleanup(false); }
+        function onBackdrop(e) { if (e.target === dialog) cleanup(false); }
+        function onKeyDown(e) { if (e.key === 'Escape') cleanup(false); }
+
+        okBtn.addEventListener('click', onOk);
+        cancelBtn.addEventListener('click', onCancel);
+        if (xBtn) xBtn.addEventListener('click', onCancel);
+        dialog.addEventListener('click', onBackdrop);
+        window.addEventListener('keydown', onKeyDown);
+    });
+}
+
 // Export utilities
 window.PyPotteryUtils = {
     apiRequest,
@@ -329,6 +431,7 @@ window.PyPotteryUtils = {
     showToast,
     showStatus,
     hideStatus,
+    showConfirmDialog,
     uploadFile,
     pollOperationProgress,
     executeWithProgress,

@@ -87,30 +87,147 @@ function setupTabularListeners() {
     document.getElementById('ai-bibliographic-btn')?.addEventListener('click', handleAiBibliographic);
     document.getElementById('ai-bibliographic-batch-btn')?.addEventListener('click', handleAiBibliographicBatch);
 
-    // AI backend toggle panel
-    document.getElementById('ai-backend-toggle-btn')?.addEventListener('click', () => {
-        const panel = document.getElementById('ai-backend-panel');
-        if (panel) {
-            panel.classList.toggle('show');
+    // Helper to toggle between Local model status box and OpenRouter configuration
+    function updateAiBackendVisibility() {
+        const isOpenRouter = !!document.getElementById('ai-backend-openrouter')?.checked;
+        const localBox = document.getElementById('local-model-status-box');
+        const openrouterBox = document.getElementById('ai-openrouter-config');
+        if (localBox) {
+            localBox.style.display = isOpenRouter ? 'none' : 'block';
+        }
+        if (openrouterBox) {
+            openrouterBox.style.display = isOpenRouter ? 'block' : 'none';
+        }
+    }
+
+    // --- Smooth & Fluid Collapsible Drawers (Backend & Prompt) ---
+    function openDrawer(panel, btn, onOpenCallback) {
+        if (!panel) return;
+        if (panel.classList.contains('show') && panel.style.display !== 'none') return;
+
+        if (panel._drawerTimer) {
+            clearTimeout(panel._drawerTimer);
+            panel._drawerTimer = null;
+        }
+
+        btn?.classList.add('active');
+
+        // Render contents first to measure natural height
+        panel.classList.add('show');
+        panel.style.display = 'block';
+        panel.style.overflow = 'hidden';
+        panel.style.boxSizing = 'border-box';
+        if (typeof onOpenCallback === 'function') {
+            onOpenCallback();
+        }
+
+        // Measure natural height with padding
+        panel.style.height = 'auto';
+        panel.style.paddingTop = '1.15rem';
+        panel.style.paddingBottom = '1.15rem';
+        panel.style.opacity = '1';
+        const targetHeight = panel.offsetHeight;
+
+        // Reset to 0 for smooth entrance
+        panel.style.height = '0px';
+        panel.style.paddingTop = '0px';
+        panel.style.paddingBottom = '0px';
+        panel.style.opacity = '0';
+        panel.offsetHeight; // Force reflow
+
+        // Animate with fluid spring-like deceleration
+        panel.style.transition = 'height 300ms cubic-bezier(0.16, 1, 0.3, 1), opacity 240ms ease, padding 300ms cubic-bezier(0.16, 1, 0.3, 1)';
+        panel.style.height = targetHeight + 'px';
+        panel.style.paddingTop = '1.15rem';
+        panel.style.paddingBottom = '1.15rem';
+        panel.style.opacity = '1';
+
+        panel._drawerTimer = setTimeout(() => {
             if (panel.classList.contains('show')) {
+                panel.style.height = '';
+                panel.style.overflow = '';
+                panel.style.transition = '';
+                panel.style.paddingTop = '';
+                panel.style.paddingBottom = '';
+                panel.style.opacity = '';
+            }
+            panel._drawerTimer = null;
+        }, 320);
+    }
+
+    function closeDrawer(panel, btn) {
+        if (!panel) return;
+        if (!panel.classList.contains('show') && panel.style.display === 'none') return;
+
+        if (panel._drawerTimer) {
+            clearTimeout(panel._drawerTimer);
+            panel._drawerTimer = null;
+        }
+
+        btn?.classList.remove('active');
+        panel.classList.remove('show');
+
+        // Lock height before collapsing
+        panel.style.height = panel.offsetHeight + 'px';
+        panel.style.overflow = 'hidden';
+        panel.style.boxSizing = 'border-box';
+        panel.offsetHeight; // Force reflow
+
+        // Animate smoothly to 0
+        panel.style.transition = 'height 250ms cubic-bezier(0.4, 0, 0.2, 1), opacity 190ms ease, padding 250ms cubic-bezier(0.4, 0, 0.2, 1)';
+        panel.style.height = '0px';
+        panel.style.paddingTop = '0px';
+        panel.style.paddingBottom = '0px';
+        panel.style.opacity = '0';
+
+        panel._drawerTimer = setTimeout(() => {
+            if (!panel.classList.contains('show')) {
+                panel.style.display = 'none';
+                panel.style.height = '';
+                panel.style.overflow = '';
+                panel.style.transition = '';
+                panel.style.paddingTop = '';
+                panel.style.paddingBottom = '';
+                panel.style.opacity = '';
+            }
+            panel._drawerTimer = null;
+        }, 270);
+    }
+
+    function toggleDrawer(panel, btn, onOpenCallback) {
+        if (!panel) return;
+        if (panel.classList.contains('show') && panel.style.display !== 'none') {
+            closeDrawer(panel, btn);
+        } else {
+            openDrawer(panel, btn, onOpenCallback);
+        }
+    }
+
+    // AI backend toggle panel
+    const backendToggleBtn = document.getElementById('ai-backend-toggle-btn');
+    backendToggleBtn?.addEventListener('click', () => {
+        const panel = document.getElementById('ai-backend-panel');
+        toggleDrawer(panel, backendToggleBtn, () => {
+            updateAiBackendVisibility();
+            const isOpenRouter = !!document.getElementById('ai-backend-openrouter')?.checked;
+            if (!isOpenRouter) {
                 checkLocalModelStatus();
             }
-        }
+        });
     });
 
     // Download local model button
     document.getElementById('download-local-model-btn')?.addEventListener('click', triggerLocalModelDownload);
 
-    // Show/hide OpenRouter config based on radio selection
+    // Show/hide OpenRouter vs Local model status based on radio selection
     document.querySelectorAll('input[name="ai-backend-choice"]').forEach(radio => {
         radio.addEventListener('change', () => {
-            const isOpenRouter = document.getElementById('ai-backend-openrouter')?.checked;
-            const configEl = document.getElementById('ai-openrouter-config');
-            if (configEl) {
-                if (isOpenRouter) configEl.classList.add('show');
-                else configEl.classList.remove('show');
-            }
+            const isOpenRouter = !!document.getElementById('ai-backend-openrouter')?.checked;
             localStorage.setItem('pypottery_ai_backend', isOpenRouter ? 'openrouter' : 'local');
+            updateAiBackendVisibility();
+            if (!isOpenRouter) {
+                checkLocalModelStatus();
+            }
         });
     });
 
@@ -118,12 +235,12 @@ function setupTabularListeners() {
     const _savedBackend = localStorage.getItem('pypottery_ai_backend');
     if (_savedBackend === 'openrouter') {
         const radioEl = document.getElementById('ai-backend-openrouter');
-        if (radioEl) {
-            radioEl.checked = true;
-            const configEl = document.getElementById('ai-openrouter-config');
-            if (configEl) configEl.classList.add('show');
-        }
+        if (radioEl) radioEl.checked = true;
+    } else {
+        const radioEl = document.getElementById('ai-backend-local');
+        if (radioEl) radioEl.checked = true;
     }
+    updateAiBackendVisibility();
 
     // Persist OpenRouter API key and model in sessionStorage (not localStorage for security)
     const _orKey = document.getElementById('ai-openrouter-apikey');
@@ -140,9 +257,10 @@ function setupTabularListeners() {
     }
 
     // Prompt customisation panel toggle
-    document.getElementById('ai-prompt-toggle-btn')?.addEventListener('click', () => {
+    const promptToggleBtn = document.getElementById('ai-prompt-toggle-btn');
+    promptToggleBtn?.addEventListener('click', () => {
         const panel = document.getElementById('ai-prompt-panel');
-        if (panel) panel.classList.toggle('show');
+        toggleDrawer(panel, promptToggleBtn);
     });
     document.getElementById('ai-prompt-reset-btn')?.addEventListener('click', () => {
         const ta = document.getElementById('ai-prompt-suffix');
@@ -220,18 +338,19 @@ function showEmptyState(title, message) {
         canvas.width = 400;
         canvas.height = 300;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = '#64748b';
-        ctx.font = '16px Arial';
+        ctx.fillStyle = '#78716c';
+        ctx.font = '15px "Plus Jakarta Sans", sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(title, canvas.width / 2, canvas.height / 2 - 20);
-        ctx.fillText(message, canvas.width / 2, canvas.height / 2 + 20);
+        ctx.fillText(title, canvas.width / 2, canvas.height / 2 - 15);
+        ctx.fillText(message, canvas.width / 2, canvas.height / 2 + 15);
     }
     
     if (tableContainer) {
         tableContainer.innerHTML = `
-            <div style="padding: 2rem; text-align: center; color: #64748b;">
-                <h3>${title}</h3>
-                <p>${message}</p>
+            <div style="padding: 2.5rem 1.5rem; text-align: center; color: var(--text-muted);">
+                <i class="bi bi-table" style="font-size: 2rem; color: var(--text-muted); opacity: 0.5; margin-bottom: 0.75rem; display: inline-block;"></i>
+                <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-dim); margin-bottom: 0.35rem;">${title}</h3>
+                <p style="font-size: 0.85rem; color: var(--text-muted); max-width: 320px; margin: 0 auto;">${message}</p>
             </div>
         `;
     }
@@ -285,6 +404,19 @@ function displayTabularData(data) {
     tabularState.fullImageUrl = data.full_image_url;
     tabularState.currentIndex = data.current;
     tabularState.totalCards = data.total;
+
+    // Update toolbar plate counter and filename chip
+    const pageBadge = document.getElementById('tabular-current-page');
+    if (pageBadge) {
+        const cur = (data.current !== undefined ? data.current + 1 : 1);
+        const tot = data.total || (tabularState.imageList.length || 1);
+        pageBadge.innerHTML = `<i class="bi bi-card-image"></i> Plate ${cur} of ${tot}`;
+    }
+    const filenameChip = document.getElementById('tabular-current-filename');
+    if (filenameChip) {
+        filenameChip.textContent = data.image_name || 'Plate';
+        filenameChip.title = data.image_name || '';
+    }
 
     // Update reviewed status button
     updateReviewedButton();
@@ -452,10 +584,10 @@ function showBboxEditor(rowIndex, label, clientX, clientY) {
     // Header
     const title = document.createElement('div');
     title.className = 'bbox-editor-title';
-    title.innerHTML = `<span>🏺 ID: ${label}</span>`;
+    title.innerHTML = `<span><i class="bi bi-tag"></i> ID: ${label}</span>`;
     const closeBtn = document.createElement('button');
     closeBtn.className = 'bbox-editor-close';
-    closeBtn.textContent = '✕';
+    closeBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
     closeBtn.addEventListener('click', closeBboxEditor);
     title.appendChild(closeBtn);
     el.appendChild(title);
@@ -493,7 +625,7 @@ function showBboxEditor(rowIndex, label, clientX, clientY) {
     // Save button
     const saveBtn = document.createElement('button');
     saveBtn.className = 'bbox-editor-save';
-    saveBtn.textContent = '✓ Save';
+    saveBtn.innerHTML = '<i class="bi bi-check-lg"></i> Save';
     saveBtn.addEventListener('click', async () => {
         await saveTabularData();
         closeBboxEditor();
@@ -646,7 +778,23 @@ async function handleClearTable() {
         window.PyPotteryUtils.showToast('Nothing to clear', 'warning');
         return;
     }
-    if (!confirm('Clear all values on this page? The index (ID) column is kept. This cannot be undone.')) {
+    const confirmed = await window.PyPotteryUtils.showConfirmDialog({
+        title: 'Clear Table Data',
+        subtitle: 'Are you sure you want to clear all values on this page?',
+        icon: 'bi-eraser-fill',
+        iconColor: '#dc2626',
+        iconBg: '#fee2e2',
+        detailsLabel: 'Data clear details:',
+        details: [
+            'All text and measurement values in the table will be cleared',
+            'The index (ID) column is preserved'
+        ],
+        note: 'This action cannot be undone!',
+        confirmText: 'Clear Values',
+        cancelText: 'Cancel',
+        confirmClass: 'btn-danger'
+    });
+    if (!confirmed) {
         return;
     }
     // Empty every column except the ID/index
@@ -786,7 +934,7 @@ function displayImageList() {
         
         div.innerHTML = `
             <span class="image-name">${item.image_name}</span>
-            <span class="status-icon">${item.reviewed ? '✅' : '⚪'}</span>
+            <span class="status-icon">${item.reviewed ? '<i class="bi bi-check-circle-fill" style="color:var(--teal)"></i>' : '<i class="bi bi-circle" style="color:var(--text-muted); opacity:0.5"></i>'}</span>
         `;
         
         div.addEventListener('click', () => {
@@ -802,13 +950,13 @@ function updateReviewedButton() {
     if (!btn) return;
     
     if (tabularState.isReviewed) {
-        btn.textContent = '✅ Reviewed';
+        btn.innerHTML = '<i class="bi bi-check-circle-fill"></i> Reviewed';
+        btn.classList.add('is-reviewed');
         btn.disabled = true;
-        btn.style.opacity = '0.6';
     } else {
-        btn.textContent = '👁️ Mark as Reviewed';
+        btn.innerHTML = '<i class="bi bi-eye"></i> Mark as Reviewed';
+        btn.classList.remove('is-reviewed');
         btn.disabled = false;
-        btn.style.opacity = '1';
     }
 }
 
@@ -975,24 +1123,26 @@ function showVisionUnsupportedDialog(modelName) {
     const overlay = document.createElement('div');
     overlay.id = 'ai-vision-unsupported-dialog';
     overlay.style.cssText = `
-        position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:20000;
+        position:fixed; inset:0; background:rgba(28,25,23,0.65); backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px); z-index:20000;
         display:flex; align-items:center; justify-content:center;
     `;
     overlay.innerHTML = `
-        <div style="background:#1e293b; color:#e2e8f0; border-radius:12px; padding:2rem;
-                    max-width:460px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.5);">
-            <h3 style="margin:0 0 1rem; font-size:1.2rem; color:#f87171;">⚠️ Model does not support vision</h3>
-            <p style="margin:0 0 0.75rem;">
-                <code style="color:#f59e0b; background:#0f172a; padding:0.15rem 0.4rem; border-radius:4px;">${modelName}</code>
-                does not support image input on OpenRouter.
+        <div style="background:var(--obsidian-surface); color:var(--dark-fg); border:1px solid var(--dark-border); border-radius:var(--radius-md); padding:1.75rem;
+                    max-width:480px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.6);">
+            <h3 style="margin:0 0 0.85rem; font-size:1.15rem; color:var(--danger-color); display:flex; align-items:center; gap:0.5rem;">
+                <i class="bi bi-exclamation-triangle"></i> Vision Model Required
+            </h3>
+            <p style="margin:0 0 0.75rem; font-size:0.875rem;">
+                <code style="color:var(--primary-light); background:rgba(0,0,0,0.45); border:1px solid var(--dark-surface-border); padding:0.2rem 0.5rem; border-radius:var(--radius-xs); font-family:var(--font-mono, monospace);">${modelName}</code>
+                does not support image or vision input on OpenRouter.
             </p>
-            <p style="margin:0 0 1.25rem; color:#94a3b8; font-size:0.85rem;">
-                Please choose a vision-capable model. Browse available models at
-                <a href="https://openrouter.ai/models" target="_blank" style="color:#6366f1;">openrouter.ai/models</a>
+            <p style="margin:0 0 1.25rem; color:var(--dark-fg-muted); font-size:0.82rem; line-height:1.5;">
+                Archaeological plate reference extraction requires a multimodal vision model. Browse available vision models at
+                <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" style="color:var(--teal); text-decoration:underline;">openrouter.ai/models</a>
                 and filter by image input support.
             </p>
             <div style="display:flex; justify-content:flex-end;">
-                <button id="ai-vision-dialog-ok" class="btn btn-primary">OK, change model</button>
+                <button id="ai-vision-dialog-ok" class="btn btn-primary btn-sm">Configure Model</button>
             </div>
         </div>
     `;
@@ -1001,7 +1151,16 @@ function showVisionUnsupportedDialog(modelName) {
         overlay.remove();
         // Open the AI Backend panel so the user can change the model immediately
         const panel = document.getElementById('ai-backend-panel');
-        if (panel) panel.style.display = 'block';
+        const btn = document.getElementById('ai-backend-toggle-btn');
+        if (panel) {
+            panel.classList.add('show');
+            btn?.classList.add('active');
+            const openrouterRadio = document.getElementById('ai-backend-openrouter');
+            if (openrouterRadio) {
+                openrouterRadio.checked = true;
+                openrouterRadio.dispatchEvent(new Event('change'));
+            }
+        }
     });
 }
 
@@ -1013,11 +1172,11 @@ function _showPromptSaveIndicator(text) {
     if (!badge) {
         badge = document.createElement('span');
         badge.id = 'ai-prompt-save-badge';
-        badge.style.cssText = 'font-size:0.72rem;color:#22c55e;margin-left:0.5rem;opacity:1;transition:opacity 1s ease;';
+        badge.style.cssText = 'font-size:0.75rem;margin-left:0.5rem;opacity:1;transition:opacity 0.8s ease;display:inline-flex;align-items:center;gap:0.25rem;';
         btn.parentNode.insertBefore(badge, btn.nextSibling);
     }
-    badge.textContent = text === 'Reset' ? '✓ Reset' : '✓ Saved';
-    badge.style.color = text === 'Reset' ? '#f59e0b' : '#22c55e';
+    badge.innerHTML = text === 'Reset' ? '<i class="bi bi-arrow-counterclockwise"></i> Reset' : '<i class="bi bi-check-lg"></i> Saved';
+    badge.style.color = text === 'Reset' ? 'var(--warning-color)' : 'var(--teal)';
     badge.style.opacity = '1';
     clearTimeout(badge._hideTimer);
     badge._hideTimer = setTimeout(() => { badge.style.opacity = '0'; }, 2000);
@@ -1035,50 +1194,46 @@ function showAiConfirmDialog(requirements, onConfirm) {
     const { cuda_available, vram_gb, gpu_name, model_cached, meets_requirements, ineligible_reason } = requirements;
 
     const gpuLine = cuda_available
-        ? `<p>GPU detected: <strong>${gpu_name}</strong> (${vram_gb.toFixed(1)} GB free VRAM)</p>`
-        : `<p style="color:#ef4444;">No CUDA GPU detected on this system.</p>`;
+        ? `<p style="font-size:0.875rem; margin-bottom:0.5rem;"><i class="bi bi-gpu-card" style="color:var(--teal);"></i> GPU detected: <strong>${gpu_name}</strong> (${vram_gb.toFixed(1)} GB free VRAM)</p>`
+        : `<p style="color:var(--danger-color); font-size:0.875rem; margin-bottom:0.5rem;"><i class="bi bi-exclamation-octagon"></i> No CUDA GPU detected on this system.</p>`;
 
     const downloadNote = model_cached
-        ? `<p style="color:#22c55e;">✅ Model already cached locally — no download needed.</p>`
-        : `<p style="color:#f59e0b;">⚠️ The Gemma 4 E2B model (~10 GB) will be downloaded the first time. Make sure you have a stable internet connection and enough disk space.</p>`;
+        ? `<p style="color:var(--teal); font-size:0.85rem; margin-bottom:0.5rem;"><i class="bi bi-check-circle-fill"></i> Model already cached locally — no download needed.</p>`
+        : `<p style="color:var(--warning-color); font-size:0.85rem; margin-bottom:0.5rem;"><i class="bi bi-exclamation-triangle"></i> The Gemma 4 E2B model (~10 GB) will be downloaded the first time. Make sure you have a stable internet connection and enough disk space.</p>`;
 
-    // Hardware gate: Gemma 4 E2B's multimodal architecture only runs reliably
-    // on genuinely comfortable hardware (see check_local_ai_hardware on the
-    // backend) - marginal GPU/CPU/RAM combos kept hitting device-dispatch
-    // crashes, so below the bar this is a hard block, not just a warning.
     const blocker = !meets_requirements
-        ? `<p style="color:#ef4444; font-weight:600;">${ineligible_reason || 'Your system does not meet the minimum hardware requirements for local extraction.'} Consider using the OpenRouter API backend instead.</p>`
+        ? `<p style="color:var(--danger-color); font-weight:600; font-size:0.85rem; margin-bottom:0.5rem;"><i class="bi bi-x-circle"></i> ${ineligible_reason || 'Your system does not meet the minimum hardware requirements for local extraction.'} Consider using the OpenRouter API backend instead.</p>`
         : '';
 
     const overlay = document.createElement('div');
     overlay.id = 'ai-requirements-dialog';
     overlay.style.cssText = `
-        position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:20000;
+        position:fixed; inset:0; background:rgba(28,25,23,0.65); backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px); z-index:20000;
         display:flex; align-items:center; justify-content:center;
     `;
     overlay.innerHTML = `
-        <div style="background:#1e293b; color:#e2e8f0; border-radius:12px; padding:2rem;
-                    max-width:480px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.5);">
-            <h3 style="margin:0 0 1rem; font-size:1.2rem;">🤖 AI Bibliographic Extraction</h3>
+        <div style="background:var(--obsidian-surface); color:var(--dark-fg); border:1px solid var(--dark-border); border-radius:var(--radius-md); padding:1.75rem;
+                    max-width:480px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.6);">
+            <h3 style="margin:0 0 1rem; font-size:1.15rem; display:flex; align-items:center; gap:0.5rem;"><i class="bi bi-cpu"></i> AI Bibliographic Extraction</h3>
             ${gpuLine}
             ${downloadNote}
             ${blocker}
-            <p style="color:#94a3b8; font-size:0.85rem; margin-top:0.5rem;">
+            <p style="color:var(--dark-fg-muted); font-size:0.82rem; margin-top:0.6rem; line-height:1.5;">
                 The model uses the Gemma 4 E2B multimodal architecture from Google and runs
-                entirely on your local machine — no data is sent to the cloud.
+                entirely on your local machine — guaranteeing 100% data sovereignty for unpublished finds.
             </p>
             <div style="display:flex; justify-content:flex-end; gap:0.75rem; margin-top:1.5rem;">
-                <button id="ai-dialog-cancel" class="btn btn-secondary">Cancel</button>
-                <button id="ai-dialog-confirm" class="btn ${meets_requirements ? 'btn-primary' : 'btn-secondary'}"
+                <button id="ai-dialog-cancel" class="btn btn-secondary btn-sm">Cancel</button>
+                <button id="ai-dialog-confirm" class="btn ${meets_requirements ? 'btn-primary' : 'btn-secondary'} btn-sm"
                     ${meets_requirements ? '' : 'disabled style="opacity:0.5; cursor:not-allowed;"'}>
                     ${meets_requirements ? (model_cached ? 'Run Extraction' : 'Download & Run') : 'Requirements Not Met'}
                 </button>
             </div>
             <div id="ai-download-progress-wrapper" style="display:none; margin-top:1rem;">
-                <p id="ai-download-progress-label" style="font-size:0.85rem; color:#94a3b8; margin:0 0 0.4rem;"></p>
-                <div style="background:#334155; border-radius:6px; overflow:hidden; height:12px;">
+                <p id="ai-download-progress-label" style="font-size:0.85rem; color:var(--dark-fg-muted); margin:0 0 0.4rem;"></p>
+                <div style="background:rgba(255,255,255,0.08); border-radius:var(--radius-xs); overflow:hidden; height:10px;">
                     <div id="ai-download-progress-bar"
-                         style="height:100%; background:#6366f1; transition:width 0.4s; width:0%"></div>
+                         style="height:100%; background:linear-gradient(90deg, var(--teal), var(--primary)); transition:width 0.4s; width:0%"></div>
                 </div>
             </div>
         </div>
@@ -1131,28 +1286,27 @@ async function checkLocalModelStatus() {
     try {
         const req = await checkAiRequirements();
         if (req && req.model_cached) {
-            statusTextEl.textContent = '✅ Cached & ready locally';
-            statusTextEl.style.color = '#22c55e';
-            downloadBtn.textContent = '✓ Model Cached';
+            statusTextEl.className = 'console-status-val status-ready';
+            statusTextEl.innerHTML = '<i class="bi bi-check-circle-fill"></i> Cached & ready locally';
+            downloadBtn.innerHTML = '<i class="bi bi-check-lg"></i> Model Cached';
             downloadBtn.disabled = true;
         } else if (req && !req.meets_requirements) {
-            // Same hardware gate as the Extract dialog (check_local_ai_hardware) -
-            // don't let the user kick off a ~10 GB download that's guaranteed
-            // to fail server-side.
-            statusTextEl.textContent = '🚫 ' + (req.ineligible_reason || 'Hardware requirements not met');
-            statusTextEl.style.color = '#ef4444';
+            // Same hardware gate as the Extract dialog (check_local_ai_hardware)
+            statusTextEl.className = 'console-status-val status-error';
+            statusTextEl.innerHTML = '<i class="bi bi-slash-circle"></i> ' + (req.ineligible_reason || 'Hardware requirements not met');
             downloadBtn.textContent = 'Requirements not met';
             downloadBtn.disabled = true;
         } else {
-            statusTextEl.textContent = '⚠️ Not cached (~10 GB download required)';
-            statusTextEl.style.color = '#f59e0b';
-            downloadBtn.textContent = '⬇️ Download Model (~10 GB)';
+            statusTextEl.className = 'console-status-val status-checking';
+            statusTextEl.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Not cached (~10 GB download required)';
+            downloadBtn.innerHTML = '<i class="bi bi-download"></i> Download Model (~10 GB)';
             downloadBtn.disabled = false;
         }
         return req;
     } catch (e) {
+        statusTextEl.className = 'console-status-val';
         statusTextEl.textContent = 'Status unknown';
-        statusTextEl.style.color = '#94a3b8';
+        statusTextEl.style.color = 'var(--dark-fg-muted)';
         return null;
     }
 }
@@ -1169,7 +1323,7 @@ async function triggerLocalModelDownload() {
     if (progressBox) progressBox.style.display = 'block';
     if (statusMsg) {
         statusMsg.textContent = 'Connecting to download server...';
-        statusMsg.style.color = '#cbd5e1';
+        statusMsg.style.color = 'var(--dark-fg-muted)';
     }
     if (bar) bar.style.width = '0%';
     if (percentText) percentText.textContent = '0%';
@@ -1192,8 +1346,8 @@ async function triggerLocalModelDownload() {
                         clearInterval(pollInterval);
                         clearInterval(checkInterval);
                         if (statusMsg) {
-                            statusMsg.textContent = '✅ Download complete & model ready!';
-                            statusMsg.style.color = '#22c55e';
+                            statusMsg.innerHTML = '<i class="bi bi-check-circle-fill"></i> Download complete & model ready!';
+                            statusMsg.style.color = 'var(--teal)';
                         }
                         if (bar) bar.style.width = '100%';
                         if (percentText) percentText.textContent = '100%';
@@ -1204,8 +1358,8 @@ async function triggerLocalModelDownload() {
                         clearInterval(pollInterval);
                         clearInterval(checkInterval);
                         if (statusMsg) {
-                            statusMsg.textContent = '❌ ' + prog.message;
-                            statusMsg.style.color = '#ef4444';
+                            statusMsg.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + prog.message;
+                            statusMsg.style.color = 'var(--danger-color)';
                         }
                         downloadBtn.disabled = false;
                     }
@@ -1214,8 +1368,8 @@ async function triggerLocalModelDownload() {
         }, 800);
     } catch (err) {
         if (statusMsg) {
-            statusMsg.textContent = '❌ Download failed: ' + err.message;
-            statusMsg.style.color = '#ef4444';
+            statusMsg.innerHTML = '<i class="bi bi-x-circle-fill"></i> Download failed: ' + err.message;
+            statusMsg.style.color = 'var(--danger-color)';
         }
         downloadBtn.disabled = false;
     }
@@ -1225,15 +1379,15 @@ function showBatchProgressOverlay() {
     document.getElementById('ai-batch-progress-overlay')?.remove();
     const overlay = document.createElement('div');
     overlay.id = 'ai-batch-progress-overlay';
-    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:20000; display:flex; align-items:center; justify-content:center;';
+    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(28,25,23,0.65); backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px); z-index:20000; display:flex; align-items:center; justify-content:center;';
     overlay.innerHTML = `
-        <div style="background:#1e293b; color:#e2e8f0; border-radius:12px; padding:2rem;
-                    max-width:480px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.5);">
-            <h3 style="margin:0 0 1rem; font-size:1.2rem;">🤖 Batch AI Extraction</h3>
-            <p id="ai-batch-progress-label" style="font-size:0.85rem; color:#94a3b8; margin:0 0 0.4rem;">Starting...</p>
-            <div style="background:#334155; border-radius:6px; overflow:hidden; height:12px;">
+        <div style="background:var(--obsidian-surface); color:var(--dark-fg); border:1px solid var(--dark-border); border-radius:var(--radius-md); padding:1.75rem;
+                    max-width:480px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.6);">
+            <h3 style="margin:0 0 1rem; font-size:1.15rem; display:flex; align-items:center; gap:0.5rem;"><i class="bi bi-cpu"></i> Batch Vision Extraction</h3>
+            <p id="ai-batch-progress-label" style="font-size:0.85rem; color:var(--dark-fg-muted); margin:0 0 0.5rem;">Starting...</p>
+            <div style="background:rgba(255,255,255,0.08); border-radius:var(--radius-xs); overflow:hidden; height:10px;">
                 <div id="ai-batch-progress-bar"
-                     style="height:100%; background:#6366f1; transition:width 0.4s; width:0%"></div>
+                     style="height:100%; background:linear-gradient(90deg, var(--teal), var(--primary)); transition:width 0.4s; width:0%"></div>
             </div>
         </div>
     `;
@@ -1259,7 +1413,10 @@ async function handleAiBibliographic() {
             return;
         }
         btn.disabled = true;
-        if (statusEl) statusEl.textContent = '⏳ Analysing via OpenRouter...';
+        if (statusEl) {
+            statusEl.className = 'status-message info';
+            statusEl.innerHTML = '<i class="bi bi-hourglass-split"></i> Analysing via OpenRouter...';
+        }
         window.PyPotteryUtils.showLoading('Extracting references via OpenRouter...');
         try {
             const response = await window.PyPotteryUtils.apiRequest(
@@ -1271,15 +1428,24 @@ async function handleAiBibliographic() {
                 tabularState.tableData = response.table;
                 tabularState.columns = response.columns;
                 displayTable(response.table, response.columns);
-                if (statusEl) statusEl.textContent = '✅ References extracted successfully';
+                if (statusEl) {
+                    statusEl.className = 'status-message success';
+                    statusEl.innerHTML = '<i class="bi bi-check-circle-fill"></i> References extracted successfully';
+                }
                 window.PyPotteryUtils.showToast('Bibliographic references extracted!', 'success');
             } else {
-                if (statusEl) statusEl.textContent = '❌ Error: ' + (response.error || 'unknown');
+                if (statusEl) {
+                    statusEl.className = 'status-message error';
+                    statusEl.innerHTML = '<i class="bi bi-x-circle-fill"></i> Error: ' + (response.error || 'unknown');
+                }
                 window.PyPotteryUtils.showToast(response.error || 'AI Error', 'error');
             }
         } catch (error) {
             window.PyPotteryUtils.hideLoading();
-            if (statusEl) statusEl.textContent = '❌ ' + error.message;
+            if (statusEl) {
+                statusEl.className = 'status-message error';
+                statusEl.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + error.message;
+            }
             window.PyPotteryUtils.showToast(error.message, 'error');
             console.error('[AI Bibliographic] Error:', error);
         } finally {
@@ -1300,7 +1466,10 @@ async function handleAiBibliographic() {
     // If model is already cached, skip confirm dialog and run directly
     if (requirements.model_cached) {
         btn.disabled = true;
-        if (statusEl) statusEl.textContent = '⏳ Analysing with Gemma 4 AI...';
+        if (statusEl) {
+            statusEl.className = 'status-message info';
+            statusEl.innerHTML = '<i class="bi bi-hourglass-split"></i> Analysing with Gemma 4 AI...';
+        }
         window.PyPotteryUtils.showLoading('Extracting references with Gemma 4 AI...');
         try {
             const response = await window.PyPotteryUtils.apiRequest(
@@ -1312,18 +1481,27 @@ async function handleAiBibliographic() {
                 tabularState.tableData = response.table;
                 tabularState.columns = response.columns;
                 displayTable(response.table, response.columns);
-                if (statusEl) statusEl.textContent = '✅ References extracted successfully';
+                if (statusEl) {
+                    statusEl.className = 'status-message success';
+                    statusEl.innerHTML = '<i class="bi bi-check-circle-fill"></i> References extracted successfully';
+                }
                 window.PyPotteryUtils.showToast('Bibliographic references extracted!', 'success');
             } else if (response.vision_unsupported) {
                 if (statusEl) statusEl.textContent = '';
                 showVisionUnsupportedDialog(backendParams.openrouter_model);
             } else {
-                if (statusEl) statusEl.textContent = '❌ Error: ' + (response.error || 'unknown');
+                if (statusEl) {
+                    statusEl.className = 'status-message error';
+                    statusEl.innerHTML = '<i class="bi bi-x-circle-fill"></i> Error: ' + (response.error || 'unknown');
+                }
                 window.PyPotteryUtils.showToast(response.error || 'AI Error', 'error');
             }
         } catch (error) {
             window.PyPotteryUtils.hideLoading();
-            if (statusEl) statusEl.textContent = '❌ ' + error.message;
+            if (statusEl) {
+                statusEl.className = 'status-message error';
+                statusEl.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + error.message;
+            }
             window.PyPotteryUtils.showToast(error.message, 'error');
             console.error('[AI Bibliographic] Error:', error);
         } finally {
@@ -1340,7 +1518,10 @@ async function handleAiBibliographic() {
         const pollInterval = startProgressPolling(labelEl, barEl, stopSignal);
 
         btn.disabled = true;
-        if (statusEl) statusEl.textContent = '⏳ Downloading model and analysing...';
+        if (statusEl) {
+            statusEl.className = 'status-message info';
+            statusEl.innerHTML = '<i class="bi bi-hourglass-split"></i> Downloading model and analysing...';
+        }
         window.PyPotteryUtils.showLoading('Downloading Gemma 4 AI model (~10 GB)...');
 
         try {
@@ -1361,13 +1542,19 @@ async function handleAiBibliographic() {
                 tabularState.tableData = response.table;
                 tabularState.columns = response.columns;
                 displayTable(response.table, response.columns);
-                if (statusEl) statusEl.textContent = '✅ References extracted successfully';
+                if (statusEl) {
+                    statusEl.className = 'status-message success';
+                    statusEl.innerHTML = '<i class="bi bi-check-circle-fill"></i> References extracted successfully';
+                }
                 window.PyPotteryUtils.showToast('Bibliographic references extracted!', 'success');
             } else if (response.vision_unsupported) {
                 if (statusEl) statusEl.textContent = '';
                 showVisionUnsupportedDialog(backendParams.openrouter_model);
             } else {
-                if (statusEl) statusEl.textContent = '❌ Error: ' + (response.error || 'unknown');
+                if (statusEl) {
+                    statusEl.className = 'status-message error';
+                    statusEl.innerHTML = '<i class="bi bi-x-circle-fill"></i> Error: ' + (response.error || 'unknown');
+                }
                 window.PyPotteryUtils.showToast(response.error || 'AI Error', 'error');
             }
         } catch (error) {
@@ -1375,7 +1562,10 @@ async function handleAiBibliographic() {
             clearInterval(pollInterval);
             window.PyPotteryUtils.hideLoading();
             overlay.remove();
-            if (statusEl) statusEl.textContent = '❌ ' + error.message;
+            if (statusEl) {
+                statusEl.className = 'status-message error';
+                statusEl.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + error.message;
+            }
             window.PyPotteryUtils.showToast(error.message, 'error');
             console.error('[AI Bibliographic] Error:', error);
         } finally {
@@ -1399,7 +1589,10 @@ async function handleAiBibliographicBatch() {
         const stopSignal = { stopped: false };
         const pollInterval = startProgressPolling(labelEl, barEl, stopSignal);
         btn.disabled = true;
-        if (statusEl) statusEl.textContent = '⏳ Running batch extraction...';
+        if (statusEl) {
+            statusEl.className = 'status-message info';
+            statusEl.innerHTML = '<i class="bi bi-hourglass-split"></i> Running batch extraction...';
+        }
         try {
             const response = await window.PyPotteryUtils.apiRequest(
                 `/api/projects/${tabularState.currentProject.project_id}/tabular/ai-bibliographic-batch`,
@@ -1411,21 +1604,30 @@ async function handleAiBibliographicBatch() {
             if (response.success) {
                 const errMsg = response.errors && response.errors.length
                     ? ` (${response.errors.length} errors)` : '';
-                if (statusEl) statusEl.textContent = `✅ Batch complete: ${response.processed} images${errMsg}`;
+                if (statusEl) {
+                    statusEl.className = 'status-message success';
+                    statusEl.innerHTML = `<i class="bi bi-check-circle-fill"></i> Batch complete: ${response.processed} images${errMsg}`;
+                }
                 window.PyPotteryUtils.showToast(`Batch extraction done: ${response.processed} images${errMsg}`, 'success');
                 await loadTabularData(tabularState.currentIndex);
             } else if (response.vision_unsupported) {
                 if (statusEl) statusEl.textContent = '';
                 showVisionUnsupportedDialog(backendParams.openrouter_model);
             } else {
-                if (statusEl) statusEl.textContent = '❌ Batch error: ' + (response.error || 'unknown');
+                if (statusEl) {
+                    statusEl.className = 'status-message error';
+                    statusEl.innerHTML = '<i class="bi bi-x-circle-fill"></i> Batch error: ' + (response.error || 'unknown');
+                }
                 window.PyPotteryUtils.showToast(response.error || 'Batch AI Error', 'error');
             }
         } catch (error) {
             stopSignal.stopped = true;
             clearInterval(pollInterval);
             overlay.remove();
-            if (statusEl) statusEl.textContent = '❌ ' + error.message;
+            if (statusEl) {
+                statusEl.className = 'status-message error';
+                statusEl.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + error.message;
+            }
             window.PyPotteryUtils.showToast(error.message, 'error');
             console.error('[AI Batch] Error:', error);
         } finally {

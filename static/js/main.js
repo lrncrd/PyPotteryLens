@@ -363,45 +363,63 @@ async function loadSystemInfo() {
         const data = await response.json();
 
         if (response.ok) {
-            // Build HTML for system info
             let html = '';
 
             // CPU info
             if (data.cpu) {
-                html += `<div class="model-info-item">
-                    <strong>CPU:</strong> ${data.cpu.cores} cores ${data.cpu.available ? '(Available)' : '(Not Available)'}
+                const cores = data.cpu.cores || 1;
+                html += `
+                <div class="model-info-row">
+                    <span class="info-label">CPU</span>
+                    <span class="info-value">${cores} Cores</span>
                 </div>`;
             }
 
             // GPU info
             if (data.gpu) {
-                const gpuStatus = data.gpu.cuda_available ? 'Available' : 'Not Available';
-                html += `<div class="model-info-item">
-                    <strong>GPU (CUDA):</strong> ${gpuStatus}`;
                 if (data.gpu.cuda_available) {
-                    html += ` (${data.gpu.gpu_count} device${data.gpu.gpu_count !== 1 ? 's' : ''})`;
-                    if (data.gpu.gpu_names && data.gpu.gpu_names.length > 0) {
-                        html += `<br><small>${data.gpu.gpu_names.join(', ')}</small>`;
-                    }
+                    const gpuNames = (data.gpu.gpu_names && data.gpu.gpu_names.length > 0)
+                        ? data.gpu.gpu_names.join(', ')
+                        : `CUDA (${data.gpu.gpu_count || 1} Device)`;
+                    const safeGpu = gpuNames.replace(/"/g, '&quot;');
+                    html += `
+                    <div class="model-info-row">
+                        <span class="info-label">GPU</span>
+                        <span class="info-value" title="${safeGpu}">${safeGpu}</span>
+                    </div>`;
+                } else {
+                    html += `
+                    <div class="model-info-row">
+                        <span class="info-label">GPU</span>
+                        <span class="info-value text-muted">CPU Only</span>
+                    </div>`;
                 }
-                html += '</div>';
             }
 
-            // MPS info (for Apple Silicon)
-            if (data.mps) {
-                const mpsStatus = data.mps.mps_available ? 'Available' : 'Not Available';
-                html += `<div class="model-info-item">
-                    <strong>MPS (Apple Silicon):</strong> ${mpsStatus}
+            // MPS info (Apple Silicon) - only shown when available
+            if (data.mps && data.mps.mps_available) {
+                html += `
+                <div class="model-info-row">
+                    <span class="info-label">Hardware Acceleration</span>
+                    <span class="info-value">Apple Silicon (MPS)</span>
                 </div>`;
             }
 
             container.innerHTML = html;
         } else {
-            container.innerHTML = '<div class="model-info-item"><em>Error loading system info</em></div>';
+            container.innerHTML = `
+            <div class="model-info-row">
+                <span class="info-label">Status</span>
+                <span class="info-value text-muted">Unable to load</span>
+            </div>`;
         }
     } catch (error) {
         console.error('Error loading system info:', error);
-        container.innerHTML = '<div class="model-info-item"><em>Error loading system info</em></div>';
+        container.innerHTML = `
+        <div class="model-info-row">
+            <span class="info-label">Status</span>
+            <span class="info-value text-muted">Unable to load</span>
+        </div>`;
     }
 }
 
