@@ -2212,24 +2212,29 @@ body {
     transform: translateX(-24px);
 }
 
-.sidebar-actions-footer {
+/* Project-level actions box (Calibrate Scales + Extract Cards): lives in the
+   always-visible editor panel, not the collapsible Images List sidebar, so
+   it stays reachable regardless of the sidebar's collapsed state. */
+.annotation-actions-box {
     display: flex;
     flex-direction: column;
-    justify-content: center;
-    width: 320px;
+    width: 100%;
     box-sizing: border-box;
-    margin-top: 1rem;
+    margin-top: 0.75rem;
     padding: 0.75rem 1rem;
     background: #ffffff;
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     box-shadow: 0 2px 8px rgba(28, 25, 23, 0.06);
-    flex: 1;
-    min-height: 98px;
 }
 
-.sidebar-actions-footer #extract-masks-btn {
-    width: 100%;
+.annotation-actions-row {
+    display: flex;
+    gap: 0.6rem;
+}
+
+.annotation-actions-row #extract-masks-btn {
+    flex: 1;
     padding: 0.72rem 1rem;
     font-size: 0.92rem;
     font-weight: 700;
@@ -2242,9 +2247,14 @@ body {
     transition: all 0.2s ease;
 }
 
-.sidebar-actions-footer #extract-masks-btn:hover:not(:disabled) {
+.annotation-actions-row #extract-masks-btn:hover:not(:disabled) {
     box-shadow: 0 4px 12px rgba(194, 65, 12, 0.32);
     transform: translateY(-1px);
+}
+
+.annotation-actions-row #calibrate-scales-btn {
+    border-radius: var(--radius-sm);
+    font-weight: 600;
 }
 
 #annotation-tab .preview-panel {
@@ -3588,6 +3598,94 @@ body {
 .btn-do-extract:hover {
     transform: translateY(-1px);
     box-shadow: 0 6px 18px rgba(194, 65, 12, 0.45) !important;
+}
+
+/* Scale Calibration Dialog */
+.calib-modal {
+    max-width: 780px;
+}
+
+.calib-dialog-header {
+    padding: 1.5rem 1.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.calib-dialog-header h2 {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0 0 0.25rem 0;
+}
+
+.calib-dialog-subtitle {
+    font-size: 0.83rem;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+.calib-dialog-body {
+    padding: 1.25rem 1.75rem;
+}
+
+#calib-histogram-canvas {
+    width: 100%;
+    height: 280px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: #fbf9f5;
+    cursor: crosshair;
+}
+
+.calib-dialog-hint {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    margin: 0.5rem 0 0.75rem;
+}
+
+.calib-lines-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.calib-line-chip {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.3rem 0.6rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    font-size: 0.8rem;
+    font-family: var(--font-mono);
+    background: #fff;
+}
+
+.calib-line-chip .swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.calib-line-chip button {
+    border: none;
+    background: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    line-height: 1;
+    padding: 0;
+}
+
+.calib-line-chip button:hover {
+    color: #dc2626;
+}
+
+.calib-dialog-footer {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: flex-end;
+    padding: 1.1rem 1.75rem 1.5rem;
+    border-top: 1px solid var(--border);
 }
 
 /* App Universal Confirmation Dialog */
@@ -4947,6 +5045,34 @@ body {
     transition: border-color 0.2s, box-shadow 0.2s;
 }
 
+.batch-range {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+.batch-range-input {
+    width: 52px;
+    padding: 0.35rem 0.4rem;
+    font-size: 0.8rem;
+    text-align: center;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-main);
+}
+
+.batch-range-input:focus {
+    outline: none;
+    border-color: var(--primary);
+    background: #ffffff;
+}
+
+.batch-range-sep {
+    color: var(--text-dim);
+    font-size: 0.8rem;
+}
+
 .tabular-input:focus {
     outline: none;
     border-color: var(--primary);
@@ -5411,6 +5537,26 @@ body {
     height: 100%;
     background: linear-gradient(90deg, #ea580c 0%, #c2410c 100%);
     border-radius: 4px;
+    transition: width 0.5s ease;
+}
+
+/* Shown while waiting on a single, unbroken-up call (e.g. one AI request)
+   where there's no real "N of M" signal to report - a moving stripe reads
+   as "still working" instead of leaving the bar looking frozen at 0%. */
+.processing-progress-fill.indeterminate {
+    width: 35% !important;
+    animation: processingIndeterminate 1.4s ease-in-out infinite;
+    background-image: linear-gradient(
+        135deg, rgba(255,255,255,0.35) 25%, transparent 25%, transparent 50%,
+        rgba(255,255,255,0.35) 50%, rgba(255,255,255,0.35) 75%, transparent 75%, transparent
+    );
+    background-size: 22px 22px;
+}
+
+@keyframes processingIndeterminate {
+    0% { transform: translateX(-60%); }
+    50% { transform: translateX(60%); }
+    100% { transform: translateX(-60%); }
 }
 
 .processing-detail-row {

@@ -31,12 +31,16 @@ const annotationState = {
     colorizedCanvas: null,   // cached offscreen canvas with the coloured masks
     // Scale calibration
     scales: [],              // committed scale entries for current page (original coords)
+    scaleAssignment: null,   // cached preview: which scale each mask blob would get at extraction time
     scaleDraftP1: null,      // [ox, oy] first ruler endpoint, null if not started
     scaleDraftP2: null,      // [ox, oy] second endpoint while popup is open
     scaleStep: null,         // null = ruler mode | 'zone' = zone-drag mode
     scaleZoneTargetIdx: null,// which scale entry gets the zone
     scaleZoneDragStart: null,// {x, y} original coords at drag start
-    scaleCursorPos: null     // {x, y} display coords of cursor (live preview)
+    scaleCursorPos: null,    // {x, y} display coords of cursor (live preview)
+    // Cut tool: two-click straight line that erases a thin path through the mask
+    cutDraftP1: null,        // {x, y} display coords of first endpoint, null if not started
+    cutCursorPos: null       // {x, y} display coords of cursor (live preview)
 };
 
 const POLYGON_CLOSE_THRESHOLD = 12; // display px to snap-close onto first point
@@ -52,6 +56,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initializeExtractButton();
     initializeZoomControls();
     initializeScalePopup();
+    initializeCalibrationDialog();
     initializeSidebarToggle();
 
     // Auto-save when user switches away from the annotation tab
@@ -565,6 +570,8 @@ function redrawCanvas() {
     ctx.globalAlpha = 1.0;
     drawPolygons(ctx);
     drawScaleLines(ctx);
+    drawScaleAssignmentOverlay(ctx);
+    drawCutPreview(ctx);
     drawBrushCursor(ctx);
 }
 
@@ -577,19 +584,19 @@ function toggleColorize() {
     redrawCanvas();
 }
 
-// Label connected components of the current mask and paint each a distinct
-// colour into an offscreen canvas. Two touching (fused) masks share one colour,
-// which is exactly the anomaly the operator wants to spot.
-function computeColorized() {
+// Flood-fill label the connected foreground components of the current mask
+// canvas. Shared by the colorize toggle and the scale-assignment preview.
+// Returns { labels: Int32Array (0 = background, else component id), count, w, h }.
+function labelMaskComponents() {
     const w = annotationState.displayWidth, h = annotationState.displayHeight;
-    if (!w || !h) { annotationState.colorizedCanvas = null; return; }
+    if (!w || !h) return null;
 
     let src;
     try {
         src = annotationState.maskCtx.getImageData(0, 0, w, h);
     } catch (e) {
-        console.warn('[Annotation] colorize failed:', e);
-        return;
+        console.warn('[Annotation] labelMaskComponents failed:', e);
+        return null;
     }
     const data = src.data;
     const n = w * h;
@@ -598,30 +605,43 @@ function computeColorized() {
 
     const labels = new Int32Array(n);
     const stack = new Int32Array(n);
-    const colors = [null];
-    let label = 0;
+    let count = 0;
 
     for (let s = 0; s < n; s++) {
         if (!fg[s] || labels[s]) continue;
-        label++;
-        const hue = (label * 137.508) % 360; // golden-angle → well-spread hues
-        colors.push(hslToRgb(hue / 360, 0.7, 0.5));
+        count++;
         let sp = 0;
         stack[sp++] = s;
-        labels[s] = label;
+        labels[s] = count;
         while (sp > 0) {
             const p = stack[--sp];
             const x = p % w;
-            if (x > 0)      { const q = p - 1; if (fg[q] && !labels[q]) { labels[q] = label; stack[sp++] = q; } }
-            if (x < w - 1)  { const q = p + 1; if (fg[q] && !labels[q]) { labels[q] = label; stack[sp++] = q; } }
-            if (p >= w)     { const q = p - w; if (fg[q] && !labels[q]) { labels[q] = label; stack[sp++] = q; } }
-            if (p < n - w)  { const q = p + w; if (fg[q] && !labels[q]) { labels[q] = label; stack[sp++] = q; } }
+            if (x > 0)      { const q = p - 1; if (fg[q] && !labels[q]) { labels[q] = count; stack[sp++] = q; } }
+            if (x < w - 1)  { const q = p + 1; if (fg[q] && !labels[q]) { labels[q] = count; stack[sp++] = q; } }
+            if (p >= w)     { const q = p - w; if (fg[q] && !labels[q]) { labels[q] = count; stack[sp++] = q; } }
+            if (p < n - w)  { const q = p + w; if (fg[q] && !labels[q]) { labels[q] = count; stack[sp++] = q; } }
         }
+    }
+    return { labels, count, w, h };
+}
+
+// Label connected components of the current mask and paint each a distinct
+// colour into an offscreen canvas. Two touching (fused) masks share one colour,
+// which is exactly the anomaly the operator wants to spot.
+function computeColorized() {
+    const lm = labelMaskComponents();
+    if (!lm) { annotationState.colorizedCanvas = null; return; }
+    const { labels, count, w, h } = lm;
+
+    const colors = [null];
+    for (let l = 1; l <= count; l++) {
+        const hue = (l * 137.508) % 360; // golden-angle → well-spread hues
+        colors.push(hslToRgb(hue / 360, 0.7, 0.5));
     }
 
     const out = new ImageData(w, h);
     const od = out.data;
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < w * h; i++) {
         const l = labels[i];
         if (l) {
             const c = colors[l];
@@ -636,6 +656,53 @@ function computeColorized() {
         annotationState.colorizedCanvas = cc;
     }
     cc.getContext('2d').putImageData(out, 0, 0);
+}
+
+// Recompute which scale (if any) each connected mask blob would be assigned
+// at extraction time — mirrors the backend's _assign_px_per_cm zone
+// containment + smallest-zone-wins tie-break (utils.py) so the preview never
+// lies about the real outcome. Cached in annotationState.scaleAssignment
+// until a scale/zone changes (see persistScales/handleScaleZoneEnd/loadScales).
+function computeScaleAssignment() {
+    annotationState.scaleAssignment = null;
+    const scales = annotationState.scales || [];
+    if (!scales.length) return;
+
+    const lm = labelMaskComponents();
+    if (!lm || !lm.count) return;
+    const { labels, count, w, h } = lm;
+
+    const sumX = new Float64Array(count + 1);
+    const sumY = new Float64Array(count + 1);
+    const n = new Float64Array(count + 1);
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            const l = labels[y * w + x];
+            if (l) { sumX[l] += x; sumY[l] += y; n[l]++; }
+        }
+    }
+
+    const globalScaleIdx = scales.findIndex(s => !s.zone);
+    const blobs = [];
+    for (let l = 1; l <= count; l++) {
+        const cx = sumX[l] / n[l], cy = sumY[l] / n[l]; // display coords, for drawing
+        const [ox, oy] = displayToOriginal(cx, cy);
+        const matches = [];
+        scales.forEach((s, idx) => {
+            const z = s.zone;
+            if (z && ox >= Math.min(z[0], z[2]) && ox <= Math.max(z[0], z[2]) &&
+                     oy >= Math.min(z[1], z[3]) && oy <= Math.max(z[1], z[3])) {
+                matches.push({ idx, area: Math.abs(z[2] - z[0]) * Math.abs(z[3] - z[1]) });
+            }
+        });
+        matches.sort((a, b) => a.area - b.area);
+        blobs.push({
+            cx, cy,
+            scaleIdx: matches.length ? matches[0].idx : globalScaleIdx,
+            conflict: matches.length > 1
+        });
+    }
+    annotationState.scaleAssignment = blobs;
 }
 
 function hslToRgb(h, s, l) {
@@ -791,6 +858,10 @@ function onPolygonKeyDown(e) {
         if (e.key === 'Escape') { e.preventDefault(); cancelScaleDraft(); redrawCanvas(); }
         return;
     }
+    if (annotationState.currentTool === 'cut') {
+        if (e.key === 'Escape') { e.preventDefault(); annotationState.cutDraftP1 = null; redrawCanvas(); }
+        return;
+    }
     if (annotationState.currentTool !== 'polygon') return;
     if (e.key === 'Enter') { e.preventDefault(); finishPolygon(); }
     else if (e.key === 'Escape') { e.preventDefault(); cancelPolygon(); }
@@ -808,6 +879,10 @@ function startDrawing(e) {
     }
     if (annotationState.currentTool === 'scale') {
         handleScaleMouseDown(e);
+        return;
+    }
+    if (annotationState.currentTool === 'cut') {
+        handleCutMouseDown(e);
         return;
     }
     annotationState.isDrawing = true;
@@ -842,6 +917,12 @@ function draw(e) {
 
     if (annotationState.currentTool === 'scale') {
         annotationState.scaleCursorPos = eventToDisplayXY(e);
+        redrawCanvas();
+        return;
+    }
+
+    if (annotationState.currentTool === 'cut') {
+        annotationState.cutCursorPos = eventToDisplayXY(e);
         redrawCanvas();
         return;
     }
@@ -891,6 +972,10 @@ function selectTool(tool) {
     // Cancel in-progress scale when switching away
     if (annotationState.currentTool === 'scale' && tool !== 'scale') {
         cancelScaleDraft();
+    }
+    // Cancel in-progress cut when switching away
+    if (annotationState.currentTool === 'cut' && tool !== 'cut') {
+        annotationState.cutDraftP1 = null;
     }
     annotationState.currentTool = tool;
     document.querySelectorAll('.btn-tool').forEach(btn => {
@@ -989,6 +1074,9 @@ async function persistVessels() {
 // ---- Scale calibration --------------------------------------------------
 
 function computeScaleRatio(s) {
+    // A user-confirmed calibration (see the "Calibrate Scales" histogram
+    // tool) overrides the raw p1/p2/real_cm measurement.
+    if (s.calibrated_px_per_cm > 0) return s.calibrated_px_per_cm;
     const dx = s.p2[0] - s.p1[0];
     const dy = s.p2[1] - s.p1[1];
     const distPx = Math.hypot(dx, dy);
@@ -1009,6 +1097,7 @@ async function loadScales(baseName) {
     } catch (e) {
         console.warn('[Annotation] Could not load scales:', e);
     }
+    annotationState.scaleAssignment = null;
     renderScalesPanel();
 }
 
@@ -1031,9 +1120,11 @@ function renderScalesPanel() {
         const ratio = computeScaleRatio(s);
         const ratioStr = ratio ? ratio.toFixed(1) + ' px/cm' : '—';
         const zoneStr = s.zone ? 'zone set' : 'global';
+        const calibBadge = s.calibrated_px_per_cm > 0
+            ? ` <i class="bi bi-check-circle-fill" style="color:var(--primary)" title="Calibrated from the project-wide histogram"></i>` : '';
         return `
             <div class="vessel-item scale-line-item">
-                <span class="vessel-item-label">#${i + 1} · ${s.real_cm}cm → <code>${ratioStr}</code> <em>(${zoneStr})</em></span>
+                <span class="vessel-item-label">#${i + 1} · ${s.real_cm}cm → <code>${ratioStr}</code> <em>(${zoneStr})</em>${calibBadge}</span>
                 <div class="scale-item-actions">
                     <button class="btn-scale-zone" data-idx="${i}" title="Draw a zone rectangle on canvas to limit this scale to a page region"><i class="bi bi-geo-alt"></i></button>
                     <button class="vessel-delete btn-scale-del" data-idx="${i}"><i class="bi bi-trash3"></i></button>
@@ -1066,6 +1157,7 @@ function deleteScale(idx) {
 }
 
 async function persistScales() {
+    annotationState.scaleAssignment = null;
     if (!annotationState.currentProject) return;
     const img = annotationState.images[annotationState.currentIndex];
     if (!img) return;
@@ -1134,12 +1226,123 @@ function handleScaleZoneEnd(e) {
     redrawCanvas();
 }
 
+// ---- Cut tool: click two points to slice a thin straight line through the
+// mask, splitting fused blobs apart without an eraser's round blob. -------
+
+function handleCutMouseDown(e) {
+    const dxy = eventToDisplayXY(e);
+
+    if (annotationState.cutDraftP1 === null) {
+        annotationState.cutDraftP1 = dxy;
+    } else {
+        const p1 = annotationState.cutDraftP1;
+        if (Math.hypot(dxy.x - p1.x, dxy.y - p1.y) < 5) return; // too close, ignore
+        applyCut(p1, dxy);
+        annotationState.cutDraftP1 = null;
+    }
+    redrawCanvas();
+}
+
+// Erase a true 1px-wide path between p1 and p2 (display-canvas coords),
+// thickened by also clearing each point's 4 orthogonal neighbours.
+//
+// Two things break a naive ctx.stroke() here: (1) canvas anti-aliases
+// off-axis lines, leaving partial (non-zero) alpha instead of a clean break;
+// (2) even a genuinely 1px-wide *diagonal* gap does not separate the mask
+// under skimage.measure.label's default 8-connectivity (used by the backend
+// extractor in utils.py) - a diagonal single-pixel stairstep still leaves
+// the two sides diagonally touching. Clearing the ortho-neighbours too
+// removes both failure modes; verified against the real Otsu+closing+label
+// pipeline at this project's actual display->original upscale ratio.
+function applyCut(p1, p2) {
+    const ctx = annotationState.maskCtx;
+    let x0 = Math.round(p1.x), y0 = Math.round(p1.y);
+    const x1 = Math.round(p2.x), y1 = Math.round(p2.y);
+    const dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    const dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    let err = dx + dy;
+
+    while (true) {
+        ctx.clearRect(x0, y0, 1, 1);
+        ctx.clearRect(x0 - 1, y0, 1, 1);
+        ctx.clearRect(x0 + 1, y0, 1, 1);
+        ctx.clearRect(x0, y0 - 1, 1, 1);
+        ctx.clearRect(x0, y0 + 1, 1, 1);
+        if (x0 === x1 && y0 === y1) break;
+        const e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+
+    annotationState.isModified = true;
+    if (annotationState.colorize) computeColorized();
+    annotationState.scaleAssignment = null; // mask topology changed
+    scheduleAutoSave(1200);
+}
+
+function drawCutPreview(ctx) {
+    if (annotationState.currentTool !== 'cut' || !annotationState.cutDraftP1) return;
+    const p1 = annotationState.cutDraftP1;
+    const cur = annotationState.cutCursorPos || p1;
+    ctx.save();
+    ctx.setLineDash([5, 3]);
+    ctx.strokeStyle = '#dc2626';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(cur.x, cur.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#dc2626';
+    ctx.beginPath(); ctx.arc(p1.x, p1.y, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+}
+
 function showScalePopup() {
     const popup = document.getElementById('scale-input-popup');
     if (!popup) return;
     popup.style.display = 'flex';
+    positionScalePopup();
     const input = document.getElementById('scale-cm-input');
-    if (input) { input.value = ''; input.focus(); }
+    // preventScroll: the container scrolls/zooms (overflow:auto) - without
+    // this, focusing the input makes the browser auto-scroll it into view,
+    // which yanks the whole canvas viewport out from under the user.
+    if (input) { input.value = ''; input.focus({ preventScroll: true }); }
+}
+
+// Place the cm-input popup near the ruler the user just drew, instead of a
+// fixed corner, so it's obvious which line it belongs to.
+function positionScalePopup() {
+    const popup = document.getElementById('scale-input-popup');
+    const container = document.getElementById('annotation-canvas-container');
+    const canvas = annotationState.canvas;
+    const p1 = annotationState.scaleDraftP1, p2 = annotationState.scaleDraftP2;
+    if (!popup || !container || !canvas || !p1 || !p2) return;
+
+    const [dx1, dy1] = originalToDisplay(p1[0], p1[1]);
+    const [dx2, dy2] = originalToDisplay(p2[0], p2[1]);
+    const canvasRect = canvas.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    const scaleX = canvasRect.width / canvas.width;
+    const scaleY = canvasRect.height / canvas.height;
+    // getBoundingClientRect() is viewport space (post-scroll); the popup's
+    // left/top are CSS absolute, i.e. relative to the container's full
+    // scrollable content box. Add the container's own scroll back in to
+    // convert from viewport space to that content space.
+    const midX = (canvasRect.left - containerRect.left) + container.scrollLeft + ((dx1 + dx2) / 2) * scaleX;
+    const midY = (canvasRect.top - containerRect.top) + container.scrollTop + ((dy1 + dy2) / 2) * scaleY;
+
+    const margin = 10;
+    const pw = popup.offsetWidth, ph = popup.offsetHeight;
+    // Clamp to the currently *visible* scrolled region, not the full content,
+    // so the popup never lands off-screen and never needs to be scrolled to.
+    const minX = container.scrollLeft + margin, maxX = container.scrollLeft + containerRect.width - pw - margin;
+    const minY = container.scrollTop + margin, maxY = container.scrollTop + containerRect.height - ph - margin;
+    const left = Math.max(minX, Math.min(midX - pw / 2, maxX));
+    const top = Math.max(minY, Math.min(midY + 16, maxY));
+    popup.style.left = `${left}px`;
+    popup.style.top = `${top}px`;
+    popup.style.right = 'auto';
 }
 
 function hideScalePopup() {
@@ -1171,10 +1374,19 @@ function confirmScaleInput() {
 }
 
 // Draw committed scale lines + zones + in-progress drafts
+// Give each scale a distinct, stable colour (golden-angle spread) so multiple
+// zones on screen — and the assignment badges in drawScaleAssignmentOverlay —
+// stay visually distinguishable.
+function scaleColor(idx) {
+    const hue = (idx * 137.508) % 360;
+    const [r, g, b] = hslToRgb(hue / 360, 0.75, 0.45);
+    return `rgb(${r},${g},${b})`;
+}
+
 function drawScaleLines(ctx) {
     const scales = annotationState.scales || [];
 
-    scales.forEach((s) => {
+    scales.forEach((s, i) => {
         const [dx1, dy1] = originalToDisplay(s.p1[0], s.p1[1]);
         const [dx2, dy2] = originalToDisplay(s.p2[0], s.p2[1]);
         const len = Math.hypot(dx2 - dx1, dy2 - dy1);
@@ -1198,21 +1410,24 @@ function drawScaleLines(ctx) {
 
         // Label
         const ratio = computeScaleRatio(s);
-        const label = ratio ? `${s.real_cm}cm · ${ratio.toFixed(1)} px/cm` : `${s.real_cm}cm`;
+        const label = `#${i + 1} · ${s.real_cm}cm` + (ratio ? ` · ${ratio.toFixed(1)} px/cm` : '');
         const mx = (dx1 + dx2) / 2, my = (dy1 + dy2) / 2;
         ctx.fillStyle = '#f59e0b';
         ctx.font = 'bold 11px sans-serif';
         ctx.fillText(label, mx + 4, my - 4);
 
-        // Zone rectangle
+        // Zone rectangle — coloured per-scale so overlapping zones stay
+        // distinguishable, and matches the assignment badge colour below.
         if (s.zone) {
+            const color = scaleColor(i);
             const [zx1, zy1] = originalToDisplay(s.zone[0], s.zone[1]);
             const [zx2, zy2] = originalToDisplay(s.zone[2], s.zone[3]);
             ctx.setLineDash([5, 3]);
-            ctx.globalAlpha = 0.35;
-            ctx.fillStyle = '#fef3c7';
+            ctx.globalAlpha = 0.25;
+            ctx.fillStyle = color;
             ctx.fillRect(zx1, zy1, zx2 - zx1, zy2 - zy1);
             ctx.globalAlpha = 1;
+            ctx.strokeStyle = color;
             ctx.strokeRect(zx1, zy1, zx2 - zx1, zy2 - zy1);
             ctx.setLineDash([]);
         }
@@ -1251,6 +1466,48 @@ function drawScaleLines(ctx) {
         ctx.setLineDash([]);
         ctx.restore();
     }
+}
+
+// Badge each mask blob with the scale it would be assigned at extraction
+// time (or a warning if more than one zone claims it), so the user can see
+// the block<->scale association while still editing instead of only after
+// "Extract Cards". Only drawn once at least one scale exists.
+function drawScaleAssignmentOverlay(ctx) {
+    if (!(annotationState.scales || []).length) return;
+
+    if (!annotationState.scaleAssignment) computeScaleAssignment();
+    const blobs = annotationState.scaleAssignment;
+    if (!blobs) return;
+
+    ctx.save();
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    blobs.forEach(b => {
+        const r = 10;
+        ctx.beginPath();
+        ctx.arc(b.cx, b.cy, r, 0, Math.PI * 2);
+        if (b.conflict) {
+            ctx.fillStyle = '#dc2626';
+            ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.fillText('!', b.cx, b.cy + 1);
+        } else if (b.scaleIdx >= 0) {
+            ctx.fillStyle = scaleColor(b.scaleIdx);
+            ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.fillText(String(b.scaleIdx + 1), b.cx, b.cy + 1);
+        } else {
+            ctx.fillStyle = 'rgba(100,116,139,0.85)'; // no scale applies at all
+            ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.fillText('?', b.cx, b.cy + 1);
+        }
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = '#fff';
+        ctx.stroke();
+    });
+    ctx.restore();
 }
 
 async function clearMask() {
@@ -1377,6 +1634,18 @@ async function extractCards() {
         if (countEl) countEl.textContent = totalImages > 0 ? `0 / ${totalImages}` : 'Starting...';
     }
 
+    const cancelBtn = document.getElementById('mask-extract-cancel-btn');
+    if (cancelBtn) {
+        cancelBtn.disabled = false;
+        cancelBtn.innerHTML = '<i class="bi bi-stop-circle-fill"></i> Stop Processing';
+        cancelBtn.onclick = async () => {
+            cancelBtn.disabled = true;
+            cancelBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Stopping...';
+            if (currentFileEl) currentFileEl.textContent = 'Stopping after the current mask...';
+            try { await fetch('/api/operation-progress/cancel', { method: 'POST' }); } catch (_) { /* best-effort */ }
+        };
+    }
+
     if (btn) {
         btn.disabled = true;
         btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Extracting...';
@@ -1448,7 +1717,7 @@ async function extractCards() {
         // Finalize 100% display
         if (percentageEl) percentageEl.textContent = '100%';
         if (progressFill) progressFill.style.width = '100%';
-        if (currentFileEl) currentFileEl.textContent = 'Mask extraction complete!';
+        if (currentFileEl) currentFileEl.textContent = result.cancelled ? 'Stopped by user.' : 'Mask extraction complete!';
         if (miniProgressBar) {
             miniProgressBar.style.width = '100%';
             miniProgressBar.textContent = '100%';
@@ -1466,8 +1735,9 @@ async function extractCards() {
             btn.innerHTML = '<i class="bi bi-crop"></i> Extract Cards';
         }
 
-        window.PyPotteryUtils.showStatus('annotation-status', 'Cards extracted successfully!', 'success');
-        window.PyPotteryUtils.showToast('Cards extracted successfully!', 'success');
+        const doneMsg = result.cancelled ? 'Extraction stopped — cards saved so far were kept.' : 'Cards extracted successfully!';
+        window.PyPotteryUtils.showStatus('annotation-status', doneMsg, result.cancelled ? 'info' : 'success');
+        window.PyPotteryUtils.showToast(doneMsg, result.cancelled ? 'info' : 'success');
 
         if (window.projectManager && window.projectManager.loadProjects) {
             window.projectManager.loadProjects();
@@ -1574,6 +1844,327 @@ function showExtractConfirmDialog() {
         cancelBtn.addEventListener('click', onCancel);
         dialog.addEventListener('click', onBackdrop);
     });
+}
+
+// ---- Calibrate Scales dialog -------------------------------------------
+// Histogram + KDE of every scale's px/cm ratio across the WHOLE project
+// (not just the current page), with draggable "center" lines the user snaps
+// outlier measurements to. Compensates for a few pixels of click slop when
+// the ruler endpoints were placed by hand across many pages: the real_cm
+// value typed in is trusted, but the measured pixel distance isn't.
+
+const CALIB_PAD_X = 40;
+let calibState = null; // { entries: [{baseName, scale, ratio}], lines: [values...], pagesByName, rangeMin, rangeMax }
+
+// Round to 1 decimal - matches what the UI displays everywhere and what
+// gets exported, so a line always shows/stores exactly the same number
+// (rather than an arbitrary sub-pixel float from dragging on the canvas).
+function calibRound(v) {
+    return Math.round(v * 10) / 10;
+}
+
+function initializeCalibrationDialog() {
+    document.getElementById('calibrate-scales-btn')?.addEventListener('click', openCalibrationDialog);
+    document.getElementById('calib-cancel-btn')?.addEventListener('click', closeCalibrationDialog);
+    document.getElementById('calib-apply-btn')?.addEventListener('click', applyCalibration);
+    document.getElementById('calib-dialog')?.addEventListener('click', (e) => {
+        if (e.target.id === 'calib-dialog') closeCalibrationDialog();
+    });
+
+    const canvas = document.getElementById('calib-histogram-canvas');
+    if (!canvas) return;
+    let dragIdx = null;
+
+    canvas.addEventListener('mousedown', (e) => {
+        if (!calibState) return;
+        const x = calibCanvasEventX(canvas, e);
+        const idx = calibFindLineNear(canvas, x);
+        if (idx !== null) {
+            dragIdx = idx;
+        } else {
+            calibState.lines.push(calibRound(calibXToValue(canvas, x)));
+            calibState.lines.sort((a, b) => a - b);
+            renderCalibDialog();
+        }
+    });
+    canvas.addEventListener('mousemove', (e) => {
+        if (dragIdx === null || !calibState) return;
+        calibState.lines[dragIdx] = calibRound(calibXToValue(canvas, calibCanvasEventX(canvas, e)));
+        renderCalibDialog();
+    });
+    window.addEventListener('mouseup', () => {
+        if (dragIdx !== null && calibState) calibState.lines.sort((a, b) => a - b);
+        dragIdx = null;
+    });
+    canvas.addEventListener('dblclick', (e) => {
+        if (!calibState) return;
+        const idx = calibFindLineNear(canvas, calibCanvasEventX(canvas, e));
+        if (idx !== null) {
+            calibState.lines.splice(idx, 1);
+            renderCalibDialog();
+        }
+    });
+}
+
+function calibCanvasEventX(canvas, e) {
+    const rect = canvas.getBoundingClientRect();
+    return (e.clientX - rect.left) * (canvas.width / rect.width);
+}
+
+function calibValueToX(canvas, value) {
+    const t = (value - calibState.rangeMin) / (calibState.rangeMax - calibState.rangeMin);
+    return CALIB_PAD_X + t * (canvas.width - 2 * CALIB_PAD_X);
+}
+
+function calibXToValue(canvas, xPixel) {
+    const t = (xPixel - CALIB_PAD_X) / (canvas.width - 2 * CALIB_PAD_X);
+    return calibState.rangeMin + t * (calibState.rangeMax - calibState.rangeMin);
+}
+
+function calibFindLineNear(canvas, xPixel) {
+    let best = null, bestDist = 10; // px hit-test radius
+    calibState.lines.forEach((v, i) => {
+        const d = Math.abs(calibValueToX(canvas, v) - xPixel);
+        if (d < bestDist) { bestDist = d; best = i; }
+    });
+    return best;
+}
+
+function calibLineColor(i) {
+    const hue = (i * 137.508) % 360;
+    const [r, g, b] = hslToRgb(hue / 360, 0.75, 0.42);
+    return `rgb(${r},${g},${b})`;
+}
+
+// Gaussian KDE with Silverman's rule-of-thumb bandwidth - simple, no
+// dependency, good enough for "where are the clusters" on ~tens to
+// hundreds of samples.
+function calibKDE(values, grid) {
+    const n = values.length;
+    const mean = values.reduce((a, b) => a + b, 0) / n;
+    const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(n - 1, 1);
+    const std = Math.sqrt(variance) || Math.abs(values[0]) * 0.01 || 0.01;
+    const bw = Math.max(1.06 * std * Math.pow(n, -1 / 5), 1e-6);
+    return grid.map(x => {
+        let sum = 0;
+        for (const v of values) {
+            const z = (x - v) / bw;
+            sum += Math.exp(-0.5 * z * z);
+        }
+        return sum / (n * bw * Math.sqrt(2 * Math.PI));
+    });
+}
+
+// Suggest starting center lines from the KDE's local maxima, so the dialog
+// isn't blank on open - the user can still add/move/remove freely after.
+function calibSuggestPeaks(values, rangeMin, rangeMax, maxPeaks = 2) {
+    const GRID_N = 200;
+    const grid = Array.from({ length: GRID_N }, (_, i) => rangeMin + (rangeMax - rangeMin) * i / (GRID_N - 1));
+    const density = calibKDE(values, grid);
+    const peakMax = Math.max(...density);
+    const peaks = [];
+    for (let i = 1; i < GRID_N - 1; i++) {
+        if (density[i] > density[i - 1] && density[i] >= density[i + 1] && density[i] > peakMax * 0.15) {
+            peaks.push({ x: grid[i], h: density[i] });
+        }
+    }
+    peaks.sort((a, b) => b.h - a.h);
+    return peaks.slice(0, maxPeaks).map(p => calibRound(p.x)).sort((a, b) => a - b);
+}
+
+async function openCalibrationDialog() {
+    const dialog = document.getElementById('calib-dialog');
+    const subtitle = document.getElementById('calib-dialog-subtitle');
+    const applyBtn = document.getElementById('calib-apply-btn');
+    if (!dialog || !annotationState.currentProject) return;
+
+    if (applyBtn) { applyBtn.disabled = true; applyBtn.innerHTML = '<i class="bi bi-check-lg"></i> Apply Calibration'; }
+    dialog.style.display = 'flex';
+    if (subtitle) subtitle.textContent = 'Loading scales from every page…';
+    calibState = { entries: [], lines: [], pagesByName: new Map(), rangeMin: 0, rangeMax: 1 };
+    renderCalibDialog();
+
+    const projectId = annotationState.currentProject.project_id;
+    const entries = [];
+    for (const img of (annotationState.images || [])) {
+        try {
+            const res = await fetch(`/api/projects/${projectId}/scale/${encodeURIComponent(img.baseName)}`);
+            const data = await res.json();
+            if (!data.success) continue;
+            const pageScales = data.scales || [];
+            calibState.pagesByName.set(img.baseName, pageScales);
+            pageScales.forEach(scale => {
+                const ratio = computeScaleRatio(scale);
+                if (ratio > 0) entries.push({ baseName: img.baseName, scale, ratio });
+            });
+        } catch (e) {
+            console.warn('[Annotation] Could not load scales for', img.baseName, e);
+        }
+    }
+    calibState.entries = entries;
+
+    if (entries.length < 2) {
+        if (subtitle) subtitle.textContent = 'Need at least 2 measured scales across the project to calibrate.';
+        renderCalibDialog();
+        return;
+    }
+
+    const values = entries.map(e => e.ratio);
+    const min = Math.min(...values), max = Math.max(...values);
+    const span = Math.max(max - min, 1e-6);
+    calibState.rangeMin = min - span * 0.15 - 0.01;
+    calibState.rangeMax = max + span * 0.15 + 0.01;
+    calibState.lines = calibSuggestPeaks(values, calibState.rangeMin, calibState.rangeMax);
+
+    const pageCount = new Set(entries.map(e => e.baseName)).size;
+    if (subtitle) subtitle.textContent = `${entries.length} scales across ${pageCount} page(s).`;
+    renderCalibDialog();
+}
+
+function closeCalibrationDialog() {
+    const dialog = document.getElementById('calib-dialog');
+    if (dialog) dialog.style.display = 'none';
+    calibState = null;
+}
+
+function renderCalibDialog() {
+    drawCalibHistogram();
+    const legend = document.getElementById('calib-lines-legend');
+    if (legend && calibState) {
+        legend.innerHTML = calibState.lines.length
+            ? calibState.lines.map((v, i) => `
+                <span class="calib-line-chip">
+                    <span class="swatch" style="background:${calibLineColor(i)}"></span>
+                    ${v.toFixed(1)} px/cm
+                    <button type="button" data-idx="${i}" title="Remove"><i class="bi bi-x-lg"></i></button>
+                </span>`).join('')
+            : '<span style="color:var(--text-dim); font-size:0.8rem;">No center lines yet — click the histogram to add one.</span>';
+        legend.querySelectorAll('button[data-idx]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                calibState.lines.splice(parseInt(btn.dataset.idx), 1);
+                renderCalibDialog();
+            });
+        });
+    }
+    const applyBtn = document.getElementById('calib-apply-btn');
+    if (applyBtn) applyBtn.disabled = !calibState || calibState.lines.length === 0 || calibState.entries.length < 2;
+}
+
+function drawCalibHistogram() {
+    const canvas = document.getElementById('calib-histogram-canvas');
+    if (!canvas || !calibState) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    const PAD_TOP = 26, PAD_BOTTOM = 24;
+    ctx.clearRect(0, 0, w, h);
+
+    const values = calibState.entries.map(e => e.ratio);
+    if (values.length < 2) {
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '13px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Not enough scales to build a histogram.', w / 2, h / 2);
+        return;
+    }
+
+    const { rangeMin, rangeMax } = calibState;
+    const plotW = w - 2 * CALIB_PAD_X, plotH = h - PAD_TOP - PAD_BOTTOM;
+
+    // Histogram bars
+    const BIN_COUNT = 24;
+    const bins = new Array(BIN_COUNT).fill(0);
+    values.forEach(v => {
+        let bi = Math.floor((v - rangeMin) / (rangeMax - rangeMin) * BIN_COUNT);
+        bins[Math.max(0, Math.min(BIN_COUNT - 1, bi))]++;
+    });
+    const maxBin = Math.max(...bins, 1);
+    const binW = plotW / BIN_COUNT;
+    ctx.fillStyle = 'rgba(194, 65, 12, 0.18)';
+    ctx.strokeStyle = 'rgba(194, 65, 12, 0.4)';
+    bins.forEach((count, i) => {
+        const bh = (count / maxBin) * plotH;
+        const x = CALIB_PAD_X + i * binW;
+        const y = PAD_TOP + plotH - bh;
+        ctx.fillRect(x, y, binW - 1, bh);
+        ctx.strokeRect(x, y, binW - 1, bh);
+    });
+
+    // KDE curve, scaled to the same plot height as the tallest bar
+    const grid = Array.from({ length: 150 }, (_, i) => rangeMin + (rangeMax - rangeMin) * i / 149);
+    const density = calibKDE(values, grid);
+    const maxDensity = Math.max(...density, 1e-9);
+    ctx.beginPath();
+    grid.forEach((x, i) => {
+        const px = CALIB_PAD_X + (x - rangeMin) / (rangeMax - rangeMin) * plotW;
+        const py = PAD_TOP + plotH - (density[i] / maxDensity) * plotH;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    });
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Center lines (draggable in the mouse handlers above)
+    calibState.lines.forEach((v, i) => {
+        const x = calibValueToX(canvas, v);
+        ctx.strokeStyle = calibLineColor(i);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x, PAD_TOP);
+        ctx.lineTo(x, PAD_TOP + plotH);
+        ctx.stroke();
+        ctx.fillStyle = calibLineColor(i);
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(v.toFixed(1), x, PAD_TOP - 8);
+    });
+
+    // Axis labels
+    ctx.fillStyle = '#64748b';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(rangeMin.toFixed(1) + ' px/cm', CALIB_PAD_X, h - 6);
+    ctx.textAlign = 'right';
+    ctx.fillText(rangeMax.toFixed(1) + ' px/cm', w - CALIB_PAD_X, h - 6);
+}
+
+async function applyCalibration() {
+    if (!calibState || calibState.lines.length === 0 || calibState.entries.length < 2) return;
+    const applyBtn = document.getElementById('calib-apply-btn');
+    if (applyBtn) { applyBtn.disabled = true; applyBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Applying...'; }
+
+    const changedPages = new Set();
+    calibState.entries.forEach(entry => {
+        const nearest = calibState.lines.reduce((best, v) =>
+            Math.abs(v - entry.ratio) < Math.abs(best - entry.ratio) ? v : best);
+        if (entry.scale.calibrated_px_per_cm !== nearest) {
+            entry.scale.calibrated_px_per_cm = nearest;
+            changedPages.add(entry.baseName);
+        }
+    });
+
+    const projectId = annotationState.currentProject.project_id;
+    for (const baseName of changedPages) {
+        try {
+            await fetch(`/api/projects/${projectId}/scale/${encodeURIComponent(baseName)}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ scales: calibState.pagesByName.get(baseName) })
+            });
+        } catch (e) {
+            console.error('[Annotation] Failed to save calibrated scales for', baseName, e);
+        }
+    }
+
+    window.PyPotteryUtils?.showToast(`Calibrated ${changedPages.size} page(s).`, 'success');
+    const currentImg = annotationState.images[annotationState.currentIndex];
+    const touchedCurrentPage = currentImg && changedPages.has(currentImg.baseName);
+    closeCalibrationDialog();
+
+    if (touchedCurrentPage) {
+        await loadScales(currentImg.baseName);
+        annotationState.scaleAssignment = null;
+        redrawCanvas();
+    }
 }
 
 console.log('[Annotation] Ready');

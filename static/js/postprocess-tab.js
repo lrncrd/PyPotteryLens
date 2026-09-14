@@ -295,6 +295,18 @@ async function handleProcessAll() {
         processBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Processing...';
     }
 
+    const cancelBtn = document.getElementById('postprocess-cancel-btn');
+    if (cancelBtn) {
+        cancelBtn.disabled = false;
+        cancelBtn.innerHTML = '<i class="bi bi-stop-circle-fill"></i> Stop Processing';
+        cancelBtn.onclick = async () => {
+            cancelBtn.disabled = true;
+            cancelBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Stopping...';
+            if (currentFileEl) currentFileEl.textContent = 'Stopping after the current card...';
+            try { await fetch('/api/operation-progress/cancel', { method: 'POST' }); } catch (_) { /* best-effort */ }
+        };
+    }
+
     let isDone = false;
 
     // Background polling for real-time progress
@@ -342,7 +354,7 @@ async function handleProcessAll() {
             // Finalize 100% display
             if (percentageEl) percentageEl.textContent = '100%';
             if (progressFill) progressFill.style.width = '100%';
-            if (currentFileEl) currentFileEl.textContent = 'Card processing complete!';
+            if (currentFileEl) currentFileEl.textContent = response.cancelled ? 'Stopped by user.' : 'Card processing complete!';
 
             // Brief pause to allow user to see 100% completion (consistent with YOLO experience)
             await new Promise(resolve => setTimeout(resolve, 600));
@@ -356,8 +368,11 @@ async function handleProcessAll() {
                 processBtn.innerHTML = '<i class="bi bi-magic"></i> Process All Images';
             }
 
-            window.PyPotteryUtils.showStatus('postprocess-status', response.message || 'Done', 'success');
-            window.PyPotteryUtils.showToast(`Processed ${response.count || ''} images!`, 'success');
+            const doneMsg = response.cancelled
+                ? `Stopped — ${response.count || 0} card(s) processed before stopping.`
+                : (response.message || 'Done');
+            window.PyPotteryUtils.showStatus('postprocess-status', doneMsg, response.cancelled ? 'info' : 'success');
+            window.PyPotteryUtils.showToast(doneMsg, response.cancelled ? 'info' : 'success');
             await loadProjectCards();  // reloads cards (now has_modified) and re-renders the grid
         } else {
             throw new Error(response.error || 'Processing failed');

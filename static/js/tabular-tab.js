@@ -1118,6 +1118,17 @@ function getAiBackendParams() {
     };
 }
 
+/** Return the optional 1-based batch page range as {page_from, page_to} (only
+ *  keys with a value are included; blank inputs mean "all pages"). */
+function getBatchPageRange() {
+    const from = document.getElementById('batch-page-from')?.value;
+    const to = document.getElementById('batch-page-to')?.value;
+    const range = {};
+    if (from) range.page_from = parseInt(from);
+    if (to) range.page_to = parseInt(to);
+    return range;
+}
+
 function showVisionUnsupportedDialog(modelName) {
     document.getElementById('ai-vision-unsupported-dialog')?.remove();
     const overlay = document.createElement('div');
@@ -1375,24 +1386,160 @@ async function triggerLocalModelDownload() {
     }
 }
 
-function showBatchProgressOverlay() {
-    document.getElementById('ai-batch-progress-overlay')?.remove();
-    const overlay = document.createElement('div');
-    overlay.id = 'ai-batch-progress-overlay';
-    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(28,25,23,0.65); backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px); z-index:20000; display:flex; align-items:center; justify-content:center;';
-    overlay.innerHTML = `
-        <div style="background:var(--obsidian-surface); color:var(--dark-fg); border:1px solid var(--dark-border); border-radius:var(--radius-md); padding:1.75rem;
-                    max-width:480px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.6);">
-            <h3 style="margin:0 0 1rem; font-size:1.15rem; display:flex; align-items:center; gap:0.5rem;"><i class="bi bi-cpu"></i> Batch Vision Extraction</h3>
-            <p id="ai-batch-progress-label" style="font-size:0.85rem; color:var(--dark-fg-muted); margin:0 0 0.5rem;">Starting...</p>
-            <div style="background:rgba(255,255,255,0.08); border-radius:var(--radius-xs); overflow:hidden; height:10px;">
-                <div id="ai-batch-progress-bar"
-                     style="height:100%; background:linear-gradient(90deg, var(--teal), var(--primary)); transition:width 0.4s; width:0%"></div>
-            </div>
-        </div>
-    `;
-    document.body.appendChild(overlay);
+// ---- AI Reference Extraction overlay (single-page + batch) --------------
+// Matches the YOLO model / card-extraction full-screen overlay style instead
+// of the previous two mismatched UIs (a plain spinner for single, an ad-hoc
+// inline-styled div for batch), and adds a live token counter + a working
+// cancel button (backed by a real cancel for batch, a client-side abort for
+// the single one-shot call).
+
+function showAiExtractOverlay({ title, modelLabel = '', showCount = false, indeterminate = false }) {
+    const overlay = document.getElementById('ai-extract-overlay');
+    if (!overlay) return null;
+    document.getElementById('ai-extract-title').textContent = title;
+    document.getElementById('ai-extract-model-badge').textContent = modelLabel;
+    document.getElementById('ai-extract-percentage').textContent = '0%';
+    document.getElementById('ai-extract-progress-fill').style.width = '0%';
+    document.getElementById('ai-extract-progress-fill').classList.remove('indeterminate');
+    // AI vision calls genuinely take anywhere from a few seconds to ~a
+    // minute per page - say so up front, otherwise a long wait with the bar
+    // sitting at 0% reads as the UI being frozen rather than just slow.
+    document.getElementById('ai-extract-current-file').textContent =
+        'Waiting for the AI response — this can take a few seconds to a minute per page…';
+    const countEl = document.getElementById('ai-extract-count');
+    countEl.style.display = showCount ? '' : 'none';
+    countEl.textContent = '0 / 0';
+    document.getElementById('ai-extract-tokens').textContent = '0';
+    const cancelBtn = document.getElementById('ai-extract-cancel-btn');
+    cancelBtn.disabled = false;
+    cancelBtn.innerHTML = '<i class="bi bi-stop-circle-fill"></i> Stop Processing';
+    overlay.style.display = 'flex';
+    if (indeterminate) setAiExtractIndeterminate(true);
     return overlay;
+}
+
+function hideAiExtractOverlay() {
+    const overlay = document.getElementById('ai-extract-overlay');
+    if (overlay) overlay.style.display = 'none';
+}
+
+// Toggles the moving-stripe "still working, no ETA yet" bar vs. a normal
+// percentage fill - used whenever there's genuinely no "N of M" signal yet
+// (a single AI call in flight, or batch mode before the first page lands).
+function setAiExtractIndeterminate(on) {
+    const fill = document.getElementById('ai-extract-progress-fill');
+    fill.classList.toggle('indeterminate', on);
+    if (on) document.getElementById('ai-extract-percentage').textContent = '···';
+}
+
+// Polls the generic operation_progress dict and reflects it onto the overlay
+// (percentage, bar, current file, count, running token total) until stopped.
+function pollAiExtractOverlay(stopSignal) {
+    return setInterval(async () => {
+        if (stopSignal.stopped) return;
+        try {
+            const prog = await window.PyPotteryUtils.apiRequest('/api/operation-progress');
+            if (!prog) return;
+            const pct = prog.percent || 0;
+            if (pct > 0) {
+                setAiExtractIndeterminate(false);
+                document.getElementById('ai-extract-percentage').textContent = pct + '%';
+                document.getElementById('ai-extract-progress-fill').style.width = pct + '%';
+            } else {
+                setAiExtractIndeterminate(true);
+            }
+            if (prog.message) document.getElementById('ai-extract-current-file').textContent = prog.message;
+            document.getElementById('ai-extract-count').textContent = `${prog.current || 0} / ${prog.total || 0}`;
+            document.getElementById('ai-extract-tokens').textContent = (prog.tokens_used || 0).toLocaleString();
+        } catch (_) { /* ignore polling errors */ }
+    }, 400);
+}
+
+// Runs the single-page AI extraction call behind the shared full-screen
+// overlay. Cancel here is a client-side fetch abort (there's no per-item
+// loop on the backend to interrupt for a single page) - it stops the UI
+// from waiting and lets the user retry immediately.
+async function runSingleAiExtraction(modelLabel) {
+    const statusEl = document.getElementById('ai-bibliographic-status');
+    const btn = document.getElementById('ai-bibliographic-btn');
+    const backendParams = getAiBackendParams();
+
+    btn.disabled = true;
+    if (statusEl) {
+        statusEl.className = 'status-message info';
+        statusEl.innerHTML = '<i class="bi bi-hourglass-split"></i> Analysing…';
+    }
+    // A single page is one atomic AI call with no partial-progress signal -
+    // show the animated indeterminate bar for the whole wait instead of a
+    // static 0% (which otherwise looks identical to "stuck"), then animate
+    // a real fill to 100% once the response actually arrives.
+    showAiExtractOverlay({ title: 'Extracting References', modelLabel, showCount: false, indeterminate: true });
+
+    const controller = new AbortController();
+    const cancelBtn = document.getElementById('ai-extract-cancel-btn');
+    cancelBtn.onclick = () => {
+        cancelBtn.disabled = true;
+        cancelBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Stopping...';
+        controller.abort();
+    };
+
+    try {
+        const response = await window.PyPotteryUtils.apiRequest(
+            `/api/projects/${tabularState.currentProject.project_id}/tabular/ai-bibliographic`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ img_num: tabularState.currentIndex, prompt_suffix: getPromptSuffix(), ...backendParams }),
+                signal: controller.signal
+            }
+        );
+        setAiExtractIndeterminate(false);
+        const fill = document.getElementById('ai-extract-progress-fill');
+        fill.style.width = '0%';
+        void fill.offsetWidth; // force a reflow so the width change below actually transitions
+        fill.style.width = '100%';
+        document.getElementById('ai-extract-percentage').textContent = '100%';
+        if (response.tokens_used) document.getElementById('ai-extract-tokens').textContent = response.tokens_used.toLocaleString();
+        setTimeout(hideAiExtractOverlay, 450); // let the fill animation actually play before closing
+
+        if (response.success) {
+            tabularState.tableData = response.table;
+            tabularState.columns = response.columns;
+            displayTable(response.table, response.columns);
+            if (statusEl) {
+                statusEl.className = 'status-message success';
+                statusEl.innerHTML = '<i class="bi bi-check-circle-fill"></i> References extracted successfully'
+                    + (response.tokens_used ? ` · ${response.tokens_used.toLocaleString()} tokens` : '');
+            }
+            window.PyPotteryUtils.showToast('Bibliographic references extracted!', 'success');
+        } else if (response.vision_unsupported) {
+            if (statusEl) statusEl.textContent = '';
+            showVisionUnsupportedDialog(backendParams.openrouter_model);
+        } else {
+            if (statusEl) {
+                statusEl.className = 'status-message error';
+                statusEl.innerHTML = '<i class="bi bi-x-circle-fill"></i> Error: ' + (response.error || 'unknown');
+            }
+            window.PyPotteryUtils.showToast(response.error || 'AI Error', 'error');
+        }
+    } catch (error) {
+        hideAiExtractOverlay();
+        if (error.name === 'AbortError') {
+            if (statusEl) {
+                statusEl.className = 'status-message info';
+                statusEl.innerHTML = '<i class="bi bi-slash-circle"></i> Stopped by user';
+            }
+            window.PyPotteryUtils.showToast('Extraction stopped', 'info');
+        } else {
+            if (statusEl) {
+                statusEl.className = 'status-message error';
+                statusEl.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + error.message;
+            }
+            window.PyPotteryUtils.showToast(error.message, 'error');
+            console.error('[AI Bibliographic] Error:', error);
+        }
+    } finally {
+        btn.disabled = false;
+    }
 }
 
 async function handleAiBibliographic() {
@@ -1401,8 +1548,6 @@ async function handleAiBibliographic() {
         return;
     }
 
-    const statusEl = document.getElementById('ai-bibliographic-status');
-    const btn = document.getElementById('ai-bibliographic-btn');
     const backendParams = getAiBackendParams();
 
     // For OpenRouter, skip GPU check entirely and call directly
@@ -1412,45 +1557,7 @@ async function handleAiBibliographic() {
             document.getElementById('ai-backend-panel').classList.add('show');
             return;
         }
-        btn.disabled = true;
-        if (statusEl) {
-            statusEl.className = 'status-message info';
-            statusEl.innerHTML = '<i class="bi bi-hourglass-split"></i> Analysing via OpenRouter...';
-        }
-        window.PyPotteryUtils.showLoading('Extracting references via OpenRouter...');
-        try {
-            const response = await window.PyPotteryUtils.apiRequest(
-                `/api/projects/${tabularState.currentProject.project_id}/tabular/ai-bibliographic`,
-                { method: 'POST', body: JSON.stringify({ img_num: tabularState.currentIndex, prompt_suffix: getPromptSuffix(), ...backendParams }) }
-            );
-            window.PyPotteryUtils.hideLoading();
-            if (response.success) {
-                tabularState.tableData = response.table;
-                tabularState.columns = response.columns;
-                displayTable(response.table, response.columns);
-                if (statusEl) {
-                    statusEl.className = 'status-message success';
-                    statusEl.innerHTML = '<i class="bi bi-check-circle-fill"></i> References extracted successfully';
-                }
-                window.PyPotteryUtils.showToast('Bibliographic references extracted!', 'success');
-            } else {
-                if (statusEl) {
-                    statusEl.className = 'status-message error';
-                    statusEl.innerHTML = '<i class="bi bi-x-circle-fill"></i> Error: ' + (response.error || 'unknown');
-                }
-                window.PyPotteryUtils.showToast(response.error || 'AI Error', 'error');
-            }
-        } catch (error) {
-            window.PyPotteryUtils.hideLoading();
-            if (statusEl) {
-                statusEl.className = 'status-message error';
-                statusEl.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + error.message;
-            }
-            window.PyPotteryUtils.showToast(error.message, 'error');
-            console.error('[AI Bibliographic] Error:', error);
-        } finally {
-            btn.disabled = false;
-        }
+        await runSingleAiExtraction(backendParams.openrouter_model);
         return;
     }
 
@@ -1465,52 +1572,16 @@ async function handleAiBibliographic() {
 
     // If model is already cached, skip confirm dialog and run directly
     if (requirements.model_cached) {
-        btn.disabled = true;
-        if (statusEl) {
-            statusEl.className = 'status-message info';
-            statusEl.innerHTML = '<i class="bi bi-hourglass-split"></i> Analysing with Gemma 4 AI...';
-        }
-        window.PyPotteryUtils.showLoading('Extracting references with Gemma 4 AI...');
-        try {
-            const response = await window.PyPotteryUtils.apiRequest(
-                `/api/projects/${tabularState.currentProject.project_id}/tabular/ai-bibliographic`,
-                { method: 'POST', body: JSON.stringify({ img_num: tabularState.currentIndex, prompt_suffix: getPromptSuffix(), ...backendParams }) }
-            );
-            window.PyPotteryUtils.hideLoading();
-            if (response.success) {
-                tabularState.tableData = response.table;
-                tabularState.columns = response.columns;
-                displayTable(response.table, response.columns);
-                if (statusEl) {
-                    statusEl.className = 'status-message success';
-                    statusEl.innerHTML = '<i class="bi bi-check-circle-fill"></i> References extracted successfully';
-                }
-                window.PyPotteryUtils.showToast('Bibliographic references extracted!', 'success');
-            } else if (response.vision_unsupported) {
-                if (statusEl) statusEl.textContent = '';
-                showVisionUnsupportedDialog(backendParams.openrouter_model);
-            } else {
-                if (statusEl) {
-                    statusEl.className = 'status-message error';
-                    statusEl.innerHTML = '<i class="bi bi-x-circle-fill"></i> Error: ' + (response.error || 'unknown');
-                }
-                window.PyPotteryUtils.showToast(response.error || 'AI Error', 'error');
-            }
-        } catch (error) {
-            window.PyPotteryUtils.hideLoading();
-            if (statusEl) {
-                statusEl.className = 'status-message error';
-                statusEl.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + error.message;
-            }
-            window.PyPotteryUtils.showToast(error.message, 'error');
-            console.error('[AI Bibliographic] Error:', error);
-        } finally {
-            btn.disabled = false;
-        }
+        await runSingleAiExtraction('Gemma 4 E2B-it (local)');
         return;
     }
 
-    // Model not yet cached: show confirm dialog with download progress bar
+    // Model not yet cached: show confirm dialog with download progress bar.
+    // Kept on the old plain progress bar (not the new overlay) since this is
+    // a rarely-hit path (~10GB one-time download) and its polling loop
+    // straddles two different backend phases (download, then extraction).
+    const statusEl = document.getElementById('ai-bibliographic-status');
+    const btn = document.getElementById('ai-bibliographic-btn');
     showAiConfirmDialog(requirements, async (overlay) => {
         const labelEl = document.getElementById('ai-download-progress-label');
         const barEl = document.getElementById('ai-download-progress-bar');
@@ -1574,17 +1645,155 @@ async function handleAiBibliographic() {
     });
 }
 
+// Runs the batch AI extraction behind the shared full-screen overlay. Unlike
+// the single-page version, cancel here hits a real backend endpoint: the
+// per-image loop checks operation_progress.cancel_requested between images
+// and stops cleanly, keeping whatever it already wrote to mask_info.csv.
+async function runBatchWithOverlay(modelLabel) {
+    const statusEl = document.getElementById('ai-bibliographic-status');
+    const btn = document.getElementById('ai-bibliographic-batch-btn');
+    const backendParams = getAiBackendParams();
+    const pageRange = getBatchPageRange();
+
+    // Dry-run first: the batch never silently skips pages, but it does warn
+    // before overwriting ones that already have extracted data.
+    btn.disabled = true;
+    try {
+        const preflight = await window.PyPotteryUtils.apiRequest(
+            `/api/projects/${tabularState.currentProject.project_id}/tabular/ai-bibliographic-batch`,
+            { method: 'POST', body: JSON.stringify({ prompt_suffix: getPromptSuffix(), ...backendParams, ...pageRange, dry_run: true }) }
+        );
+        if (preflight.already_filled > 0) {
+            const proceed = await window.PyPotteryUtils.showConfirmDialog({
+                title: 'Pages already have data',
+                subtitle: `${preflight.already_filled} of ${preflight.total} selected page(s) already have extracted references. `
+                    + `Running the batch will overwrite them.`,
+                icon: 'bi-exclamation-triangle-fill',
+                confirmText: 'Overwrite and run',
+                cancelText: 'Cancel',
+                confirmClass: 'btn-danger'
+            });
+            if (!proceed) { btn.disabled = false; return; }
+        }
+    } catch (error) {
+        btn.disabled = false;
+        window.PyPotteryUtils.showToast(error.message, 'error');
+        console.error('[AI Batch] Preflight check failed:', error);
+        return;
+    }
+
+    if (statusEl) {
+        statusEl.className = 'status-message info';
+        statusEl.innerHTML = '<i class="bi bi-hourglass-split"></i> Running batch extraction...';
+    }
+    showAiExtractOverlay({ title: 'Batch Extracting References', modelLabel, showCount: true, indeterminate: true });
+
+    const cancelBtn = document.getElementById('ai-extract-cancel-btn');
+    cancelBtn.onclick = async () => {
+        cancelBtn.disabled = true;
+        cancelBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Stopping...';
+        document.getElementById('ai-extract-current-file').textContent = 'Stopping after the current page...';
+        try { await window.PyPotteryUtils.apiRequest('/api/operation-progress/cancel', { method: 'POST' }); }
+        catch (_) { /* best-effort */ }
+    };
+
+    const stopSignal = { stopped: false };
+    const pollInterval = pollAiExtractOverlay(stopSignal);
+
+    try {
+        const response = await window.PyPotteryUtils.apiRequest(
+            `/api/projects/${tabularState.currentProject.project_id}/tabular/ai-bibliographic-batch`,
+            { method: 'POST', body: JSON.stringify({ prompt_suffix: getPromptSuffix(), ...backendParams, ...pageRange }) }
+        );
+        stopSignal.stopped = true;
+        clearInterval(pollInterval);
+        if (response.success && !response.cancelled) {
+            // The per-item loop's last update lands just under 100% (e.g.
+            // 49/50) - finish the bar properly instead of cutting it off.
+            setAiExtractIndeterminate(false);
+            document.getElementById('ai-extract-progress-fill').style.width = '100%';
+            document.getElementById('ai-extract-percentage').textContent = '100%';
+            await new Promise(r => setTimeout(r, 450));
+        }
+        hideAiExtractOverlay();
+
+        if (response.success) {
+            const errMsg = response.errors && response.errors.length ? ` (${response.errors.length} errors)` : '';
+            const tokMsg = response.tokens_used ? ` · ${response.tokens_used.toLocaleString()} tokens` : '';
+            const verb = response.cancelled ? 'Batch stopped' : 'Batch complete';
+            if (statusEl) {
+                statusEl.className = response.cancelled ? 'status-message info' : 'status-message success';
+                statusEl.innerHTML = `<i class="bi bi-${response.cancelled ? 'slash-circle' : 'check-circle-fill'}"></i> `
+                    + `${verb}: ${response.processed}/${response.total} images${errMsg}${tokMsg}`;
+            }
+            window.PyPotteryUtils.showToast(`${verb}: ${response.processed}/${response.total} images${errMsg}${tokMsg}`,
+                                            response.cancelled ? 'info' : 'success');
+            await loadTabularData(tabularState.currentIndex);
+        } else if (response.vision_unsupported) {
+            if (statusEl) statusEl.textContent = '';
+            showVisionUnsupportedDialog(backendParams.openrouter_model);
+        } else {
+            if (statusEl) {
+                statusEl.className = 'status-message error';
+                statusEl.innerHTML = '<i class="bi bi-x-circle-fill"></i> Batch error: ' + (response.error || 'unknown');
+            }
+            window.PyPotteryUtils.showToast(response.error || 'Batch AI Error', 'error');
+        }
+    } catch (error) {
+        stopSignal.stopped = true;
+        clearInterval(pollInterval);
+        hideAiExtractOverlay();
+        if (statusEl) {
+            statusEl.className = 'status-message error';
+            statusEl.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + error.message;
+        }
+        window.PyPotteryUtils.showToast(error.message, 'error');
+        console.error('[AI Batch] Error:', error);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
 async function handleAiBibliographicBatch() {
     if (!tabularState.currentProject || !tabularState.currentProject.project_id) {
         window.PyPotteryUtils.showToast('No project selected', 'warning');
         return;
     }
 
-    const statusEl = document.getElementById('ai-bibliographic-status');
-    const btn = document.getElementById('ai-bibliographic-batch-btn');
     const backendParams = getAiBackendParams();
 
-    // Helper: run the batch request with a given progress label/bar and overlay
+    // For OpenRouter, skip GPU check and run batch directly with the overlay
+    if (backendParams.ai_backend === 'openrouter') {
+        if (!backendParams.openrouter_api_key) {
+            window.PyPotteryUtils.showToast('Please enter your OpenRouter API key in the AI Backend panel', 'warning');
+            document.getElementById('ai-backend-panel').classList.add('show');
+            return;
+        }
+        await runBatchWithOverlay(backendParams.openrouter_model);
+        return;
+    }
+
+    // Local backend: check GPU requirements first
+    let requirements;
+    try {
+        requirements = await checkAiRequirements();
+    } catch (e) {
+        window.PyPotteryUtils.showToast('Could not check system requirements', 'error');
+        return;
+    }
+
+    // If model is already cached, skip confirm dialog and show the overlay directly
+    if (requirements.model_cached) {
+        await runBatchWithOverlay('Gemma 4 E2B-it (local)');
+        return;
+    }
+
+    // Model not yet cached: show confirm dialog with download note. Kept on
+    // the old plain progress bar (not the new overlay) since this is a
+    // rarely-hit path (~10GB one-time download) whose polling loop straddles
+    // two different backend phases (download, then batch extraction).
+    const statusEl = document.getElementById('ai-bibliographic-status');
+    const btn = document.getElementById('ai-bibliographic-batch-btn');
     async function runBatch(overlay, labelEl, barEl) {
         const stopSignal = { stopped: false };
         const pollInterval = startProgressPolling(labelEl, barEl, stopSignal);
@@ -1596,7 +1805,7 @@ async function handleAiBibliographicBatch() {
         try {
             const response = await window.PyPotteryUtils.apiRequest(
                 `/api/projects/${tabularState.currentProject.project_id}/tabular/ai-bibliographic-batch`,
-                { method: 'POST', body: JSON.stringify({ prompt_suffix: getPromptSuffix(), ...backendParams }) }
+                { method: 'POST', body: JSON.stringify({ prompt_suffix: getPromptSuffix(), ...backendParams, ...getBatchPageRange() }) }
             );
             stopSignal.stopped = true;
             clearInterval(pollInterval);
@@ -1634,40 +1843,6 @@ async function handleAiBibliographicBatch() {
             btn.disabled = false;
         }
     }
-
-    // For OpenRouter, skip GPU check and run batch directly with progress overlay
-    if (backendParams.ai_backend === 'openrouter') {
-        if (!backendParams.openrouter_api_key) {
-            window.PyPotteryUtils.showToast('Please enter your OpenRouter API key in the AI Backend panel', 'warning');
-            document.getElementById('ai-backend-panel').classList.add('show');
-            return;
-        }
-        const overlay = showBatchProgressOverlay();
-        const labelEl = document.getElementById('ai-batch-progress-label');
-        const barEl = document.getElementById('ai-batch-progress-bar');
-        await runBatch(overlay, labelEl, barEl);
-        return;
-    }
-
-    // Local backend: check GPU requirements first
-    let requirements;
-    try {
-        requirements = await checkAiRequirements();
-    } catch (e) {
-        window.PyPotteryUtils.showToast('Could not check system requirements', 'error');
-        return;
-    }
-
-    // If model is already cached, skip confirm dialog and show progress overlay directly
-    if (requirements.model_cached) {
-        const overlay = showBatchProgressOverlay();
-        const labelEl = document.getElementById('ai-batch-progress-label');
-        const barEl = document.getElementById('ai-batch-progress-bar');
-        await runBatch(overlay, labelEl, barEl);
-        return;
-    }
-
-    // Model not yet cached: show confirm dialog with download note
     showAiConfirmDialog(requirements, async (overlay) => {
         const labelEl = document.getElementById('ai-download-progress-label');
         const barEl = document.getElementById('ai-download-progress-bar');

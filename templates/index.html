@@ -11,7 +11,7 @@
     <!-- Local Offline Vendor Assets with CDN Fallback -->
     <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css" onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css';">
     <link rel="stylesheet" href="/static/vendor/fonts/fonts.css">
-    <link rel="stylesheet" href="/static/css/style.css?v=20260912_000000">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260914_120000">
     <style>
         /* Splash Screen - Archaeological Field Desk & Drafting Grid */
         .splash-screen {
@@ -665,23 +665,6 @@
                             <div class="annotation-image-list" id="annotation-image-list">
                                 <!-- Empty state will be populated by JavaScript -->
                             </div>
-
-                            <!-- Actions Footer (aligned with .editor-controls toolbar at bottom) -->
-                            <div class="sidebar-actions-footer">
-                                <button class="btn btn-primary btn-block" id="extract-masks-btn">
-                                    <i class="bi bi-crop"></i> Extract Cards
-                                </button>
-
-                                <!-- Extraction Progress Bar -->
-                                <div class="progress-container" id="extraction-progress" style="margin-top: 8px;">
-                                    <div class="progress-bar-wrapper">
-                                        <div class="progress-bar" id="extraction-progress-bar">0%</div>
-                                    </div>
-                                    <div class="progress-info" id="extraction-progress-info">Extracting...</div>
-                                </div>
-
-                                <div id="annotation-status" class="status-message"></div>
-                            </div>
                         </div>
 
                         <!-- Right Panel - Editor -->
@@ -733,6 +716,8 @@
                                             <div class="cluster-pill-group">
                                                 <button class="btn btn-tool active" id="brush-tool" data-tool="brush"><i class="bi bi-brush"></i> Brush</button>
                                                 <button class="btn btn-tool" id="eraser-tool" data-tool="eraser"><i class="bi bi-eraser"></i> Eraser</button>
+                                                <button class="btn btn-tool" id="cut-tool" data-tool="cut"
+                                                    title="Cut: click two points to slice a thin straight line through the mask, splitting fused blobs apart without an eraser's round blob."><i class="bi bi-scissors"></i> Cut</button>
                                             </div>
                                             <div class="size-control" id="brush-size-control" title="Adjust brush / eraser diameter">
                                                 <span class="size-label">Size</span>
@@ -761,6 +746,27 @@
                                                 title="Reset current page mask"><i class="bi bi-trash3"></i> Clear</button>
                                         </div>
                                     </div>
+                                </div>
+
+                                <!-- Project-level actions: always visible regardless of whether
+                                     the Images List sidebar is collapsed. -->
+                                <div class="annotation-actions-box">
+                                    <div class="annotation-actions-row">
+                                        <button type="button" class="btn btn-secondary" id="calibrate-scales-btn"
+                                            title="Review every scale measured across the whole project on one histogram, and snap them to consistent values.">
+                                            <i class="bi bi-bar-chart-steps"></i> Calibrate Scales
+                                        </button>
+                                        <button class="btn btn-primary" id="extract-masks-btn">
+                                            <i class="bi bi-crop"></i> Extract Cards
+                                        </button>
+                                    </div>
+                                    <div class="progress-container" id="extraction-progress" style="margin-top: 8px;">
+                                        <div class="progress-bar-wrapper">
+                                            <div class="progress-bar" id="extraction-progress-bar">0%</div>
+                                        </div>
+                                        <div class="progress-info" id="extraction-progress-info">Extracting...</div>
+                                    </div>
+                                    <div id="annotation-status" class="status-message"></div>
                                 </div>
 
                                 <!-- Manually drawn vessels (polygons) -->
@@ -872,6 +878,11 @@
                                         <button class="btn tabular-btn-ai-outline btn-sm" id="ai-bibliographic-batch-btn" title="Run Vision AI extraction across all plates in project">
                                             <i class="bi bi-collection-play"></i> Batch Extract
                                         </button>
+                                        <span class="batch-range" title="Limit the batch to a page range (1-based, matching the Plate counter). Leave blank to run on all plates.">
+                                            <input type="number" id="batch-page-from" min="1" placeholder="All" class="batch-range-input">
+                                            <span class="batch-range-sep">–</span>
+                                            <input type="number" id="batch-page-to" min="1" placeholder="All" class="batch-range-input">
+                                        </span>
                                     </div>
 
                                     <div class="tabular-cmd-group tabular-ai-options">
@@ -1094,6 +1105,27 @@
             </div>
         </div>
 
+        <!-- Scale Calibration Dialog: histogram + KDE of every scale's px/cm
+             across the whole project, with draggable "center" lines the user
+             snaps outlier measurements to. -->
+        <div id="calib-dialog" class="dialog-overlay" style="display: none;">
+            <div class="dialog calib-modal">
+                <div class="calib-dialog-header">
+                    <h2><i class="bi bi-bar-chart-steps"></i> Calibrate Scales</h2>
+                    <p class="calib-dialog-subtitle" id="calib-dialog-subtitle">Loading scales from every page&hellip;</p>
+                </div>
+                <div class="calib-dialog-body">
+                    <canvas id="calib-histogram-canvas" width="720" height="280"></canvas>
+                    <p class="calib-dialog-hint">Click empty space to add a center line &middot; drag a line to move it &middot; double-click a line to remove it.</p>
+                    <div id="calib-lines-legend" class="calib-lines-legend"></div>
+                </div>
+                <div class="calib-dialog-footer">
+                    <button type="button" class="btn btn-secondary" id="calib-cancel-btn"><i class="bi bi-x-lg"></i> Cancel</button>
+                    <button type="button" class="btn btn-primary" id="calib-apply-btn"><i class="bi bi-check-lg"></i> Apply Calibration</button>
+                </div>
+            </div>
+        </div>
+
         <!-- App Universal Confirmation Dialog -->
         <div id="app-confirm-dialog" class="dialog-overlay app-confirm-overlay" style="display: none;">
             <div class="dialog app-confirm-modal" role="dialog" aria-modal="true">
@@ -1183,6 +1215,46 @@
                         <span class="processing-detail-count" id="mask-extract-count">0 / 0</span>
                     </div>
                 </div>
+
+                <div class="processing-footer">
+                    <button type="button" class="btn btn-danger processing-cancel-btn" id="mask-extract-cancel-btn">
+                        <i class="bi bi-stop-circle-fill"></i> Stop Processing
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Full-Screen AI Reference Extraction Overlay (Matching YOLO Overlay Style) -->
+        <div id="ai-extract-overlay" class="model-processing-overlay" style="display: none;">
+            <div class="processing-backdrop-blur"></div>
+            <div class="processing-modal-card" role="dialog" aria-modal="true">
+                <div class="processing-icon-container">
+                    <i class="bi bi-journal-richtext processing-main-icon"></i>
+                </div>
+
+                <h2 class="processing-modal-title" id="ai-extract-title">Extracting References</h2>
+                <p class="processing-modal-model" id="ai-extract-model-badge">AI Model</p>
+
+                <div class="processing-stat-box">
+                    <div class="processing-percentage-display" id="ai-extract-percentage">0%</div>
+                    <div class="processing-progress-track">
+                        <div class="processing-progress-fill" id="ai-extract-progress-fill" style="width: 0%;"></div>
+                    </div>
+                    <div class="processing-detail-row">
+                        <span class="processing-detail-file" id="ai-extract-current-file">Analysing via AI...</span>
+                        <span class="processing-detail-count" id="ai-extract-count">0 / 0</span>
+                    </div>
+                    <div class="processing-detail-row">
+                        <span class="processing-detail-file"><i class="bi bi-coin"></i> Tokens used</span>
+                        <span class="processing-detail-count" id="ai-extract-tokens">0</span>
+                    </div>
+                </div>
+
+                <div class="processing-footer">
+                    <button type="button" class="btn btn-danger processing-cancel-btn" id="ai-extract-cancel-btn">
+                        <i class="bi bi-stop-circle-fill"></i> Stop Processing
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -1205,6 +1277,12 @@
                         <span class="processing-detail-file" id="postprocess-current-file">Initializing classification...</span>
                         <span class="processing-detail-count" id="postprocess-count">0 / 0</span>
                     </div>
+                </div>
+
+                <div class="processing-footer">
+                    <button type="button" class="btn btn-danger processing-cancel-btn" id="postprocess-cancel-btn">
+                        <i class="bi bi-stop-circle-fill"></i> Stop Processing
+                    </button>
                 </div>
             </div>
         </div>
@@ -1231,9 +1309,9 @@
     <script src="/static/js/project-tab.js?v=20260911_235500"></script>
     <script src="/static/js/pdf-tab.js?v=20260911_235500"></script>
     <script src="/static/js/model-tab.js?v=20260911_235500"></script>
-    <script src="/static/js/annotation-tab.js?v=20260911_235500"></script>
-    <script src="/static/js/tabular-tab.js?v=20260911_235500"></script>
-    <script src="/static/js/postprocess-tab.js?v=20260911_235500"></script>
+    <script src="/static/js/annotation-tab.js?v=20260914_120000"></script>
+    <script src="/static/js/tabular-tab.js?v=20260914_120000"></script>
+    <script src="/static/js/postprocess-tab.js?v=20260914_120000"></script>
     <script src="/static/js/main.js?v=20260912_000000"></script>
 </body>
 

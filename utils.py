@@ -603,8 +603,14 @@ class MaskExtractor:
             traceback.print_exc()
             return f"Error extracting masks: {str(e)}"
 
-    def extract_masks_from_project(self, masks_path: str, cards_path: str) -> str:
-        """Extract cards from masks in a project"""
+    def extract_masks_from_project(self, masks_path: str, cards_path: str, cancel_check=None) -> str:
+        """Extract cards from masks in a project.
+
+        ``cancel_check``, if given, is polled once per mask file; when it
+        returns True the loop stops after the current file (whatever cards
+        it already saved stay on disk) and metadata is still written for
+        everything extracted so far - a clean partial result, not a crash.
+        """
         try:
             masks_path = Path(masks_path)
             cards_path = Path(cards_path)
@@ -629,9 +635,13 @@ class MaskExtractor:
             duplicate_count = 0
 
             total_files = len(mask_files)
-            
+
             # Process each mask file
             for idx, file in enumerate(mask_files, 1):
+                if cancel_check and cancel_check():
+                    print(f"Extraction cancelled after {idx - 1}/{total_files} masks")
+                    break
+
                 print(f"Processing mask {idx}/{total_files}: {file}")
                 
                 base_filename = file.replace("_mask_layer.png", "")
@@ -1222,26 +1232,44 @@ def _assign_px_per_cm(scales: list, centroid: tuple):
     """Return px_per_cm for the card whose bbox centroid is given.
 
     Zoned scales (zone != None) take priority over the first global
-    (zone == None) fallback. Returns None if no scales are defined.
+    (zone == None) fallback. When multiple zones match the same centroid,
+    the smallest-area zone wins (most specific = most likely intended),
+    rather than list order. Returns None if no scales are defined.
     """
     import math
 
     def px_ratio(s):
+        # A user-confirmed calibration (see the "Calibrate Scales" histogram
+        # tool) overrides the raw p1/p2/real_cm measurement, which is prone
+        # to a few pixels of click imprecision. Rounded to 1 decimal in both
+        # branches: that already exceeds what a single-pixel click error can
+        # resolve, and it's the precision the UI displays everywhere - a raw
+        # float like 19.897597751688817 in the exported CSV is noise, not
+        # signal.
+        cal = s.get('calibrated_px_per_cm')
+        if cal and cal > 0:
+            return round(cal, 1)
         dx = s['p2'][0] - s['p1'][0]
         dy = s['p2'][1] - s['p1'][1]
         dist_px = math.hypot(dx, dy)
         real_cm = s.get('real_cm', 0)
-        return round(dist_px / real_cm, 4) if real_cm > 0 and dist_px > 0 else None
+        return round(dist_px / real_cm, 1) if real_cm > 0 and dist_px > 0 else None
 
     cx, cy = centroid
+    matches = []
     for s in scales:
         z = s.get('zone')
         if z:
             x1, y1, x2, y2 = z
             if min(x1, x2) <= cx <= max(x1, x2) and min(y1, y2) <= cy <= max(y1, y2):
-                r = px_ratio(s)
-                if r is not None:
-                    return r
+                area = abs(x2 - x1) * abs(y2 - y1)
+                matches.append((area, s))
+    if matches:
+        matches.sort(key=lambda m: m[0])
+        for _, s in matches:
+            r = px_ratio(s)
+            if r is not None:
+                return r
     for s in scales:
         if not s.get('zone'):
             return px_ratio(s)

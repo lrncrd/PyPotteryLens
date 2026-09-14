@@ -375,12 +375,24 @@ class VisionUnsupportedError(Exception):
     pass
 
 
-def call_openrouter_ai(image_pil, prompt, api_key, model_name, max_tokens=2048):
+def call_openrouter_ai(image_pil, prompt, api_key, model_name, max_tokens=2048, on_tokens=None):
     """Send an image + text prompt to OpenRouter and return the raw text response.
 
     The image is base64-encoded and sent as an OpenAI-compatible vision message so
     any vision-capable model available on OpenRouter can be used. ``max_tokens`` is
     sized by the caller to the number of drawings so busy pages are not truncated.
+
+    OpenRouter occasionally returns a 200 with empty message content: either a
+    transient provider hiccup, or (common with reasoning-capable models, e.g. the
+    deepseek default) the whole token budget gets consumed by hidden reasoning
+    tokens before any visible answer is emitted (finish_reason == 'length' with no
+    content). One retry with a larger budget covers both cases; if it still comes
+    back empty, raise instead of silently returning "" so the caller isn't left
+    guessing why JSON parsing failed.
+
+    ``on_tokens``, if given, is called with the request's total token usage (an
+    int) once a non-empty response is obtained - lets callers track spend
+    (e.g. for a progress overlay) without this function knowing about UI state.
     """
     import base64 as _base64
     import io as _io
@@ -397,30 +409,60 @@ def call_openrouter_ai(image_pil, prompt, api_key, model_name, max_tokens=2048):
         api_key=api_key,
     )
 
-    try:
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                        {"type": "text", "text": prompt},
-                    ],
-                }
-            ],
-            max_tokens=max_tokens,
-        )
-    except Exception as _or_exc:
-        _msg = str(_or_exc)
-        if '404' in _msg or 'image input' in _msg.lower() or 'No endpoints' in _msg:
-            raise VisionUnsupportedError(
-                f"Model '{model_name}' does not support image/vision input on OpenRouter. "
-                "Please select a vision-capable model in the AI Backend panel."
-            ) from _or_exc
-        raise
+    def _call(tokens):
+        try:
+            return client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": data_url}},
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ],
+                max_tokens=tokens,
+                # None of these prompts need visible chain-of-thought, just a
+                # terse answer - reasoning-capable models (e.g. the deepseek
+                # default) otherwise burn the whole max_tokens budget thinking
+                # and return empty content (finish_reason=length). OpenRouter
+                # ignores this for models that don't support toggling it.
+                extra_body={"reasoning": {"enabled": False}},
+            )
+        except Exception as _or_exc:
+            _msg = str(_or_exc)
+            if '404' in _msg or 'image input' in _msg.lower() or 'No endpoints' in _msg:
+                raise VisionUnsupportedError(
+                    f"Model '{model_name}' does not support image/vision input on OpenRouter. "
+                    "Please select a vision-capable model in the AI Backend panel."
+                ) from _or_exc
+            raise
 
-    return response.choices[0].message.content or ""
+    response = _call(max_tokens)
+    content = response.choices[0].message.content or ""
+
+    if not content.strip():
+        # Widen generously on retry, not just double - a tight budget (e.g. the
+        # 20-token "read this number" crop calls) needs real headroom to survive
+        # a reasoning model, not a still-tiny 40.
+        retry_tokens = min(max(max_tokens * 4, 300), 8192)
+        print(f"[OpenRouter] Empty response (finish_reason={response.choices[0].finish_reason}), retrying with max_tokens={retry_tokens}...")
+        response = _call(retry_tokens)
+        content = response.choices[0].message.content or ""
+
+    if not content.strip():
+        raise RuntimeError(
+            f"OpenRouter returned an empty response twice in a row for model '{model_name}' "
+            f"(finish_reason={response.choices[0].finish_reason}). The model may be exhausting its "
+            "token budget on internal reasoning before answering - try a non-reasoning vision "
+            "model, or a page with fewer drawings."
+        )
+
+    if on_tokens and getattr(response, 'usage', None) and response.usage.total_tokens:
+        on_tokens(response.usage.total_tokens)
+
+    return content
 
 
 init_status = {
@@ -445,8 +487,21 @@ operation_progress = {
     'total': 0,
     'current': 0,
     'message': '',
-    'percent': 0
+    'percent': 0,
+    'cancel_requested': False,
+    'tokens_used': 0
 }
+
+def start_operation_progress(operation, total, message=''):
+    """Like update_operation_progress, but call this once before a cancellable
+    loop starts - it also resets the cancel flag and token counter left over
+    from whatever operation last used this dict."""
+    global operation_progress
+    operation_progress.update({
+        'active': True, 'operation': operation, 'current': 0, 'total': total,
+        'message': message, 'percent': 0, 'cancel_requested': False, 'tokens_used': 0
+    })
+    print(f"[{operation}] 0% - {message}")
 
 def update_operation_progress(operation, current, total, message=''):
     """Update operation progress for frontend polling"""
@@ -459,6 +514,12 @@ def update_operation_progress(operation, current, total, message=''):
     operation_progress['percent'] = int((current / total * 100)) if total > 0 else 0
     print(f"[{operation}] {operation_progress['percent']}% - {message}")
 
+def add_operation_tokens(n):
+    """Accumulate AI token usage for the operation currently using operation_progress."""
+    global operation_progress
+    if n:
+        operation_progress['tokens_used'] = operation_progress.get('tokens_used', 0) + n
+
 def clear_operation_progress():
     """Clear operation progress"""
     global operation_progress
@@ -468,6 +529,7 @@ def clear_operation_progress():
     operation_progress['current'] = 0
     operation_progress['message'] = ''
     operation_progress['percent'] = 0
+    operation_progress['cancel_requested'] = False
 
 # Initialize directories
 ROOT_DIR = Path(".")
@@ -679,6 +741,16 @@ def get_init_status():
 def get_operation_progress():
     """Get current operation progress for frontend polling"""
     return jsonify(operation_progress)
+
+@app.route('/api/operation-progress/cancel', methods=['POST'])
+def cancel_operation_progress():
+    """Request cancellation of whatever loop is currently reporting through
+    operation_progress (e.g. the AI batch reference extraction). The loop
+    checks operation_progress['cancel_requested'] between iterations and
+    stops cleanly, keeping whatever it already processed."""
+    global operation_progress
+    operation_progress['cancel_requested'] = True
+    return jsonify({'success': True})
 
 @app.route('/api/system-info')
 def get_system_info():
@@ -1082,8 +1154,9 @@ def extract_project_masks(project_id):
         if total_masks == 0:
             return jsonify({'error': 'No mask files found. Apply a model first.', 'success': False}), 404
         
-        # Initialize progress
-        update_operation_progress('extract_masks', 0, total_masks, 'Starting extraction...')
+        # Initialize progress (also resets any stale cancel flag from a
+        # previous, unrelated operation)
+        start_operation_progress('extract_masks', total_masks, 'Starting extraction...')
         
         # Run extraction in a way that allows progress updates
         # We'll monkey-patch the print function temporarily
@@ -1112,25 +1185,29 @@ def extract_project_masks(project_id):
         
         builtins.print = progress_print
         
+        was_cancelled = False
         try:
             # Extract masks using project paths
             result = mask_extractor.extract_masks_from_project(
                 str(masks_path),
-                str(cards_path)
+                str(cards_path),
+                cancel_check=lambda: operation_progress.get('cancel_requested', False)
             )
+            was_cancelled = operation_progress.get('cancel_requested', False)
         finally:
             builtins.print = original_print
             clear_operation_progress()
-        
+
         # Update project workflow status
         card_count = len(list(cards_path.glob('*.png'))) if cards_path.exists() else 0
         project_manager.update_workflow_status(project_id, {
             'cards_extracted': card_count
         })
-        
+
         return jsonify({
             'message': result,
-            'success': True
+            'success': True,
+            'cancelled': was_cancelled
         })
         
     except Exception as e:
@@ -2318,6 +2395,11 @@ def ai_extract_bibliographic(project_id):
         openrouter_model = str(data.get('openrouter_model', 'deepseek/deepseek-v4-flash')).strip()
         numbers_from_crops = bool(data.get('numbers_from_crops', False))
 
+        tokens_used = 0
+        def _accum_tokens(n):
+            nonlocal tokens_used
+            tokens_used += n
+
         cards_path = project_manager.get_project_path(project_id, 'cards')
         images_path = project_manager.get_project_path(project_id, 'images')
 
@@ -2438,7 +2520,8 @@ def ai_extract_bibliographic(project_id):
         if ai_backend == 'openrouter':
             if not openrouter_api_key:
                 return jsonify({'error': 'OpenRouter API key is required', 'success': False}), 400
-            raw_response = call_openrouter_ai(page_image, prompt, openrouter_api_key, openrouter_model, max_tokens)
+            raw_response = call_openrouter_ai(page_image, prompt, openrouter_api_key, openrouter_model,
+                                              max_tokens, on_tokens=_accum_tokens)
             print(f"[AI OpenRouter] Raw response: {raw_response[:300]}")
         else:
             # Load Gemma 4 E2B-it and run inference
@@ -2528,7 +2611,8 @@ def ai_extract_bibliographic(project_id):
             try:
                 _read_numbers_from_crops(
                     original_image_path, image_annots, current_image_name,
-                    df_info, ai_backend, openrouter_api_key, openrouter_model)
+                    df_info, ai_backend, openrouter_api_key, openrouter_model,
+                    on_tokens=_accum_tokens)
             except Exception as _ne:
                 print(f"[AI] numbers-from-crops failed: {_ne}")
 
@@ -2554,7 +2638,8 @@ def ai_extract_bibliographic(project_id):
             'success': True,
             'table': table_data,
             'columns': columns,
-            'ai_result': ai_result
+            'ai_result': ai_result,
+            'tokens_used': tokens_used
         })
 
     except VisionUnsupportedError as e:
@@ -2584,6 +2669,9 @@ def ai_extract_bibliographic_batch(project_id):
         openrouter_api_key = str(data.get('openrouter_api_key', '')).strip()
         openrouter_model = str(data.get('openrouter_model', 'deepseek/deepseek-v4-flash')).strip()
         numbers_from_crops = bool(data.get('numbers_from_crops', False))
+        page_from = data.get('page_from')
+        page_to = data.get('page_to')
+        dry_run = bool(data.get('dry_run', False))
 
         if ai_backend == 'openrouter' and not openrouter_api_key:
             return jsonify({'error': 'OpenRouter API key is required', 'success': False}), 400
@@ -2614,8 +2702,37 @@ def ai_extract_bibliographic_batch(project_id):
             if col not in df_info.columns:
                 df_info[col] = ''
 
-        total = len(unique_images)
-        update_operation_progress('ai_batch', 0, total, 'Loading AI model...')
+        # Optional 1-based page range, matching the "Plate X of Y" counter
+        # shown elsewhere in this tab (so page 1 = unique_images[0]).
+        start_idx = max(0, int(page_from) - 1) if page_from else 0
+        end_idx = int(page_to) if page_to else len(unique_images)
+        images_to_process = unique_images[start_idx:end_idx]
+        if not images_to_process:
+            return jsonify({'error': 'No pages in the selected range', 'success': False}), 400
+
+        # A page counts as "already has data" if ANY of its rows already has a
+        # non-empty value in one of the AI-fillable columns (scale calibration
+        # lives entirely separately and is never considered here). This never
+        # blocks or filters the run - it's purely informational so the caller
+        # can warn before overwriting.
+        ai_cols = [c for c in ['page', 'plate', 'figure', 'number'] if c in df_info.columns]
+        already_filled = 0
+        if ai_cols:
+            for name in images_to_process:
+                rows = df_info[df_info['file'] == name]
+                if not rows.empty and rows[ai_cols].apply(lambda col: col.astype(str).str.strip().ne('')).to_numpy().any():
+                    already_filled += 1
+
+        if dry_run:
+            return jsonify({
+                'success': True,
+                'dry_run': True,
+                'already_filled': already_filled,
+                'total': len(images_to_process)
+            })
+
+        total = len(images_to_process)
+        start_operation_progress('ai_batch', total, 'Loading AI model...')
 
         # Load local model only if needed (skip for OpenRouter)
         model, processor = (None, None)
@@ -2623,7 +2740,12 @@ def ai_extract_bibliographic_batch(project_id):
             model, processor = load_gemma_model()
 
         errors = []
-        for idx, current_image_name in enumerate(unique_images):
+        was_cancelled = False
+        for idx, current_image_name in enumerate(images_to_process):
+            if operation_progress.get('cancel_requested'):
+                was_cancelled = True
+                break
+
             update_operation_progress('ai_batch', idx, total,
                                       f'Processing image {idx + 1}/{total}: {current_image_name}')
 
@@ -2719,7 +2841,8 @@ def ai_extract_bibliographic_batch(project_id):
             # ---- Run inference (local Gemma or OpenRouter) ----
             if ai_backend == 'openrouter':
                 try:
-                    raw_response = call_openrouter_ai(page_image, prompt, openrouter_api_key, openrouter_model, max_tokens)
+                    raw_response = call_openrouter_ai(page_image, prompt, openrouter_api_key, openrouter_model,
+                                                      max_tokens, on_tokens=add_operation_tokens)
                     print(f"[AI Batch OpenRouter] {current_image_name} response: {raw_response[:200]}")
                 except Exception as _or_err:
                     errors.append(f'OpenRouter error for {current_image_name}: {_or_err}')
@@ -2800,16 +2923,21 @@ def ai_extract_bibliographic_batch(project_id):
                     _read_numbers_from_crops(
                         original_image_path, image_annots, current_image_name,
                         df_info, ai_backend, openrouter_api_key, openrouter_model,
-                        model=model, processor=processor)
+                        model=model, processor=processor, on_tokens=add_operation_tokens)
                 except Exception as _ne:
                     print(f"[AI Batch] numbers-from-crops failed for {current_image_name}: {_ne}")
 
+        tokens_used = operation_progress.get('tokens_used', 0)
+        processed = idx if was_cancelled else total
         df_info.to_csv(mask_info_path, index=False)
         clear_operation_progress()
 
         return jsonify({
             'success': True,
-            'processed': total,
+            'cancelled': was_cancelled,
+            'processed': processed,
+            'total': total,
+            'tokens_used': tokens_used,
             'errors': errors
         })
 
@@ -2825,7 +2953,7 @@ def ai_extract_bibliographic_batch(project_id):
 
 def _read_numbers_from_crops(original_image_path, image_annots, current_image_name,
                              df_info, ai_backend, openrouter_api_key, openrouter_model,
-                             model=None, processor=None):
+                             model=None, processor=None, on_tokens=None):
     """Overwrite the 'number' column by reading each drawing's inventory number
     from a zoomed-in crop of the FULL-resolution page (one focused AI call each).
 
@@ -2879,7 +3007,7 @@ def _read_numbers_from_crops(original_image_path, image_annots, current_image_na
         try:
             if ai_backend == 'openrouter':
                 raw = call_openrouter_ai(crop, number_prompt, openrouter_api_key,
-                                         openrouter_model, max_tokens=20)
+                                         openrouter_model, max_tokens=20, on_tokens=on_tokens)
             else:
                 messages = [{"role": "user", "content": [
                     {"type": "image", "image": crop},
@@ -3238,12 +3366,17 @@ def process_project_cards(project_id):
         
         total_cards = len(card_files)
         
-        # Initialize progress
-        update_operation_progress('postprocess', 0, total_cards, 'Starting post-processing...')
-        
+        # Initialize progress (also resets any stale cancel flag from a
+        # previous, unrelated operation)
+        start_operation_progress('postprocess', total_cards, 'Starting post-processing...')
+
         # Process each card
         results = []
+        was_cancelled = False
         for idx, card_file in enumerate(card_files):
+            if operation_progress.get('cancel_requested'):
+                was_cancelled = True
+                break
             try:
                 # Update progress
                 card_name = card_file.stem
@@ -3284,7 +3417,8 @@ def process_project_cards(project_id):
         return jsonify({
             'message': f'Successfully processed {len(results)} cards',
             'count': len(results),
-            'success': True
+            'success': True,
+            'cancelled': was_cancelled
         })
         
     except Exception as e:
