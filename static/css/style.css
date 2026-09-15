@@ -5045,6 +5045,14 @@ body {
     transition: border-color 0.2s, box-shadow 0.2s;
 }
 
+.tabular-select-narrow {
+    width: 140px;
+}
+
+.tabular-input-narrow {
+    width: 140px;
+}
+
 .batch-range {
     display: inline-flex;
     align-items: center;

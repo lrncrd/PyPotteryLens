@@ -11,7 +11,7 @@
     <!-- Local Offline Vendor Assets with CDN Fallback -->
     <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css" onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css';">
     <link rel="stylesheet" href="/static/vendor/fonts/fonts.css">
-    <link rel="stylesheet" href="/static/css/style.css?v=20260914_120000">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260915_090000">
     <style>
         /* Splash Screen - Archaeological Field Desk & Drafting Grid */
         .splash-screen {
@@ -863,6 +863,15 @@
                                         </div>
                                     </div>
                                     <div class="tabular-cmd-group">
+                                        <div class="tabular-input-wrap">
+                                            <select id="fill-column-select" class="form-control tabular-input tabular-select-narrow" title="Column to fill"></select>
+                                            <input type="text" id="fill-column-value" placeholder="Value..." class="form-control tabular-input tabular-input-narrow">
+                                            <button class="btn btn-secondary btn-sm" id="fill-column-btn" title="Set this value for every row's cell in this column, on this page only">
+                                                <i class="bi bi-arrow-bar-down"></i> Fill Column
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="tabular-cmd-group">
                                         <button class="btn btn-danger-soft btn-sm" id="clear-table-btn" title="Clear all transcription values on this page (preserves ID column)">
                                             <i class="bi bi-trash3"></i> Clear Page Data
                                         </button>
@@ -1310,7 +1319,7 @@
     <script src="/static/js/pdf-tab.js?v=20260911_235500"></script>
     <script src="/static/js/model-tab.js?v=20260911_235500"></script>
     <script src="/static/js/annotation-tab.js?v=20260914_120000"></script>
-    <script src="/static/js/tabular-tab.js?v=20260914_120000"></script>
+    <script src="/static/js/tabular-tab.js?v=20260915_090000"></script>
     <script src="/static/js/postprocess-tab.js?v=20260914_120000"></script>
     <script src="/static/js/main.js?v=20260912_000000"></script>
 </body>

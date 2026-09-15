@@ -50,7 +50,7 @@ from utils import (
     PDF_RENDER_DPI,
 )
 
-from project_manager import ProjectManager
+from project_manager import ProjectManager, _natural_sort_key
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'pypotterylens-secret-key-2024'
@@ -2041,7 +2041,7 @@ def load_project_tabular_data(project_id):
             lambda x: x.split('layer_')[1].replace('.png', '') if isinstance(x, str) and 'layer_' in x else '0')
         
         # Get list of unique images
-        unique_images = sorted(df_annots['image_name'].unique())
+        unique_images = sorted(df_annots['image_name'].unique(), key=_natural_sort_key)
         
         if not unique_images:
             return jsonify({'error': 'No images found in annotations', 'success': False}), 404
@@ -2417,7 +2417,7 @@ def ai_extract_bibliographic(project_id):
         df_annots['ID'] = df_annots['mask_file'].apply(
             lambda x: x.split('layer_')[1].replace('.png', '') if isinstance(x, str) and 'layer_' in x else '0')
 
-        unique_images = sorted(df_annots['image_name'].unique())
+        unique_images = sorted(df_annots['image_name'].unique(), key=_natural_sort_key)
         if not unique_images:
             return jsonify({'error': 'No images found in annotations', 'success': False}), 404
 
@@ -2693,7 +2693,7 @@ def ai_extract_bibliographic_batch(project_id):
         df_annots['ID'] = df_annots['mask_file'].apply(
             lambda x: x.split('layer_')[1].replace('.png', '') if isinstance(x, str) and 'layer_' in x else '0')
 
-        unique_images = sorted(df_annots['image_name'].unique())
+        unique_images = sorted(df_annots['image_name'].unique(), key=_natural_sort_key)
         if not unique_images:
             return jsonify({'error': 'No images found in annotations', 'success': False}), 404
 

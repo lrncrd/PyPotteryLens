@@ -77,6 +77,9 @@ function setupTabularListeners() {
     // Clear current page's table (keep ID/index)
     document.getElementById('clear-table-btn')?.addEventListener('click', handleClearTable);
 
+    // Fill one column with the same value for every row on this page
+    document.getElementById('fill-column-btn')?.addEventListener('click', handleFillColumn);
+
     // Toggle bounding-box overlay
     document.getElementById('toggle-boxes')?.addEventListener('change', (e) => {
         tabularState.showBoxes = e.target.checked;
@@ -737,6 +740,19 @@ function displayTable(data, columns) {
         });
         bodyEl.appendChild(tr);
     });
+
+    populateFillColumnSelect(columns);
+}
+
+// Keeps the Fill Column dropdown in sync with whatever columns this page
+// currently has (ID excluded - it's a row identifier, not transcribed data).
+function populateFillColumnSelect(columns) {
+    const select = document.getElementById('fill-column-select');
+    if (!select) return;
+    const selectable = columns.filter(c => c !== 'ID');
+    const previous = select.value;
+    select.innerHTML = selectable.map(c => `<option value="${c}">${c}</option>`).join('');
+    if (selectable.includes(previous)) select.value = previous;
 }
 
 async function handleCellChange(e) {
@@ -808,6 +824,43 @@ async function handleClearTable() {
     displayTable(tabularState.tableData, tabularState.columns);
     await saveTabularData();
     window.PyPotteryUtils.showToast('Table cleared', 'success');
+}
+
+// Sets one value into a chosen column for every row on this page - most
+// bibliographic fields (plate, figure, page) are constant across a whole
+// plate, only "number" actually varies per drawing, so this saves retyping
+// the same value into every row by hand.
+async function handleFillColumn() {
+    const select = document.getElementById('fill-column-select');
+    const valueInput = document.getElementById('fill-column-value');
+    if (!select || !select.value) {
+        window.PyPotteryUtils.showToast('No column to fill', 'warning');
+        return;
+    }
+    if (!tabularState.tableData || tabularState.tableData.length === 0) {
+        window.PyPotteryUtils.showToast('Nothing to fill', 'warning');
+        return;
+    }
+    const column = select.value;
+    const value = valueInput ? valueInput.value : '';
+
+    const confirmed = await window.PyPotteryUtils.showConfirmDialog({
+        title: 'Fill Column',
+        subtitle: `Set "${column}" to "${value}" for all ${tabularState.tableData.length} row(s) on this page?`,
+        icon: 'bi-arrow-bar-down',
+        iconColor: '#c2410c',
+        iconBg: '#ffedd5',
+        note: 'This overwrites any existing values already in this column, on this page only.',
+        confirmText: 'Fill Column',
+        cancelText: 'Cancel',
+        confirmClass: 'btn-primary'
+    });
+    if (!confirmed) return;
+
+    tabularState.tableData = tabularState.tableData.map(row => ({ ...row, [column]: value }));
+    displayTable(tabularState.tableData, tabularState.columns);
+    await saveTabularData();
+    window.PyPotteryUtils.showToast(`Filled "${column}" for ${tabularState.tableData.length} row(s)`, 'success');
 }
 
 async function handleAddColumn() {
