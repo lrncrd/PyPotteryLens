@@ -48,6 +48,9 @@ from utils import (
     write_scale_sidecar,
     SCALE_SIDECAR_SUFFIX,
     PDF_RENDER_DPI,
+    setup_logging,
+    describe_error,
+    log_error,
 )
 
 from project_manager import ProjectManager, _natural_sort_key
@@ -538,6 +541,19 @@ PDFIMG_OUTPUT_DIR = ROOT_DIR / "pdf2img_outputs"
 MODELS_DIR = ROOT_DIR / "models_vision"
 MODELS_CLASSIFIER_DIR = ROOT_DIR / "models_classifier"
 ASSETS_DIR = ROOT_DIR / "imgs"
+
+# Logging: full tracebacks go to a rotating file so failures can be
+# diagnosed after the fact, even with no visible console (e.g. when
+# launched from the suite launcher, which redirects stdout elsewhere).
+logger = setup_logging(ROOT_DIR / "logs")
+
+
+def handle_error(exc: Exception, action: str, status: int = 500):
+    """Log the full traceback and return a jsonify()'d, human-readable
+    error for `action`, using the same {'error', 'success'} shape the
+    frontend's apiRequest()/showToast() already expect."""
+    log_error(logger, action, exc)
+    return jsonify({'error': describe_error(exc, action), 'success': False}), status
 
 # Create necessary directories
 for directory in [PDFIMG_OUTPUT_DIR, MODELS_DIR, PRED_OUTPUT_DIR, MODELS_CLASSIFIER_DIR]:
@@ -1473,10 +1489,7 @@ def upload_pdf():
         })
         
     except Exception as e:
-        print(f"Error in PDF upload: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e), 'success': False}), 500
+        return handle_error(e, "processing the PDF")
 
 
 # ==================== MODEL APPLICATION ====================
@@ -1487,7 +1500,8 @@ model_progress = {
     'current': 0,
     'message': 'Idle',
     'active': False,
-    'cancelled': False
+    'cancelled': False,
+    'error': False
 }
 
 @app.route('/api/model/apply', methods=['POST'])
@@ -1528,7 +1542,8 @@ def apply_model():
             'current': 0,
             'message': 'Starting...',
             'active': True,
-            'cancelled': False
+            'cancelled': False,
+            'error': False
         }
         
         # Progress callback
@@ -1566,10 +1581,10 @@ def apply_model():
                 model_progress['active'] = False
                 
             except Exception as e:
-                import traceback
-                traceback.print_exc()
-                model_progress['message'] = f'Error: {str(e)}'
+                log_error(logger, "applying the model", e)
+                model_progress['message'] = describe_error(e, "applying the model")
                 model_progress['active'] = False
+                model_progress['error'] = True
         
         thread = threading.Thread(target=run_model)
         thread.daemon = True
@@ -1581,9 +1596,7 @@ def apply_model():
         })
         
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e), 'success': False}), 500
+        return handle_error(e, "applying the model")
 
 
 @app.route('/api/model/cancel', methods=['POST'])
@@ -3313,9 +3326,9 @@ def export_results():
             'message': result,
             'success': True
         })
-        
+
     except Exception as e:
-        return jsonify({'error': str(e), 'success': False}), 500
+        return handle_error(e, "exporting the results")
 
 
 # ==================== STATIC FILES ====================
@@ -3932,10 +3945,7 @@ def export_project_results(project_id):
             pass
         
     except Exception as e:
-        print(f"Error exporting project results: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e), 'success': False}), 500
+        return handle_error(e, "exporting the project results")
 
 
 # ==================== ERROR HANDLERS ====================
@@ -4009,9 +4019,9 @@ if __name__ == '__main__':
     threading.Thread(target=open_browser, daemon=True).start()
     
     app.run(
-        host='0.0.0.0',
+        host='127.0.0.1',
         port=5001,
-        debug=True,
+        debug=False,
         threaded=True,
         use_reloader=False  # Disable reloader to prevent double initialization
     )

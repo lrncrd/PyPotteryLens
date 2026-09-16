@@ -31,6 +31,64 @@ import gc
 PDF_RENDER_DPI = 300
 
 
+import logging
+from logging.handlers import RotatingFileHandler
+import json as _json_mod
+
+LOG_FILENAME = "pypotterylens.log"
+
+
+def setup_logging(log_dir: Path) -> logging.Logger:
+    """Create the app-wide logger, writing full tracebacks to a rotating
+    file so a crash can be diagnosed after the fact even when the app is
+    launched with no visible console (e.g. from the suite launcher)."""
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger("pypotterylens")
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        handler = RotatingFileHandler(
+            log_dir / LOG_FILENAME, maxBytes=2_000_000, backupCount=3, encoding="utf-8"
+        )
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        logger.addHandler(handler)
+    return logger
+
+
+def describe_error(exc: Exception, action: str) -> str:
+    """Turn a raw exception into a short, human-readable sentence for
+    non-technical users, describing what was being attempted (`action`)
+    instead of leaking the Python-level message. Full details always go
+    to the log file via log_error()."""
+    text = str(exc)
+    lower_text = text.lower()
+
+    if isinstance(exc, FileNotFoundError):
+        friendly = f"A required file could not be found while {action}."
+    elif isinstance(exc, PermissionError):
+        friendly = (
+            f"Permission denied while {action}. Check that the file isn't open "
+            "in another program and that PyPotteryLens can write to the project folder."
+        )
+    elif "cuda out of memory" in lower_text or "out of memory" in lower_text:
+        friendly = (
+            f"The GPU ran out of memory while {action}. Try processing fewer images "
+            "at once, or restart the app to free GPU memory."
+        )
+    elif isinstance(exc, MemoryError):
+        friendly = f"The system ran out of memory while {action}."
+    elif isinstance(exc, _json_mod.JSONDecodeError):
+        friendly = f"A project or data file appears to be corrupted while {action}."
+    else:
+        friendly = f"Something went wrong while {action} ({type(exc).__name__})."
+
+    return f"{friendly} See {LOG_FILENAME} in the logs folder for technical details."
+
+
+def log_error(logger: logging.Logger, action: str, exc: Exception) -> None:
+    """Record the full traceback for a failure encountered while `action`."""
+    logger.exception("Error while %s: %s", action, exc)
+
+
 @dataclass
 class PDFConfig:
     """Configuration for PDF processing"""

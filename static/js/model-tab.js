@@ -591,11 +591,14 @@ async function pollModelProgress(totalExpected, elements) {
                 finalResult.cancelled = true;
                 finalResult.message = progress.message || 'Processing cancelled by user';
             }
-            
+
             // Check if processing is complete
             if (!progress.active) {
                 isActive = false;
-                if (!progress.cancelled) {
+                if (progress.error) {
+                    finalResult.success = false;
+                    finalResult.message = progress.message || 'Failed to apply model';
+                } else if (!progress.cancelled) {
                     if (percentageEl) percentageEl.textContent = '100%';
                     if (progressFill) progressFill.style.width = '100%';
                     finalResult.message = progress.message || 'Inference complete!';
