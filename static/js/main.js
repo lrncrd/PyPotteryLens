@@ -1,4 +1,12 @@
-// Main JavaScript for PyPotteryLens Flask App
+// Helper: Check if a project is currently active
+function hasActiveProject() {
+    if (window.projectManager && typeof window.projectManager.getCurrentProject === 'function') {
+        const p = window.projectManager.getCurrentProject();
+        if (p && p.project_id) return true;
+    }
+    const savedId = localStorage.getItem('currentProjectId');
+    return Boolean(savedId && savedId !== 'null' && savedId !== 'undefined');
+}
 
 // Tab Management
 class TabManager {
@@ -11,12 +19,28 @@ class TabManager {
 
     init() {
         this.tabs.forEach(tab => {
-            tab.addEventListener('click', () => this.switchTab(tab));
+            tab.addEventListener('click', (e) => {
+                const tabId = tab.dataset.tab;
+                if (tabId !== 'projects' && !hasActiveProject()) {
+                    e.preventDefault();
+                    if (typeof showToast === 'function') {
+                        showToast('Select or create a project first to access other sections.', 'warning');
+                    }
+                    return;
+                }
+                this.switchTab(tab);
+            });
         });
     }
 
     switchTab(clickedTab) {
         const tabId = clickedTab.dataset.tab;
+        if (tabId !== 'projects' && !hasActiveProject()) {
+            if (typeof showToast === 'function') {
+                showToast('Select or create a project first to access other sections.', 'warning');
+            }
+            return;
+        }
         console.log('Switching to tab:', tabId);
 
         // Update tab buttons
@@ -190,6 +214,9 @@ document.addEventListener('DOMContentLoaded', () => {
         updateTabsState(project);
     });
 
+    // Initial check of tab lock state
+    updateTabsState(window.projectManager ? window.projectManager.getCurrentProject() : null);
+
     // Initial refresh of first tab (now projects tab)
     refreshProjectsTab().catch(console.error);
 });
@@ -198,21 +225,27 @@ document.addEventListener('DOMContentLoaded', () => {
  * Update tabs state based on current project
  */
 function updateTabsState(project) {
-    const pdfTab = document.querySelector('[data-tab="pdf"]');
-    const modelTab = document.querySelector('[data-tab="model"]');
-    const annotationTab = document.querySelector('[data-tab="annotation"]');
-    const tabularTab = document.querySelector('[data-tab="tabular"]');
-    const postprocessTab = document.querySelector('[data-tab="postprocess"]');
+    const hasProject = Boolean(project && project.project_id) || hasActiveProject();
+    const otherTabs = document.querySelectorAll('.tab-button:not([data-tab="projects"])');
     
-    if (!project) {
-        // No project selected - show info message
-        console.log('No project selected - some features may be limited');
-    } else {
-        console.log('Project active:', project.project_name);
+    otherTabs.forEach(tab => {
+        tab.classList.toggle('tab-locked', !hasProject);
+        if (!hasProject) {
+            tab.setAttribute('title', 'Select or create a project first to unlock this section');
+        } else {
+            tab.removeAttribute('title');
+        }
+    });
+
+    if (!hasProject) {
+        const activeTab = document.querySelector('.tab-button.active');
+        if (activeTab && activeTab.dataset.tab !== 'projects') {
+            const projectsTab = document.querySelector('.tab-button[data-tab="projects"]');
+            if (projectsTab) {
+                projectsTab.click();
+            }
+        }
     }
-    
-    // Note: We keep all tabs enabled for now, but could add logic to disable
-    // tabs based on workflow status (e.g., disable annotation until model is applied)
 }
 
 // Export functions
@@ -427,3 +460,75 @@ async function loadSystemInfo() {
 document.addEventListener('DOMContentLoaded', () => {
     initializeModelInfoPopup();
 });
+
+// ==========================================
+// Auto-Shutdown Heartbeat & Beacon System
+// ==========================================
+(function initAutoShutdownBeacon() {
+    // Generate a unique identifier for this tab instance
+    const tabSessionId = 'tab_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now();
+    const HEARTBEAT_INTERVAL_MS = 2500;
+
+    function sendHeartbeat() {
+        fetch('/api/heartbeat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tab_id: tabSessionId }),
+            keepalive: true
+        }).catch(() => {
+            // Harmless if server is restarting or shutting down
+        });
+    }
+
+    // Send first heartbeat immediately on script load
+    sendHeartbeat();
+
+    // Regular interval heartbeat
+    const intervalId = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+
+    // Re-ping when tab regains focus or visibility
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            sendHeartbeat();
+        }
+    });
+
+    window.addEventListener('focus', () => {
+        sendHeartbeat();
+    });
+
+    // Prompt user confirmation dialog when closing tab or browser
+    window.addEventListener('beforeunload', (e) => {
+        // Standard cross-browser way to trigger native confirmation modal
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+    });
+
+    // Notify backend when tab/window is ACTUALLY being closed
+    // pagehide only fires if the user confirmed the exit dialog (not if they clicked Cancel/Stay)
+    let beaconSent = false;
+    function sendShutdownBeacon() {
+        if (beaconSent) return;
+        beaconSent = true;
+        clearInterval(intervalId);
+        const payload = JSON.stringify({ tab_id: tabSessionId });
+
+        if (navigator.sendBeacon) {
+            const blob = new Blob([payload], { type: 'application/json' });
+            navigator.sendBeacon('/api/beacon_shutdown', blob);
+        } else {
+            fetch('/api/beacon_shutdown', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: payload,
+                keepalive: true
+            }).catch(() => {});
+        }
+    }
+
+    window.addEventListener('pagehide', sendShutdownBeacon);
+    window.addEventListener('unload', sendShutdownBeacon);
+})();
+
+

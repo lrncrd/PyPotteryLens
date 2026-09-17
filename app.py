@@ -5,6 +5,8 @@ Migrated from Gradio to Flask with native HTML, CSS, and JavaScript
 
 from flask import Flask, render_template, request, jsonify, send_file, send_from_directory, Response
 from pathlib import Path
+from typing import Dict, Optional
+import sys
 import os
 import re
 import json
@@ -745,7 +747,140 @@ def background_initialization():
 background_initialization()
 
 
+# ==================== AUTO-SHUTDOWN WATCHDOG & BEACON ====================
+_shutdown_lock = threading.Lock()
+_active_tabs: Dict[str, float] = {}  # tab_id -> timestamp
+_shutdown_timer: Optional[threading.Timer] = None
+_initial_heartbeat_received = False
+_start_time = time.time()
+
+# Disable if PYPOTTERY_DISABLE_AUTO_SHUTDOWN=1
+AUTO_SHUTDOWN_ENABLED = os.environ.get("PYPOTTERY_DISABLE_AUTO_SHUTDOWN", "0") != "1"
+# Grace period in seconds to wait when all tabs disconnect before killing the process.
+# A page reload (F5) drops the connection and fires beforeunload, then reconnects
+# within ~1-2 seconds. 5 seconds is plenty of time for reload while still feeling
+# responsive on tab close.
+AUTO_SHUTDOWN_GRACE_SECONDS = 5.0
+# How long before an unrefreshed tab is considered dead (if no beforeunload/pagehide fired).
+# Generous timeout (60s) so background tabs (throttled by Chrome/Edge) or laptop sleep never trigger false alarms.
+TAB_STALE_TIMEOUT_SECONDS = 60.0
+# Startup grace period before watchdog starts checking (gives browser time to launch)
+STARTUP_GRACE_SECONDS = 60.0
+
+
+def _perform_graceful_shutdown():
+    """Clean up memory and terminate the PyPotteryLens server process."""
+    print("[PyPotteryLens] 🛑 Auto-shutdown: No active browser sessions remaining. Terminating process...")
+    try:
+        import torch, gc
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+    except Exception:
+        pass
+
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+    # os._exit(0) forcefully terminates the Python process, immediately releasing
+    # all network ports, threads, and OS handles so the launcher picks it up instantly.
+    os._exit(0)
+
+
+def _cancel_shutdown_timer_locked():
+    global _shutdown_timer
+    if _shutdown_timer is not None:
+        _shutdown_timer.cancel()
+        _shutdown_timer = None
+
+
+def _arm_shutdown_timer_locked(delay_seconds: float = AUTO_SHUTDOWN_GRACE_SECONDS):
+    global _shutdown_timer
+    if not AUTO_SHUTDOWN_ENABLED:
+        return
+    if _shutdown_timer is not None:
+        _shutdown_timer.cancel()
+    _shutdown_timer = threading.Timer(delay_seconds, _perform_graceful_shutdown)
+    _shutdown_timer.daemon = True
+    _shutdown_timer.start()
+
+
+def _watchdog_loop():
+    """Background loop checking for abandoned tabs if beforeunload wasn't fired."""
+    while True:
+        time.sleep(3.0)
+        if not AUTO_SHUTDOWN_ENABLED:
+            continue
+
+        now = time.time()
+        # Don't check before browser had a chance to connect on startup
+        if not _initial_heartbeat_received:
+            if now - _start_time < STARTUP_GRACE_SECONDS:
+                continue
+            with _shutdown_lock:
+                if not _initial_heartbeat_received and _shutdown_timer is None:
+                    print("[PyPotteryLens] ⚠️ Startup timeout: No browser tab connected within startup window.")
+                    _arm_shutdown_timer_locked(10.0)
+            continue
+
+        with _shutdown_lock:
+            # Prune stale tabs
+            stale_keys = [k for k, v in _active_tabs.items() if now - v > TAB_STALE_TIMEOUT_SECONDS]
+            for k in stale_keys:
+                del _active_tabs[k]
+
+            if not _active_tabs and _shutdown_timer is None:
+                print(f"[PyPotteryLens] Watchdog: All tabs stale/closed. Arming shutdown ({AUTO_SHUTDOWN_GRACE_SECONDS}s grace)...")
+                _arm_shutdown_timer_locked(AUTO_SHUTDOWN_GRACE_SECONDS)
+
+
+threading.Thread(target=_watchdog_loop, daemon=True, name="AutoShutdownWatchdog").start()
+
+
 # ==================== ROUTES ====================
+
+@app.route('/api/heartbeat', methods=['POST'])
+def handle_heartbeat():
+    """Periodic ping from an active browser tab."""
+    global _initial_heartbeat_received
+    data = request.get_json(silent=True) or {}
+    tab_id = data.get('tab_id') or request.remote_addr or 'default'
+    now = time.time()
+
+    with _shutdown_lock:
+        _initial_heartbeat_received = True
+        _active_tabs[tab_id] = now
+        _cancel_shutdown_timer_locked()
+
+    return jsonify({'status': 'ok', 'active_tabs': len(_active_tabs)})
+
+
+@app.route('/api/beacon_shutdown', methods=['POST'])
+def handle_beacon_shutdown():
+    """Sent via navigator.sendBeacon on window beforeunload."""
+    try:
+        raw = request.get_data()
+        data = json.loads(raw.decode('utf-8')) if raw else {}
+    except Exception:
+        data = request.get_json(silent=True) or {}
+
+    tab_id = data.get('tab_id')
+    with _shutdown_lock:
+        if tab_id and tab_id in _active_tabs:
+            del _active_tabs[tab_id]
+        elif not tab_id and _active_tabs:
+            if len(_active_tabs) <= 1:
+                _active_tabs.clear()
+
+        # If no tabs remain, arm the fast shutdown timer (allows F5 reload cancellation)
+        if not _active_tabs:
+            print(f"[PyPotteryLens] Tab closed beacon received. No active tabs remaining. Arming shutdown in {AUTO_SHUTDOWN_GRACE_SECONDS}s...")
+            _arm_shutdown_timer_locked(AUTO_SHUTDOWN_GRACE_SECONDS)
+
+    return Response(status=204)
 
 @app.route('/api/init-status')
 def get_init_status():
@@ -3997,11 +4132,12 @@ def serve_project_thumbnail(project_id, filename):
 
 
 if __name__ == '__main__':
+    port = int(os.environ.get('PORT', os.environ.get('PYPOTTERY_PORT', 5001)))
     print("\n" + "="*80)
     print(" 🏺 PyPotteryLens Flask Application 🔍")
     print("="*80)
     print("\n🚀 Starting server...")
-    print("📝 Browser will open at: http://localhost:5001")
+    print(f"📝 Browser will open at: http://localhost:{port}")
     print("💡 Initialization will continue in background...")
     print("\n" + "="*80 + "\n")
     
@@ -4010,17 +4146,15 @@ if __name__ == '__main__':
     import threading
     
     def open_browser():
-        import time
         time.sleep(1)  # Wait 1 second for Flask to start
-        webbrowser.open('http://localhost:5001')
+        webbrowser.open(f'http://localhost:{port}')
         print("🌐 Browser opened!")
     
-    # Start browser in separate thread
     threading.Thread(target=open_browser, daemon=True).start()
     
     app.run(
         host='127.0.0.1',
-        port=5001,
+        port=port,
         debug=False,
         threaded=True,
         use_reloader=False  # Disable reloader to prevent double initialization

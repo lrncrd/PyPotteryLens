@@ -504,6 +504,26 @@ body {
     color: var(--primary-light);
 }
 
+/* Locked Tab State when no project is selected */
+.tab-button.tab-locked {
+    opacity: 0.45;
+    cursor: not-allowed;
+    background: #fbf9f5;
+    color: var(--text-muted);
+}
+
+.tab-button.tab-locked:hover {
+    color: var(--text-muted) !important;
+    background: #fbf9f5 !important;
+    border-color: var(--border) !important;
+    box-shadow: none !important;
+}
+
+.tab-button.tab-locked i {
+    color: var(--text-muted) !important;
+}
+
+
 .tab-button.active {
     color: var(--primary);
     background: #ffffff;
