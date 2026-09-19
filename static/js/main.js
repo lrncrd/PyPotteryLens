@@ -386,73 +386,67 @@ function initializeModelInfoPopup() {
     });
 }
 
+// Copy Citation Helper Function
+window.copyCitation = function (elementId = 'citation-text', btnElement) {
+    const textEl = document.getElementById(elementId);
+    if (!textEl) return;
+    const text = (textEl.innerText || textEl.textContent).replace(/^"|"$/g, '').trim();
+    navigator.clipboard.writeText(text).then(() => {
+        const btn = btnElement || (window.event && window.event.target ? window.event.target.closest('.mac-copy-link') : null) || document.querySelector('.mac-copy-link');
+        if (btn) {
+            const orig = btn.innerHTML;
+            btn.innerHTML = '<i class="bi bi-check2"></i> Copied!';
+            btn.classList.add('copied');
+            setTimeout(() => {
+                btn.innerHTML = orig;
+                btn.classList.remove('copied');
+            }, 2000);
+        }
+    }).catch(err => {
+        console.error('Failed to copy citation:', err);
+    });
+};
+
 // Load system information
 async function loadSystemInfo() {
-    const container = document.getElementById('system-info-container');
-    if (!container) return;
+    const cpuEl = document.getElementById('systemCPU');
+    const gpuEl = document.getElementById('systemGPU');
+    if (!cpuEl || !gpuEl) return;
 
     try {
         const response = await fetch('/api/system-info');
         const data = await response.json();
 
         if (response.ok) {
-            let html = '';
+            const cores = (data.cpu && data.cpu.cores) || data.cpu_count || 1;
+            const platform = (data.cpu && data.cpu.platform) || data.platform || '';
+            cpuEl.innerHTML = `<i class="bi bi-cpu me-1"></i> ${cores} Cores${platform ? ` (${platform})` : ''}`;
 
-            // CPU info
-            if (data.cpu) {
-                const cores = data.cpu.cores || 1;
-                html += `
-                <div class="model-info-row">
-                    <span class="info-label">CPU</span>
-                    <span class="info-value">${cores} Cores</span>
-                </div>`;
+            const cuda = (data.gpu && data.gpu.cuda_available) || data.cuda_available;
+            const gpuNames = (data.gpu && data.gpu.gpu_names) || (data.cuda_device_name ? [data.cuda_device_name] : []);
+            const mps = (data.mps && data.mps.mps_available) || data.mps_available;
+
+            if (cuda) {
+                const name = gpuNames.length > 0 ? gpuNames[0] : 'NVIDIA CUDA';
+                gpuEl.innerHTML = `<i class="bi bi-gpu-card me-1"></i> ${name} (CUDA)`;
+                gpuEl.className = 'chip-active';
+            } else if (mps) {
+                gpuEl.innerHTML = `<i class="bi bi-gpu-card me-1"></i> Apple Silicon (MPS)`;
+                gpuEl.className = 'chip-active';
+            } else {
+                gpuEl.innerHTML = `<i class="bi bi-gpu-card me-1"></i> CPU Only`;
+                gpuEl.className = 'chip-cpu-only';
             }
-
-            // GPU info
-            if (data.gpu) {
-                if (data.gpu.cuda_available) {
-                    const gpuNames = (data.gpu.gpu_names && data.gpu.gpu_names.length > 0)
-                        ? data.gpu.gpu_names.join(', ')
-                        : `CUDA (${data.gpu.gpu_count || 1} Device)`;
-                    const safeGpu = gpuNames.replace(/"/g, '&quot;');
-                    html += `
-                    <div class="model-info-row">
-                        <span class="info-label">GPU</span>
-                        <span class="info-value" title="${safeGpu}">${safeGpu}</span>
-                    </div>`;
-                } else {
-                    html += `
-                    <div class="model-info-row">
-                        <span class="info-label">GPU</span>
-                        <span class="info-value text-muted">CPU Only</span>
-                    </div>`;
-                }
-            }
-
-            // MPS info (Apple Silicon) - only shown when available
-            if (data.mps && data.mps.mps_available) {
-                html += `
-                <div class="model-info-row">
-                    <span class="info-label">Hardware Acceleration</span>
-                    <span class="info-value">Apple Silicon (MPS)</span>
-                </div>`;
-            }
-
-            container.innerHTML = html;
         } else {
-            container.innerHTML = `
-            <div class="model-info-row">
-                <span class="info-label">Status</span>
-                <span class="info-value text-muted">Unable to load</span>
-            </div>`;
+            cpuEl.innerHTML = '<i class="bi bi-cpu me-1"></i> Available';
+            gpuEl.innerHTML = '<i class="bi bi-gpu-card me-1"></i> CPU Only';
+            gpuEl.className = 'chip-cpu-only';
         }
     } catch (error) {
         console.error('Error loading system info:', error);
-        container.innerHTML = `
-        <div class="model-info-row">
-            <span class="info-label">Status</span>
-            <span class="info-value text-muted">Unable to load</span>
-        </div>`;
+        cpuEl.innerHTML = '<i class="bi bi-cpu me-1"></i> Available';
+        gpuEl.innerHTML = '<i class="bi bi-gpu-card me-1"></i> CPU Only';
+        gpuEl.className = 'chip-cpu-only';
     }
 }
 

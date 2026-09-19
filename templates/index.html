@@ -10,7 +10,7 @@
 
     <!-- Local Offline Vendor Assets with CDN Fallback -->
     <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css" onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css';">
-    <link rel="stylesheet" href="/static/vendor/fonts/fonts.css">
+    <link rel="stylesheet" href="/static/vendor/fonts/fonts.css" onerror="this.onerror=null;this.href='https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap';">
     <link rel="stylesheet" href="/static/css/style.css?v=20260917_212000">
     <style>
         /* Splash Screen - Archaeological Field Desk & Drafting Grid */
@@ -259,7 +259,7 @@
             <div class="header-content">
                 <img src="/static/imgs/LogoLens.png" alt="PyPotteryLens Logo" class="header-logo">
                 <div class="header-text">
-                    <h1>PyPottery <span class="brand-accent">Lens</span> <span class="version-badge">v{{ version }}</span></h1>
+                    <h1 class="header-brand-title">PyPottery<span class="brand-accent">Lens</span> <span class="version-badge">v{{ version }}</span></h1>
                 </div>
 
                 <!-- Active Project Pill in Header -->
@@ -274,7 +274,7 @@
                     class="pixel-assistant-container" title="Need help?">
                     <div class="pixel-speech-bubble">Need help?</div>
                     <!-- SVG Icon -->
-                    <svg width="60" height="60" viewBox="30 45 180 140">
+                    <svg width="45" height="45" viewBox="30 45 180 140">
                         <g id="pixel-monitor">
                             <!-- Monitor Body -->
                             <rect x="40" y="50" width="160" height="130" rx="15" ry="15" fill="#d0d0d0" stroke="#444"
@@ -304,46 +304,77 @@
                     </svg>
                 </a>
 
-                <div class="model-info-button" id="model-info-button" title="App Information">
-                    <span class="model-info-label"><i class="bi bi-info-circle"></i> Info</span>
+                <button class="header-info-btn" id="model-info-button" title="App Information">
+                    <i class="bi bi-info-circle me-1"></i> Info
+                </button>
+            </div>
+        </header>
+
+        <!-- Info Modal (macOS Minimal Centered Sheet) -->
+        <div class="model-info-popup" id="model-info-popup" role="dialog" aria-modal="true" aria-labelledby="model-info-title">
+            <div class="model-info-popup-content mac-window" style="max-width: 500px;">
+                <!-- Titlebar without traffic lights, minimal close on top-right -->
+                <div class="mac-titlebar">
+                    <span class="mac-window-title" id="model-info-title">About PyPotteryLens</span>
+                    <button class="btn-close model-info-close" id="model-info-close" aria-label="Close modal"></button>
                 </div>
-                <div class="model-info-popup" id="model-info-popup">
-                    <div class="model-info-popup-content">
-                        <div class="model-info-popup-header">
-                            <h4>PyPottery <span class="brand-accent">Lens</span></h4>
-                            <button class="model-info-close" id="model-info-close">&times;</button>
-                        </div>
-                        <div class="model-info-popup-body">
-                            <!-- Centered Hero Logo -->
-                            <div class="model-info-hero">
-                                <img src="/static/imgs/LogoLens.png" alt="PyPotteryLens Logo" class="model-info-logo">
-                            </div>
 
-                            <!-- App Info -->
-                            <div class="model-info-group">
-                                <div class="model-info-row">
-                                    <span class="info-label">Version</span>
-                                    <span class="info-value info-version">v{{ version }}</span>
-                                </div>
-                                <div class="model-info-row">
-                                    <span class="info-label">Author</span>
-                                    <span class="info-value">Lorenzo Cardarelli</span>
-                                </div>
-                            </div>
+                <div class="mac-v-body">
+                    <!-- Logo (free-standing, 125px) -->
+                    <img src="/static/imgs/LogoLens.png" alt="PyPotteryLens Logo" class="modal-logo-free">
 
-                            <!-- System Info -->
-                            <div class="model-info-section-title">System Information</div>
-                            <div id="system-info-container" class="model-info-group">
-                                <div class="model-info-row">
-                                    <span class="info-label">Status</span>
-                                    <span class="info-value text-muted">Loading system info...</span>
-                                </div>
-                            </div>
+                    <!-- Title -->
+                    <h2 class="mac-v-title">
+                        PyPottery<span class="brand-accent">Lens</span>
+                    </h2>
+
+                    <!-- Clean Meta Line -->
+                    <div class="mac-v-meta">
+                        Version {{ version }} • By <strong class="text-dark">Lorenzo Cardarelli</strong>
+                    </div>
+
+                    <!-- Description -->
+                    <p class="mac-v-desc">
+                        Computer-vision extraction and classification of ceramic figures directly from published monograph PDFs.
+                    </p>
+
+                    <!-- Hardware Chip Pill -->
+                    <div>
+                        <div class="mac-v-chip" id="modalHardwareChip">
+                            <span id="systemCPU"><i class="bi bi-cpu me-1"></i> Detecting...</span>
+                            <span class="chip-sep">•</span>
+                            <span id="systemGPU" class="chip-active"><i class="bi bi-gpu-card me-1"></i> Detecting...</span>
                         </div>
+                    </div>
+
+                    <!-- Minimal Citation Callout -->
+                    <div class="mac-citation-strip mb-3">
+                        <div class="mac-citation-header">
+                            <span class="mac-citation-tag"><i class="bi bi-quote"></i> Citation</span>
+                            <button type="button" class="mac-copy-link" onclick="copyCitation('citation-text', this)">
+                                <i class="bi bi-clipboard"></i> Copy
+                            </button>
+                        </div>
+                        <p class="mac-citation-quote" id="citation-text">
+                            "This research utilized PyPotteryLens (version {{ version }}) for automated computer-vision extraction of ceramic figures from monograph publications. Developed by Lorenzo Cardarelli (https://github.com/lrncrd/PyPotteryLens)."
+                        </p>
+                    </div>
+
+                    <!-- Apple-style Pill Action Buttons -->
+                    <div class="mac-v-actions">
+                        <a href="https://lrncrd.github.io/PyPottery/pypotterylens/usage.html" target="_blank" class="mac-pill">
+                            <i class="bi bi-book"></i> Documentation
+                        </a>
+                        <a href="https://github.com/lrncrd/PyPotteryLens" target="_blank" class="mac-pill">
+                            <i class="bi bi-github"></i> GitHub
+                        </a>
+                        <a href="https://ko-fi.com/lrncrd" target="_blank" class="mac-pill">
+                            <i class="bi bi-cup-hot"></i> Support
+                        </a>
                     </div>
                 </div>
             </div>
-        </header>
+        </div>
 
         <!-- Main Content -->
         <main class="app-main">

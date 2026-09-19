@@ -139,8 +139,9 @@ body {
 }
 
 .header-logo {
-    width: 72px;
-    height: auto;
+    width: 56px;
+    height: 56px;
+    object-fit: contain;
     border-radius: 10px;
     filter: drop-shadow(0 2px 6px rgba(194, 65, 12, 0.12));
     transition: transform 0.2s ease;
@@ -154,7 +155,8 @@ body {
     flex: 1;
 }
 
-.header-text h1 {
+.header-text h1,
+.header-brand-title {
     display: inline-flex;
     align-items: center;
     gap: 0.65rem;
@@ -264,8 +266,9 @@ body {
 }
 
 /* Model Info Button */
-.model-info-button {
-    background: var(--bg-card);
+.model-info-button,
+.header-info-btn {
+    background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     padding: 0.45rem 0.85rem;
@@ -275,9 +278,13 @@ body {
     cursor: pointer;
     transition: all 0.2s ease;
     color: var(--text-dim);
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-decoration: none;
 }
 
-.model-info-button:hover {
+.model-info-button:hover,
+.header-info-btn:hover {
     background: var(--primary-soft);
     border-color: var(--primary);
     color: var(--primary);
@@ -291,16 +298,16 @@ body {
     gap: 0.35rem;
 }
 
-/* Model Info Popup */
+/* Model Info Popup - macOS Minimal Centered Sheet */
 .model-info-popup {
     position: fixed;
     top: 0;
     left: 0;
     width: 100%;
     height: 100%;
-    background: rgba(28, 25, 23, 0.5);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    background: rgba(28, 25, 23, 0.45);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     display: flex;
     z-index: 10000;
     align-items: center;
@@ -308,7 +315,8 @@ body {
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
-    transition: opacity 0.25s ease, visibility 0.25s ease;
+    transition: opacity 0.22s ease, visibility 0.22s ease;
+    padding: 16px;
 }
 
 .model-info-popup.show {
@@ -317,132 +325,222 @@ body {
     pointer-events: auto;
 }
 
-.model-info-popup-content {
+.model-info-popup-content.mac-window,
+.mac-window {
     background: #ffffff;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    box-shadow: 0 4px 12px -2px rgba(28, 25, 23, 0.12), 0 2px 6px rgba(0, 0, 0, 0.05);
-    max-width: 410px;
-    width: 90%;
-    max-height: 85vh;
-    overflow-y: auto;
-    transform: scale(0.95) translateY(8px);
+    border-radius: 18px;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    box-shadow: 0 24px 64px -12px rgba(0, 0, 0, 0.16), 0 2px 8px rgba(0, 0, 0, 0.04);
+    overflow: hidden;
+    color: #1d1d1f;
+    width: 100%;
+    max-width: 500px;
+    margin: 0 auto;
+    transform: scale(0.96) translateY(6px);
     transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.model-info-popup.show .model-info-popup-content {
+.model-info-popup.show .model-info-popup-content.mac-window {
     transform: scale(1) translateY(0);
 }
 
-.model-info-popup-header {
+.mac-titlebar {
+    padding: 14px 18px 6px 18px;
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    padding: 1.15rem 1.4rem;
-    border-bottom: 1px solid var(--border);
-}
-
-.model-info-popup-header h4 {
-    margin: 0;
-    color: var(--text-main);
-    font-size: 1.15rem;
-    font-weight: 700;
-}
-
-.model-info-close {
-    background: none;
+    justify-content: space-between;
+    background: transparent;
     border: none;
-    font-size: 1.4rem;
+}
+
+.mac-window-title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #86868b;
+    letter-spacing: 0.01em;
+}
+
+.mac-titlebar .btn-close,
+.mac-titlebar .model-info-close {
+    background: transparent url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%23515154'%3e%3cpath d='M.293.293a1 1 0 0 1 1.414 0L8 6.586 14.293.293a1 1 0 1 1 1.414 1.414L9.414 8l6.293 6.293a1 1 0 0 1-1.414 1.414L8 9.414l-6.293 6.293a1 1 0 0 1-1.414-1.414L6.586 8 .293 1.707a1 1 0 0 1 0-1.414z'/%3e%3c/svg%3e") center/0.75rem auto no-repeat;
+    border: none;
+    width: 24px;
+    height: 24px;
+    opacity: 0.45;
     cursor: pointer;
-    color: var(--text-muted);
-    width: 32px;
-    height: 32px;
+    transition: opacity 0.15s ease;
+    padding: 0;
+    margin: 0;
+}
+
+.mac-titlebar .btn-close:hover,
+.mac-titlebar .model-info-close:hover {
+    opacity: 0.95;
+}
+
+.mac-v-body {
+    padding: 4px 24px 22px 24px;
+    text-align: center;
+}
+
+/* Free-standing prominent logo (no bounding box, natural drop shadow) */
+.modal-logo-free {
+    height: 125px;
+    width: auto;
+    max-width: 175px;
+    object-fit: contain;
+    margin: 0 auto 10px;
+    display: block;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    filter: drop-shadow(0 6px 20px rgba(194, 65, 12, 0.24));
+    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.modal-logo-free:hover {
+    transform: scale(1.05);
+}
+
+.mac-v-title {
+    font-size: 1.45rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    margin-bottom: 2px;
+    line-height: 1.2;
+    color: #1d1d1f;
+}
+
+.mac-v-meta {
+    font-size: 0.80rem;
+    color: #86868b;
+    font-weight: 500;
+    margin-bottom: 8px;
+}
+
+.mac-v-desc {
+    font-size: 0.78rem;
+    color: #515154;
+    line-height: 1.4;
+    margin: 0 auto 12px;
+    max-width: 420px;
+}
+
+/* Apple Chip Hardware Pill */
+.mac-v-chip {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    border-radius: var(--radius-sm);
-    line-height: 1;
-    transition: background 0.15s, color 0.15s;
+    gap: 8px;
+    background: rgba(0, 0, 0, 0.035);
+    border-radius: 9999px;
+    padding: 4px 14px;
+    font-size: 0.74rem;
+    color: #515154;
+    margin-bottom: 12px;
 }
 
-.model-info-close:hover {
-    background: var(--bg-surface);
-    color: var(--text-main);
+.mac-v-chip .chip-sep {
+    color: #c7c7cc;
 }
 
-.model-info-popup-body {
-    padding: 1.35rem 1.4rem;
+.mac-v-chip .chip-active {
+    color: #15803d;
+    font-weight: 600;
 }
 
-.model-info-hero {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    margin-bottom: 1.2rem;
+.mac-v-chip .chip-cpu-only {
+    color: #b45309;
+    font-weight: 600;
 }
 
-.model-info-logo {
-    width: 76px;
-    height: auto;
-    object-fit: contain;
-    filter: drop-shadow(0 4px 10px rgba(120, 53, 15, 0.08));
+/* Minimal Citation Callout */
+.mac-citation-strip {
+    background: rgba(0, 0, 0, 0.025);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    border-radius: 10px;
+    padding: 9px 14px;
+    text-align: left;
+    position: relative;
+    margin-bottom: 15px;
 }
 
-.model-info-section-title {
-    font-size: 0.72rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-muted);
-    margin: 1.15rem 0 0.45rem 0.2rem;
-}
-
-.model-info-group {
-    background: var(--bg-page);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    padding: 0.15rem 1rem;
-}
-
-.model-info-row {
+.mac-citation-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 0.62rem 0;
-    border-bottom: 1px solid rgba(232, 227, 216, 0.7);
-    font-size: 0.86rem;
+    margin-bottom: 4px;
 }
 
-.model-info-row:last-child {
-    border-bottom: none;
+.mac-citation-tag {
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #86868b;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
 }
 
-.model-info-row .info-label {
-    color: var(--text-dim);
-    font-weight: 500;
-}
-
-.model-info-row .info-value {
-    color: var(--text-main);
-    font-weight: 600;
-    text-align: right;
-    max-width: 65%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.model-info-row .info-value.info-version {
-    font-family: var(--font-mono);
+.mac-copy-link {
+    font-size: 0.72rem;
     font-weight: 600;
     color: var(--primary);
-    font-size: 0.84rem;
+    background: transparent;
+    border: none;
+    padding: 2px 7px;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
 }
 
-.model-info-row .info-value.text-muted {
-    color: var(--text-muted);
-    font-weight: 400;
+.mac-copy-link:hover {
+    background: var(--primary-soft);
+}
+
+.mac-copy-link.copied {
+    color: #059669;
+    background: #ecfdf5;
+}
+
+.mac-citation-quote {
+    font-size: 0.73rem;
+    color: #515154;
+    line-height: 1.35;
+    margin: 0;
     font-style: italic;
+}
+
+/* Apple Unified Pill Action Buttons */
+.mac-v-actions {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 0;
+}
+
+.mac-pill {
+    background: rgba(0, 0, 0, 0.04);
+    border: 1px solid rgba(0, 0, 0, 0.07);
+    color: #1d1d1f;
+    padding: 6px 16px;
+    border-radius: 9999px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.15s ease;
+}
+
+.mac-pill:hover {
+    background: rgba(0, 0, 0, 0.08);
+    color: #000000;
+    transform: translateY(-1px);
 }
 
 /* Main Content */

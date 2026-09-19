@@ -913,12 +913,14 @@ def get_system_info():
     """Get system information including CPU, GPU, and MPS availability"""
     try:
         import os
+        import platform
         import torch
         
         system_info = {
             'cpu': {
                 'cores': os.cpu_count() or 1,
-                'available': True
+                'available': True,
+                'platform': platform.system()
             },
             'gpu': {
                 'cuda_available': torch.cuda.is_available(),
