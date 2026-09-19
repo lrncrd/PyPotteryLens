@@ -760,6 +760,10 @@ class MaskExtractor:
 
                     cropped, bbox = result
 
+                    # A vessel drawn inside this one has its own card: white it
+                    # out here so it doesn't appear twice.
+                    cropped = _whiteout_nested_polygons(cropped, bbox, polygon, polygons, expansion_px)
+
                     # Clean artifacts (numbers, section profiles, stray fragments)
                     if clean_artifacts:
                         cropped = clean_card_deterministic(cropped)
@@ -1423,37 +1427,60 @@ def _assign_px_per_cm(scales: list, centroid: tuple):
     return None
 
 
-def _whiteout_inner_polygons(cropped: np.ndarray, bbox, region, polygons: list):
-    """White-out hand-drawn inner vessels that fall inside a larger region's card.
+def _polygon_area(polygon) -> float:
+    """Absolute area of a polygon given as [[x, y], ...]."""
+    pts = np.array(polygon, dtype=np.float64).reshape(-1, 2)
+    if len(pts) < 3:
+        return 0.0
+    x, y = pts[:, 0], pts[:, 1]
+    return abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))) / 2.0
 
-    ``cropped`` is the region card before padding; ``bbox`` is ``(x1, y1, x2, y2)``
-    in ORIGINAL coordinates with ``(x1, y1)`` mapping to crop pixel ``(0, 0)``.
-    A polygon belongs to this region when its centroid lies inside the region
-    silhouette, so only the true container is cleared.
+
+def _whiteout_nested_polygons(cropped: np.ndarray, bbox, polygon: list,
+                              all_polygons: list, expansion_px: int = 0) -> np.ndarray:
+    """White-out vessels drawn inside this polygon's vessel, since each has its own card.
+
+    ``cropped`` is the card of ``polygon`` before the white margin is added;
+    ``bbox`` is ``(x1, y1, x2, y2)`` in ORIGINAL coordinates, with ``(x1, y1)``
+    mapping to crop pixel ``(0, 0)``. Another polygon counts as nested when it is
+    strictly smaller and its centroid lies inside ``polygon``. Strictly smaller
+    matters: two polygons of the same size (a duplicate) must never blank each
+    other out. The nested area is grown by ``expansion_px`` so the cleared area
+    matches what the nested vessel's own card shows.
     """
-    if not polygons:
+    if len(all_polygons) < 2:
         return cropped
     import cv2
 
+    outer = np.array(polygon, dtype=np.float32).reshape(-1, 1, 2)
+    outer_area = _polygon_area(polygon)
     x1, y1 = int(bbox[0]), int(bbox[1])
-    minr, minc, maxr, maxc = region.bbox  # region mask is in original coords here
-    out = np.ascontiguousarray(cropped).copy()
+    pad = max(0, int(expansion_px))
 
-    for polygon in polygons:
-        pts = np.array(polygon, dtype=np.float64).reshape(-1, 2)
-        if len(pts) < 3:
+    out = None
+    for other in all_polygons:
+        if other is polygon:
             continue
-        cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
-        # centroid must fall inside this region's silhouette
-        rr, cc = int(round(cy)) - minr, int(round(cx)) - minc
-        if not (0 <= rr < region.image.shape[0] and 0 <= cc < region.image.shape[1]):
+        pts = np.array(other, dtype=np.float64).reshape(-1, 2)
+        if len(pts) < 3 or _polygon_area(other) >= outer_area:
             continue
-        if not region.image[rr, cc]:
+        cx, cy = float(pts[:, 0].mean()), float(pts[:, 1].mean())
+        if cv2.pointPolygonTest(outer, (cx, cy), False) < 0:
             continue
-        local = np.array([[int(px - x1), int(py - y1)] for px, py in polygon],
+
+        if out is None:
+            out = np.ascontiguousarray(cropped).copy()
+        h, w = out.shape[:2]
+        local = np.array([[int(round(px - x1)), int(round(py - y1))] for px, py in other],
                          dtype=np.int32)
-        cv2.fillPoly(out, [local], (255, 255, 255))
-    return out
+        hole = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillPoly(hole, [local], 255)
+        if pad > 0:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * pad + 1, 2 * pad + 1))
+            hole = cv2.dilate(hole, kernel)
+        out[hole > 0] = 255
+
+    return cropped if out is None else out
 
 
 def _content_hash(arr: np.ndarray) -> str:
