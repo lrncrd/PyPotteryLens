@@ -67,7 +67,7 @@ python app.py
 # Then open http://127.0.0.1:5001 in your browser
 ```
 
-Required models are downloaded from [HuggingFace](https://huggingface.co/lrncrd/PyPotteryLens) on first launch. For CUDA-specific PyTorch builds, older macOS versions and other platform notes, see the [Installation guide](https://lrncrd.github.io/PyPottery/pypotterylens/installation.html). One-step installer scripts are also provided: `PyPotteryLens_WIN.bat` and `PyPotteryLens_UNIX.sh`.
+Required models are downloaded from [HuggingFace](https://huggingface.co/lrncrd/PyPotteryLens) on first launch. For CUDA-specific PyTorch builds, older macOS versions and other platform notes, see the [Getting Started guide](https://lrncrd.github.io/PyPottery/pypotterylens/index.html). One-step installer scripts are also provided: `PyPotteryLens_WIN.bat` and `PyPotteryLens_UNIX.sh`.
 
 ## 📋 System Requirements
 
@@ -85,7 +85,7 @@ Required models are downloaded from [HuggingFace](https://huggingface.co/lrncrd/
 5. **Post-process**: auto-orient and classify pieces (ENT / FRAG)
 6. **Export** the standardized ZIP
 
-For the full walkthrough, see the **[Usage Guide](https://lrncrd.github.io/PyPottery/pypotterylens/usage.html)**. Having trouble? Check the troubleshooting section of the [Installation guide](https://lrncrd.github.io/PyPottery/pypotterylens/installation.html).
+For the full walkthrough, see the **[Usage Guide](https://lrncrd.github.io/PyPottery/pypotterylens/usage.html)**. Having trouble? Check the troubleshooting section of the [Getting Started guide](https://lrncrd.github.io/PyPottery/pypotterylens/index.html#troubleshooting).
 
 ## 📊 What's New
 
