@@ -4164,7 +4164,13 @@ def export_project_results(project_id):
             excluded_set = set(_read_excluded_cards(cards_modified_path)) if cards_modified_path else set()
             all_card_files = [f for f in export_folder.iterdir()
                               if f.suffix.lower() in ['.png', '.jpg', '.jpeg']]
-            card_images = sorted([f for f in all_card_files if f.name not in excluded_set])
+            # Natural order (page_2 before page_10), the same order the
+            # Post Processing grid shows, so the exported IDs follow the plates.
+            def _natural_key(f):
+                return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', f.name)]
+
+            card_images = sorted([f for f in all_card_files if f.name not in excluded_set],
+                                 key=_natural_key)
             excluded_count = len(all_card_files) - len(card_images)
             print(f"Found {len(card_images)} card images to export ({excluded_count} excluded)")
             
