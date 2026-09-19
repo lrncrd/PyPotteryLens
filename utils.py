@@ -2,6 +2,8 @@
 
 import numpy as np
 import os
+import json
+import cv2
 from pathlib import Path
 from dataclasses import dataclass
 import pandas as pd
@@ -312,12 +314,12 @@ class ModelProcessor:
                                model_name: str,
                                confidence: float,
                                diagnostic: bool,
-                               kernel_size: int,
-                               iterations: int,
+                               kernel_size: int = 2,
+                               iterations: int = 10,
                                excluded_images: list = None,
                                progress_callback=None,
                                cancel_check=None) -> str:
-        """Apply model to images in a project, saving masks to project folder"""
+        """Apply model to images in a project, saving vector polygons to project folder"""
         try:
             images_path = Path(images_path)
             masks_path = Path(masks_path)
@@ -387,7 +389,7 @@ class ModelProcessor:
                     masks_path
                 )
             
-            return f"Model applied successfully: {total} images processed with confidence={confidence}, kernel={kernel_size}, iterations={iterations}"
+            return f"Model applied successfully: {total} images processed with confidence={confidence}"
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -401,10 +403,10 @@ class ModelProcessor:
                             kernel_size: int,
                             iterations: int,
                             output_folder: Path) -> None:
-        """Process a single image with the model"""
+        """Process a single image with the model and extract vector polygons"""
         try:
             img = Image.open(image_path / image_file)
-            #img_tensor = transforms.ToTensor()(img).to(self.config.device)
+            base_name = image_file.rsplit(".", 1)[0]
             results = model.predict(
                 img,
                 save_crop=False,
@@ -413,17 +415,21 @@ class ModelProcessor:
                 device=self.config.device
             )[0]
             
-            if len(results) > 0:
-                pred_masks = results.masks.data.cpu().numpy()
-                save_mask(
-                    img,
-                    pred_masks,
-                    image_file.split(".")[0],
-                    output_folder,
-                    kernel_size,
-                    iterations,
-                    export_masks=True
-                )
+            polygons = []
+            if results.masks is not None and len(results.masks) > 0:
+                for mask_xy in results.masks.xy:
+                    if len(mask_xy) < 3:
+                        continue
+                    pts = np.array(mask_xy, dtype=np.float32).reshape((-1, 1, 2))
+                    peri = cv2.arcLength(pts, True)
+                    # Adaptive simplification reduces point swarms to clean 12-20 key vertices
+                    epsilon = max(3.5, 0.007 * peri)
+                    approx = cv2.approxPolyDP(pts, epsilon=epsilon, closed=True)
+                    poly = [[round(float(pt[0][0]), 1), round(float(pt[0][1]), 1)] for pt in approx if len(pt) > 0]
+                    if len(poly) >= 3:
+                        polygons.append(poly)
+            
+            write_polygons_sidecar(output_folder, base_name, polygons, expansion_px=8)
         except Exception as e:
             print(f"Error processing image {image_file}: {str(e)}")
 
@@ -601,7 +607,7 @@ class MaskExtractor:
             output_folder / "mask_info_annots.csv", index=False
         )
 
-    def extract_masks(self, drop_folder_review: str) -> str:
+    def extract_masks(self, drop_folder_review: str, clean_artifacts: bool = True) -> str:
         """Extract masks from images in folder"""
         try:
             # Setup directories
@@ -637,6 +643,9 @@ class MaskExtractor:
                         continue
                         
                     cropped, bbox = result
+                    if clean_artifacts:
+                        cropped = clean_card_deterministic(cropped)
+
                     output_filename = f"{base_filename}_mask_layer_{i}.png"
                     
                     # Save cropped image
@@ -661,13 +670,14 @@ class MaskExtractor:
             traceback.print_exc()
             return f"Error extracting masks: {str(e)}"
 
-    def extract_masks_from_project(self, masks_path: str, cards_path: str, cancel_check=None) -> str:
-        """Extract cards from masks in a project.
+    def extract_masks_from_project(self, masks_path: str, cards_path: str, cancel_check=None, default_expansion_px=None, clean_artifacts: bool = True) -> str:
+        """Extract cards from masks/polygons in a project.
 
-        ``cancel_check``, if given, is polled once per mask file; when it
-        returns True the loop stops after the current file (whatever cards
-        it already saved stay on disk) and metadata is still written for
-        everything extracted so far - a clean partial result, not a crash.
+        ``cancel_check``, if given, is polled once per image; when it
+        returns True the loop stops after the current file and metadata is still written.
+        ``default_expansion_px``, if given, overrides or falls back for expansion padding.
+        ``clean_artifacts``, if True (default), deterministically removes numbers, section profiles,
+        and stray fragments from extracted cards.
         """
         try:
             masks_path = Path(masks_path)
@@ -679,11 +689,26 @@ class MaskExtractor:
             # Create cards folder
             os.makedirs(cards_path, exist_ok=True)
             
-            # Get all mask files
-            mask_files = [f.name for f in masks_path.iterdir() 
-                         if f.name.endswith('_mask_layer.png')]
+            # Collect unique base image names from masks_path
+            base_set = set()
+            import re as _re
+            def _nat_key(s):
+                return [int(c) if c.isdigit() else c.lower() for c in _re.split(r'(\d+)', s)]
+
+            for f in masks_path.iterdir():
+                if not f.is_file():
+                    continue
+                name = f.name
+                if name.endswith(POLYGONS_SIDECAR_SUFFIX):
+                    base_set.add(name[:-len(POLYGONS_SIDECAR_SUFFIX)])
+                elif name.endswith('_mask_layer.png'):
+                    base_set.add(name[:-len('_mask_layer.png')])
+                elif name.endswith(VESSELS_SIDECAR_SUFFIX):
+                    base_set.add(name[:-len(VESSELS_SIDECAR_SUFFIX)])
             
-            if not mask_files:
+            base_filenames = sorted(list(base_set), key=_nat_key)
+            
+            if not base_filenames:
                 return "No mask files found. Apply a model first."
             
             metadata = []
@@ -692,62 +717,54 @@ class MaskExtractor:
             seen_hashes = set()  # exact pixel-content hashes, to drop duplicate cards
             duplicate_count = 0
 
-            total_files = len(mask_files)
+            total_files = len(base_filenames)
 
-            # Process each mask file
-            for idx, file in enumerate(mask_files, 1):
+            # Process each image
+            for idx, base_filename in enumerate(base_filenames, 1):
                 if cancel_check and cancel_check():
-                    print(f"Extraction cancelled after {idx - 1}/{total_files} masks")
+                    print(f"Extraction cancelled after {idx - 1}/{total_files} images")
                     break
 
-                print(f"Processing mask {idx}/{total_files}: {file}")
-                
-                base_filename = file.replace("_mask_layer.png", "")
-                
-                # Load mask
-                mask_array = np.array(Image.open(masks_path / file))
+                print(f"Processing mask {idx}/{total_files}: {base_filename}")
                 
                 # Try to find corresponding original image
-                # Look for image in parent's images folder
-                orig_image_path = masks_path.parent / 'images' / f"{base_filename}.jpg"
-                if not orig_image_path.exists():
-                    orig_image_path = masks_path.parent / 'images' / f"{base_filename}.png"
+                orig_image_path = None
+                for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']:
+                    candidate = masks_path.parent / 'images' / f"{base_filename}{ext}"
+                    if candidate.exists():
+                        orig_image_path = candidate
+                        break
                 
-                if not orig_image_path.exists():
+                if not orig_image_path or not orig_image_path.exists():
                     print(f"Warning: Original image not found for {base_filename}")
                     continue
                 
                 orig_array = np.array(Image.open(orig_image_path))
                 
-                # Process mask and get labeled regions
-                label_image = self._process_mask(mask_array)
-                # Pixel area only (mask_array.size counts the 4 RGBA channels,
-                # which inflated the min-area cutoff 4x and dropped small vessels)
-                total_area = mask_array.shape[0] * mask_array.shape[1]
+                # Load polygons (vector sidecar or legacy raster converted on the fly)
+                poly_data = read_polygons_sidecar(masks_path, base_filename)
+                polygons = poly_data.get("polygons", [])
+                expansion_px = poly_data.get("expansion_px")
+                if default_expansion_px is not None:
+                    expansion_px = default_expansion_px
+                elif expansion_px is None:
+                    expansion_px = 8
                 
-                # Manually drawn inner vessels and scale calibration for this image
-                drawn_polygons = read_vessels_sidecar(masks_path, base_filename)
                 scales = read_scale_sidecar(masks_path, base_filename)
 
-                # Process each region
-                next_index = 0
-                for i, region in enumerate(regionprops(label_image)):
-                    next_index = i + 1
-                    result = self._extract_region(region, mask_array, orig_array, total_area)
+                # Process each vessel polygon
+                for i, polygon in enumerate(polygons):
+                    result = extract_polygon_with_expansion(orig_array, polygon, expansion_px)
                     if result is None:
                         continue
 
                     cropped, bbox = result
-                    # When a larger vessel contains a hand-drawn inner vessel,
-                    # erase the inner vessel from the larger card (fill white) so
-                    # the two pieces are not duplicated in the big card.
-                    # (region.bbox is in mask coords; valid only when mask and
-                    # original share resolution, which is the normal case.)
-                    if mask_array.shape[:2] == orig_array.shape[:2]:
-                        cropped = _whiteout_inner_polygons(cropped, bbox, region, drawn_polygons)
+
+                    # Clean artifacts (numbers, section profiles, stray fragments)
+                    if clean_artifacts:
+                        cropped = clean_card_deterministic(cropped)
 
                     # Skip cards that are pixel-identical to one already extracted
-                    # in this run (e.g. an overlapping/duplicated detection).
                     content_hash = _content_hash(cropped)
                     if content_hash in seen_hashes:
                         duplicate_count += 1
@@ -757,7 +774,7 @@ class MaskExtractor:
                     mask_stem = f"{base_filename}_mask_layer_{i}"
                     output_filename = f"{mask_stem}.png"
 
-                    # Save cropped image with padding
+                    # Save cropped image with 50px white margin
                     cropped = np.pad(cropped, ((50, 50), (50, 50), (0, 0)), mode='constant', constant_values=255)
                     Image.fromarray(cropped).save(cards_path / output_filename)
 
@@ -768,33 +785,6 @@ class MaskExtractor:
                     ratio = _assign_px_per_cm(scales, (cx, cy))
                     if ratio is not None:
                         px_per_cm_map[mask_stem] = ratio
-
-                # Extract manually drawn vessels (e.g. vessels drawn inside other
-                # vessels). Connected-component labelling cannot separate these,
-                # so each operator-drawn polygon is cropped on its own.
-                for polygon in drawn_polygons:
-                    result = extract_polygon_vessel(orig_array, polygon)
-                    if result is None:
-                        continue
-                    cropped, bbox = result
-
-                    content_hash = _content_hash(cropped)
-                    if content_hash in seen_hashes:
-                        duplicate_count += 1
-                        continue
-                    seen_hashes.add(content_hash)
-
-                    mask_stem = f"{base_filename}_mask_layer_{next_index}"
-                    output_filename = f"{mask_stem}.png"
-                    cropped = np.pad(cropped, ((50, 50), (50, 50), (0, 0)), mode='constant', constant_values=255)
-                    Image.fromarray(cropped).save(cards_path / output_filename)
-                    metadata.append((base_filename, mask_stem))
-                    annotations.append((bbox, output_filename))
-                    cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
-                    ratio = _assign_px_per_cm(scales, (cx, cy))
-                    if ratio is not None:
-                        px_per_cm_map[mask_stem] = ratio
-                    next_index += 1
 
             # Save metadata
             self._save_metadata(metadata, annotations, cards_path, px_per_cm_map)
@@ -1215,7 +1205,106 @@ def _export_mask(mask: np.ndarray,
 # coordinates: {"image": base, "polygons": [[[x, y], ...], ...]}.
 # ---------------------------------------------------------------------------
 
+POLYGONS_SIDECAR_SUFFIX = "_polygons.json"
 VESSELS_SIDECAR_SUFFIX = "_vessels.json"
+
+
+def write_polygons_sidecar(masks_dir, base_filename: str, polygons: list, expansion_px: int = 8) -> Path:
+    """Persist vector polygons for an image as JSON."""
+    masks_dir = Path(masks_dir)
+    masks_dir.mkdir(parents=True, exist_ok=True)
+    sidecar = masks_dir / f"{base_filename}{POLYGONS_SIDECAR_SUFFIX}"
+    data = {
+        "image": base_filename,
+        "polygons": polygons,
+        "expansion_px": int(expansion_px)
+    }
+    with open(sidecar, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    return sidecar
+
+
+def save_polygons(img_name: str, polygons: list, output_folder: Path, expansion_px: int = 8) -> Path:
+    """Alias for write_polygons_sidecar"""
+    return write_polygons_sidecar(output_folder, img_name, polygons, expansion_px)
+
+
+def read_polygons_sidecar(masks_dir, base_filename: str) -> dict:
+    """Load vector polygons for an image.
+    If _polygons.json doesn't exist but legacy _mask_layer.png does, converts on-the-fly."""
+    masks_dir = Path(masks_dir)
+    sidecar = masks_dir / f"{base_filename}{POLYGONS_SIDECAR_SUFFIX}"
+    if sidecar.exists():
+        try:
+            with open(sidecar, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                polygons = data.get("polygons", [])
+                cleaned_polygons = []
+                modified = False
+                for poly in polygons:
+                    if len(poly) > 25:
+                        pts = np.array(poly, dtype=np.float32).reshape((-1, 1, 2))
+                        peri = cv2.arcLength(pts, True)
+                        approx = cv2.approxPolyDP(pts, max(3.5, 0.007 * peri), True)
+                        clean_pts = [[round(float(pt[0][0]), 1), round(float(pt[0][1]), 1)] for pt in approx if len(pt) > 0]
+                        if len(clean_pts) >= 3:
+                            cleaned_polygons.append(clean_pts)
+                            modified = True
+                        else:
+                            cleaned_polygons.append(poly)
+                    else:
+                        cleaned_polygons.append(poly)
+                if modified:
+                    write_polygons_sidecar(masks_dir, base_filename, cleaned_polygons, data.get("expansion_px", 8))
+                return {
+                    "polygons": cleaned_polygons,
+                    "expansion_px": data.get("expansion_px", 8)
+                }
+        except Exception as e:
+            print(f"Error reading polygons sidecar for {base_filename}: {e}")
+
+    # Fallback to vessels sidecar if exists
+    vessels = read_vessels_sidecar(masks_dir, base_filename)
+    
+    # Check for legacy raster mask
+    raster_mask = masks_dir / f"{base_filename}_mask_layer.png"
+    if raster_mask.exists():
+        try:
+            mask_img = cv2.imread(str(raster_mask), cv2.IMREAD_UNCHANGED)
+            polygons = []
+            if mask_img is not None:
+                if mask_img.ndim == 2:
+                    alpha = mask_img
+                elif mask_img.shape[2] == 1:
+                    alpha = mask_img[:, :, 0]
+                elif mask_img.shape[2] >= 4:
+                    alpha = mask_img[:, :, 3]
+                elif mask_img.shape[2] == 3:
+                    alpha = cv2.cvtColor(mask_img, cv2.COLOR_BGR2GRAY)
+                else:
+                    alpha = mask_img[:, :, 0]
+                _, binary = cv2.threshold(alpha, 10, 255, cv2.THRESH_BINARY)
+                contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for c in contours:
+                    if cv2.contourArea(c) > 100:
+                        peri = cv2.arcLength(c, True)
+                        approx = cv2.approxPolyDP(c, max(3.5, 0.007 * peri), True)
+                        pts = [[round(float(pt[0][0]), 1), round(float(pt[0][1]), 1)] for pt in approx if len(pt) > 0]
+                        if len(pts) >= 3:
+                            polygons.append(pts)
+            if vessels:
+                polygons.extend(vessels)
+            # Cache converted polygons
+            write_polygons_sidecar(masks_dir, base_filename, polygons, expansion_px=8)
+            return {"polygons": polygons, "expansion_px": 8}
+        except Exception as e:
+            print(f"Error converting legacy mask for {base_filename}: {e}")
+
+    if vessels:
+        write_polygons_sidecar(masks_dir, base_filename, vessels, expansion_px=8)
+        return {"polygons": vessels, "expansion_px": 8}
+
+    return {"polygons": [], "expansion_px": 8}
 
 
 def write_vessels_sidecar(masks_dir, base_filename: str, polygons: list) -> Path:
@@ -1373,14 +1462,12 @@ def _content_hash(arr: np.ndarray) -> str:
     return hashlib.md5(np.ascontiguousarray(arr).tobytes()).hexdigest()
 
 
-def extract_polygon_vessel(orig_array: np.ndarray, polygon: list):
-    """Crop a hand-drawn polygon from the original image as a card.
+def extract_polygon_with_expansion(orig_array: np.ndarray, polygon: list, expansion_px: int = 0):
+    """Crop a polygon from the original image as a card with optional expansion padding.
 
-    Everything outside the polygon is whitened, matching extracted cards.
+    Everything outside the (expanded) polygon is whitened, matching extracted cards.
     Returns ``(cropped_rgb, (x1, y1, x2, y2))`` or ``None`` if degenerate.
     """
-    import cv2
-
     pts = np.array(polygon, dtype=np.int32).reshape(-1, 2)
     if len(pts) < 3:
         return None
@@ -1388,13 +1475,141 @@ def extract_polygon_vessel(orig_array: np.ndarray, polygon: list):
     if w == 0 or h == 0:
         return None
 
-    rgb = orig_array[:, :, :3] if orig_array.ndim == 3 else \
-        np.repeat(orig_array[:, :, None], 3, axis=2)
-    region_mask = np.zeros(rgb.shape[:2], dtype=np.uint8)
-    cv2.fillPoly(region_mask, [pts], 1)
-    masked = np.where(region_mask[:, :, None] == 0, 255, rgb).astype(np.uint8)
-    cropped = masked[y:y + h, x:x + w]
-    return cropped, (x, y, x + w, y + h)
+    img_h, img_w = orig_array.shape[:2]
+    pad = max(0, int(expansion_px))
+    x1 = max(0, x - pad)
+    y1 = max(0, y - pad)
+    x2 = min(img_w, x + w + pad)
+    y2 = min(img_h, y + h + pad)
+    
+    crop_w = x2 - x1
+    crop_h = y2 - y1
+    if crop_w <= 0 or crop_h <= 0:
+        return None
+
+    sub_img = orig_array[y1:y2, x1:x2]
+    rgb = sub_img[:, :, :3] if sub_img.ndim == 3 else np.repeat(sub_img[:, :, None], 3, axis=2)
+
+    local_pts = pts.copy()
+    local_pts[:, 0] -= x1
+    local_pts[:, 1] -= y1
+
+    local_mask = np.zeros((crop_h, crop_w), dtype=np.uint8)
+    cv2.fillPoly(local_mask, [local_pts], 255)
+
+    if pad > 0:
+        ksize = 2 * pad + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+        local_mask = cv2.dilate(local_mask, kernel)
+
+    masked = np.where(local_mask[:, :, None] == 0, 255, rgb).astype(np.uint8)
+    return masked, (x1, y1, x2, y2)
+
+
+def extract_polygon_vessel(orig_array: np.ndarray, polygon: list):
+    """Crop a polygon from the original image as a card.
+    Everything outside the polygon is whitened, matching extracted cards.
+    Returns ``(cropped_rgb, (x1, y1, x2, y2))`` or ``None`` if degenerate.
+    """
+    return extract_polygon_with_expansion(orig_array, polygon, expansion_px=0)
+
+
+def clean_card_deterministic(card_img: np.ndarray, 
+                              ink_thresh: int = 220, 
+                              close_radius: int = 25,
+                              min_keep_dist: int = 2,
+                              erase_margin: int = 10) -> np.ndarray:
+    """
+    Deterministically cleans extraneous elements (detached inventory numbers,
+    section profiles, projection dashes, and fragments of nearby drawings)
+    from an extracted card image.
+    
+    Preserves 100% of the vessel's internal lines, hatching, and stippling dots.
+    """
+    if card_img is None or card_img.size == 0:
+        return card_img
+
+    gray = cv2.cvtColor(card_img, cv2.COLOR_BGR2GRAY) if card_img.ndim == 3 else card_img
+    ink = (gray < ink_thresh).astype(np.uint8)
+    
+    if ink.sum() < 50:
+        return card_img
+    
+    n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    if n_labels <= 2:
+        return card_img
+    
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    max_idx = 1 + np.argmax(areas)
+    
+    main_raw = (labels == max_idx).astype(np.uint8)
+    total_ink = ink.sum()
+    dist_from_main = cv2.distanceTransform(1 - main_raw, cv2.DIST_L2, 5)
+    
+    vessel_core = main_raw.copy()
+    for i in range(1, n_labels):
+        if i == max_idx:
+            continue
+        area = stats[i, cv2.CC_STAT_AREA]
+        comp_mask = (labels == i)
+        min_d = dist_from_main[comp_mask].min()
+        # Significant piece close to main vessel (e.g. handle or elevation half drawn with a slight gap)
+        if area > 0.05 * total_ink and min_d < 25:
+            vessel_core = cv2.bitwise_or(vessel_core, comp_mask.astype(np.uint8))
+    
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * close_radius + 1, 2 * close_radius + 1))
+    closed = cv2.morphologyEx(vessel_core, cv2.MORPH_CLOSE, k)
+    
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return card_img
+    
+    filled_mask = np.zeros_like(gray)
+    cv2.drawContours(filled_mask, contours, -1, 255, thickness=-1)
+    
+    # Also compute the convex hull so open-rim vessels (e.g. U-shaped bowls) protect all inner stippling
+    hull = cv2.convexHull(np.vstack(contours))
+    hull_mask = np.zeros_like(gray)
+    cv2.drawContours(hull_mask, [hull], -1, 255, thickness=-1)
+    
+    keep_mask = cv2.bitwise_or(filled_mask, hull_mask)
+    
+    if min_keep_dist > 0:
+        kd = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * min_keep_dist + 1, 2 * min_keep_dist + 1))
+        expanded_keep = cv2.dilate(keep_mask, kd)
+    else:
+        expanded_keep = keep_mask
+    
+    removal_mask = np.zeros_like(gray)
+    removed_count = 0
+    for i in range(1, n_labels):
+        comp_mask = (labels == i)
+        overlap = np.count_nonzero(comp_mask & (expanded_keep > 0))
+        comp_area = stats[i, cv2.CC_STAT_AREA]
+        
+        # If less than 30% of this component falls inside the keep mask, it's outside!
+        if overlap < 0.3 * comp_area:
+            removal_mask[comp_mask] = 255
+            removed_count += 1
+    
+    if removed_count == 0:
+        return card_img
+    
+    # Dilate removal mask to eliminate anti-aliasing, compression ringing, and paper grain around removed elements
+    if erase_margin > 0:
+        k_erase = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * erase_margin + 1, 2 * erase_margin + 1))
+        dilated_removal = cv2.dilate(removal_mask, k_erase)
+        dilated_removal[expanded_keep > 0] = 0
+    else:
+        dilated_removal = removal_mask
+    
+    cleaned = card_img.copy()
+    if cleaned.ndim == 3:
+        cleaned[dilated_removal > 0] = [255, 255, 255]
+    else:
+        cleaned[dilated_removal > 0] = 255
+        
+    return cleaned
 
 
 # Update in utils_new.py

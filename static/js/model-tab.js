@@ -396,8 +396,6 @@ async function handleApplyModel() {
     
     const model = document.getElementById('model-select').value;
     const confidence = parseFloat(document.getElementById('confidence').value);
-    const kernelSize = parseInt(document.getElementById('kernel-size').value);
-    const iterations = parseInt(document.getElementById('iterations').value);
     
     const modeRadio = document.querySelector('input[name="model-execution-mode"]:checked') || document.querySelector('input[name="processing-mode"]:checked');
     const diagnostic = modeRadio ? (modeRadio.value === 'diagnostic') : false;
@@ -495,8 +493,6 @@ async function handleApplyModel() {
                 project_id: modelState.currentProject.project_id,
                 model: model,
                 confidence: confidence,
-                kernel_size: kernelSize,
-                iterations: iterations,
                 diagnostic: diagnostic,
                 excluded_images: excludedImagesArray
             })

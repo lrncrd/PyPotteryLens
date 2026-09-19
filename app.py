@@ -18,6 +18,7 @@ import base64
 from io import BytesIO
 import pandas as pd
 import numpy as np
+import cv2
 from werkzeug.utils import secure_filename
 import torch
 import gc
@@ -46,10 +47,14 @@ from utils import (
     read_vessels_sidecar,
     write_vessels_sidecar,
     VESSELS_SIDECAR_SUFFIX,
+    read_polygons_sidecar,
+    write_polygons_sidecar,
+    POLYGONS_SIDECAR_SUFFIX,
     read_scale_sidecar,
     write_scale_sidecar,
     SCALE_SIDECAR_SUFFIX,
     PDF_RENDER_DPI,
+    clean_card_deterministic,
     setup_logging,
     describe_error,
     log_error,
@@ -1298,12 +1303,19 @@ def extract_project_masks(project_id):
         if not masks_path or not masks_path.exists():
             return jsonify({'error': 'Project masks folder not found', 'success': False}), 404
         
-        # Count mask files for progress
-        mask_files = [f for f in masks_path.iterdir() if f.name.endswith('_mask_layer.png')]
-        total_masks = len(mask_files)
+        # Count mask/polygon files for progress
+        mask_bases = set()
+        for f in masks_path.iterdir():
+            if not f.is_file():
+                continue
+            if f.name.endswith('_polygons.json'):
+                mask_bases.add(f.name[:-len('_polygons.json')])
+            elif f.name.endswith('_mask_layer.png'):
+                mask_bases.add(f.name[:-len('_mask_layer.png')])
+        total_masks = len(mask_bases)
         
         if total_masks == 0:
-            return jsonify({'error': 'No mask files found. Apply a model first.', 'success': False}), 404
+            return jsonify({'error': 'No mask or polygon files found. Apply a model first.', 'success': False}), 404
         
         # Initialize progress (also resets any stale cancel flag from a
         # previous, unrelated operation)
@@ -1325,7 +1337,7 @@ def extract_project_masks(project_id):
                     filename = ''
                     if ':' in msg:
                         filename = msg.split(':', 1)[1].strip()
-                        filename = filename.replace('_mask_layer.png', '')
+                        filename = filename.replace('_mask_layer.png', '').replace('_polygons.json', '')
                     status_msg = f'Extracting mask {current}/{total_masks}'
                     if filename:
                         status_msg = f'{status_msg} • {filename}'
@@ -1336,13 +1348,29 @@ def extract_project_masks(project_id):
         
         builtins.print = progress_print
         
+        req_data = request.get_json(silent=True) or {}
+        default_expansion = req_data.get('expansion_px')
+        if default_expansion is not None:
+            try:
+                default_expansion = int(default_expansion)
+            except (ValueError, TypeError):
+                default_expansion = None
+
+        clean_artifacts = req_data.get('clean_artifacts', True)
+        if isinstance(clean_artifacts, str):
+            clean_artifacts = clean_artifacts.lower() in ('true', '1', 'yes')
+        else:
+            clean_artifacts = bool(clean_artifacts)
+
         was_cancelled = False
         try:
             # Extract masks using project paths
             result = mask_extractor.extract_masks_from_project(
                 str(masks_path),
                 str(cards_path),
-                cancel_check=lambda: operation_progress.get('cancel_requested', False)
+                cancel_check=lambda: operation_progress.get('cancel_requested', False),
+                default_expansion_px=default_expansion,
+                clean_artifacts=clean_artifacts
             )
             was_cancelled = operation_progress.get('cancel_requested', False)
         finally:
@@ -1363,6 +1391,76 @@ def extract_project_masks(project_id):
         
     except Exception as e:
         clear_operation_progress()
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/cards/clean', methods=['POST'])
+def clean_project_cards(project_id):
+    """Deterministically clean extraneous elements (numbers, section cuts) on existing cards."""
+    try:
+        project_metadata = project_manager.get_project(project_id)
+        if not project_metadata:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+
+        cards_path = project_manager.get_project_path(project_id, 'cards')
+        if not cards_path or not cards_path.exists():
+            return jsonify({'error': 'No cards folder found. Extract cards first.', 'success': False}), 404
+
+        req_data = request.get_json(silent=True) or {}
+        ink_thresh = int(req_data.get('ink_thresh', 220))
+        close_radius = int(req_data.get('close_radius', 25))
+        min_keep_dist = int(req_data.get('min_keep_dist', 2))
+        erase_margin = int(req_data.get('erase_margin', 10))
+
+        cleaned_count = 0
+        total_cards = 0
+
+        # Clean all cards in cards/
+        card_files = sorted(list(cards_path.glob('*.png')))
+        total_cards = len(card_files)
+
+        for card_file in card_files:
+            img = cv2.imread(str(card_file))
+            if img is None:
+                continue
+            cleaned = clean_card_deterministic(
+                img, 
+                ink_thresh=ink_thresh, 
+                close_radius=close_radius, 
+                min_keep_dist=min_keep_dist, 
+                erase_margin=erase_margin
+            )
+            # Only save if changed
+            if not np.array_equal(img, cleaned):
+                cv2.imwrite(str(card_file), cleaned)
+                cleaned_count += 1
+
+        # Also clean modified cards if present
+        cards_modified_path = project_manager.get_project_path(project_id, 'cards_modified')
+        if cards_modified_path and cards_modified_path.exists():
+            for mod_file in sorted(list(cards_modified_path.glob('*.png'))):
+                img = cv2.imread(str(mod_file))
+                if img is None:
+                    continue
+                cleaned = clean_card_deterministic(
+                    img,
+                    ink_thresh=ink_thresh,
+                    close_radius=close_radius,
+                    min_keep_dist=min_keep_dist,
+                    erase_margin=erase_margin
+                )
+                if not np.array_equal(img, cleaned):
+                    cv2.imwrite(str(mod_file), cleaned)
+
+        return jsonify({
+            'success': True,
+            'message': f'Cleaned {cleaned_count} of {total_cards} cards.',
+            'cleaned_count': cleaned_count,
+            'total_cards': total_cards
+        })
+    except Exception as e:
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e), 'success': False}), 500
@@ -1461,6 +1559,70 @@ def get_project_vessels_summary(project_id):
         return jsonify({'success': True, 'summary': summary})
     except Exception as e:
         return jsonify({'error': str(e), 'success': False}), 500
+
+# ============================================================================
+# VECTOR POLYGONS (Detected & Edited Vessels)
+# ============================================================================
+
+@app.route('/api/projects/<project_id>/polygons/<base>', methods=['GET'])
+def get_image_polygons(project_id, base):
+    """Return vector polygons and expansion padding for a single image."""
+    try:
+        masks_path = project_manager.get_project_path(project_id, 'masks')
+        if not masks_path:
+            return jsonify({'error': 'Project not found', 'success': False}), 404
+        data = read_polygons_sidecar(masks_path, base)
+        return jsonify({
+            'success': True,
+            'polygons': data.get('polygons', []),
+            'expansion_px': data.get('expansion_px', 8)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/polygons/<base>', methods=['POST'])
+def save_image_polygons(project_id, base):
+    """Persist vector polygons and expansion padding for a single image."""
+    try:
+        masks_path = project_manager.get_project_path(project_id, 'masks')
+        if not masks_path or not masks_path.exists():
+            return jsonify({'error': 'Project masks folder not found', 'success': False}), 404
+        data = request.get_json(silent=True) or {}
+        polygons = data.get('polygons', [])
+        expansion_px = int(data.get('expansion_px', 8))
+        write_polygons_sidecar(masks_path, base, polygons, expansion_px)
+        return jsonify({'success': True, 'count': len(polygons), 'expansion_px': expansion_px})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+@app.route('/api/projects/<project_id>/polygons-summary', methods=['GET'])
+def get_project_polygons_summary(project_id):
+    """Per-image count of vessel polygons (for badges in the image list)."""
+    try:
+        masks_path = project_manager.get_project_path(project_id, 'masks')
+        summary = {}
+        if masks_path and masks_path.exists():
+            for f in masks_path.iterdir():
+                if not f.is_file():
+                    continue
+                base = None
+                if f.name.endswith(POLYGONS_SIDECAR_SUFFIX):
+                    base = f.name[:-len(POLYGONS_SIDECAR_SUFFIX)]
+                elif f.name.endswith(VESSELS_SIDECAR_SUFFIX):
+                    base = f.name[:-len(VESSELS_SIDECAR_SUFFIX)]
+                if base and base not in summary:
+                    poly_data = read_polygons_sidecar(masks_path, base)
+                    count = len(poly_data.get('polygons', []))
+                    if count:
+                        summary[base] = count
+        return jsonify({'success': True, 'summary': summary})
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+
 
 
 @app.route('/api/projects/<project_id>/scale/<base>', methods=['GET'])

@@ -2214,10 +2214,14 @@ body {
 
 #annotation-sidebar-panel {
     width: 320px;
+    min-width: 320px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    transition: opacity 0.25s ease,
+    transition: width 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                min-width 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                margin-right 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 0.25s ease,
                 transform 0.32s cubic-bezier(0.4, 0, 0.2, 1);
     overflow: hidden;
     gap: 0;
@@ -2228,8 +2232,10 @@ body {
     min-width: 0 !important;
     opacity: 0 !important;
     margin-right: -1.5rem !important;
+    padding: 0 !important;
+    border: none !important;
     pointer-events: none !important;
-    transform: translateX(-24px);
+    transform: translateX(-30px);
 }
 
 /* Project-level actions box (Calibrate Scales + Extract Cards): lives in the
@@ -2475,6 +2481,12 @@ body {
     border-color: var(--teal);
 }
 
+.btn-tool#colorize-toggle.active {
+    background: #6366f1;
+    color: #fff;
+    border-color: #6366f1;
+}
+
 .btn-tool#scale-tool.active {
     background: var(--primary);
     color: #fff;
@@ -2519,13 +2531,18 @@ body {
 }
 
 .btn-scale-zone {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     padding: 3px 8px;
     font-size: 0.78rem;
+    font-weight: 500;
     border: 1px solid #d97706;
     border-radius: 5px;
     cursor: pointer;
     background: #fef3c7;
     color: #92400e;
+    transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .btn-scale-zone:hover { background: #fde68a; }
@@ -2536,6 +2553,11 @@ body {
     border-radius: 8px;
     background: var(--surface);
     padding: 10px 12px;
+    transition: padding 0.2s ease;
+}
+
+.vessels-panel.collapsed {
+    padding: 8px 12px;
 }
 
 .vessels-panel-header {
@@ -2548,10 +2570,39 @@ body {
     margin-bottom: 10px;
 }
 
+.vessels-panel.collapsed .vessels-panel-header {
+    margin-bottom: 0;
+}
+
+.vessels-panel-title-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+}
+
+.vessels-chevron {
+    transition: transform 0.22s ease;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.vessels-panel:not(.collapsed) .vessels-chevron {
+    transform: rotate(90deg);
+}
+
 .vessels-panel-header .vessels-hint {
     font-size: 0.75rem;
     font-weight: 400;
     color: var(--text-secondary);
+}
+
+.vessels-panel.collapsed .vessels-hint {
+    display: none !important;
+}
+
+.vessels-panel.collapsed .vessels-list {
+    display: none !important;
 }
 
 .vessels-list {
@@ -2575,6 +2626,26 @@ body {
     flex: 1;
     font-size: 0.82rem;
     color: var(--text-primary);
+}
+
+.vessel-item .vessel-simplify {
+    padding: 3px 8px;
+    font-size: 0.78rem;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    cursor: pointer;
+    background: #f8fafc;
+    color: var(--text-primary);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.15s ease;
+}
+
+.vessel-item .vessel-simplify:hover {
+    background: #e2e8f0;
+    color: var(--primary);
+    border-color: var(--primary);
 }
 
 .vessel-item .vessel-delete {
@@ -3419,8 +3490,10 @@ body {
 .postprocess-lightbox {
     position: fixed;
     inset: 0;
-    z-index: 10001;
-    background: rgba(0, 0, 0, 0.85);
+    z-index: 100000;
+    background: rgba(15, 23, 42, 0.88);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     display: none;
     align-items: center;
     justify-content: center;
@@ -3433,18 +3506,25 @@ body {
     object-fit: contain;
     background: #fff;
     border-radius: 8px;
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.5);
 }
 
 .pp-lightbox-close {
     position: absolute;
-    top: 18px;
-    right: 26px;
-    color: #fff;
+    top: 20px;
+    right: 28px;
+    color: #ffffff;
     font-size: 2rem;
     cursor: pointer;
     line-height: 1;
     user-select: none;
+    z-index: 100001;
+    transition: transform 0.15s ease, color 0.15s ease;
+}
+
+.pp-lightbox-close:hover {
+    color: #f87171;
+    transform: scale(1.15);
 }
 
 /* Dialog */
@@ -3568,11 +3648,17 @@ body {
     color: #612500;
 }
 
-.extract-warning-box p {
-    font-size: 0.82rem;
-    margin: 0;
-    line-height: 1.45;
-    color: #873800;
+.extract-clean-box {
+    margin-top: 1rem;
+    padding: 0.85rem 1.15rem;
+    background: var(--bg-surface-secondary, #f8fafc);
+    border: 1px solid var(--border, #e2e8f0);
+    border-radius: 12px;
+    transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.extract-clean-box:hover {
+    border-color: var(--primary, #2563eb);
 }
 
 .extract-dialog-footer {

@@ -559,18 +559,7 @@
                                         class="form-range">
                                     <p class="info-text">Lower values detect more objects but may increase false positives</p>
                                 </div>
-                                <div class="form-row">
-                                    <div class="form-group">
-                                        <label for="kernel-size">Kernel Size</label>
-                                        <input type="number" id="kernel-size" min="1" max="10" value="2"
-                                            class="form-control">
-                                    </div>
-                                    <div class="form-group">
-                                        <label for="iterations">Iterations</label>
-                                        <input type="number" id="iterations" min="1" max="50" value="10"
-                                            class="form-control">
-                                    </div>
-                                </div>
+
                             </div>
 
                             <div class="panel-divider"></div>
@@ -711,41 +700,55 @@
 
                                     <!-- Row 2: Editing Tools Palette (Painting + Size, Geometry, Actions) -->
                                     <div class="editor-controls-row editor-controls-bottom">
-                                        <!-- Group 1: Retouching (Brush, Eraser + Size slider together) -->
-                                        <div class="control-cluster retouch-cluster" title="Brush and Eraser tools (Size adjusts diameter)">
+                                        <!-- Group 1: Retouching & Drawing Tools -->
+                                        <div class="control-cluster retouch-cluster" title="Vector Drawing Tools">
                                             <div class="cluster-pill-group">
-                                                <button class="btn btn-tool active" id="brush-tool" data-tool="brush"><i class="bi bi-brush"></i> Brush</button>
-                                                <button class="btn btn-tool" id="eraser-tool" data-tool="eraser"><i class="bi bi-eraser"></i> Eraser</button>
-                                                <button class="btn btn-tool" id="cut-tool" data-tool="cut"
-                                                    title="Cut: click two points to slice a thin straight line through the mask, splitting fused blobs apart without an eraser's round blob."><i class="bi bi-scissors"></i> Cut</button>
+                                                <button class="btn btn-tool active" id="brush-tool" data-tool="brush"
+                                                    title="Round Brush: paint with a circular cursor; converts into a clean vector polygon on release."><i class="bi bi-brush"></i> Brush</button>
+                                                <button class="btn btn-tool" id="polygon-tool" data-tool="polygon"
+                                                    title="Point-by-point Polygon: click to place vertices; click first point or double-click to close."><i class="bi bi-vector-pen"></i> Polygon</button>
+                                                <button class="btn btn-tool" id="eraser-tool" data-tool="eraser"
+                                                    title="Eraser: sweep over vertices with round brush to erase them."><i class="bi bi-eraser"></i> Eraser</button>
+                                                <button class="btn btn-tool" id="colorize-toggle"
+                                                    title="Colorize: view each vessel mask with a distinct color"><i class="bi bi-palette"></i> Colorize</button>
                                             </div>
-                                            <div class="size-control" id="brush-size-control" title="Adjust brush / eraser diameter">
-                                                <span class="size-label">Size</span>
-                                                <input type="range" id="brush-size" min="5" max="50" value="20">
+                                        </div>
+
+                                        <div class="panel-divider-vertical"></div>
+
+                                        <!-- Group 2: Brush & Eraser Size -->
+                                        <div class="control-cluster brush-size-cluster" title="Brush / Eraser Size">
+                                            <div class="size-control" id="brush-size-control" title="Adjust brush / eraser diameter (5-100px)">
+                                                <span class="size-label"><i class="bi bi-circle"></i> Size</span>
+                                                <input type="range" id="brush-size" min="5" max="100" value="20" step="1">
                                                 <span id="brush-size-val" class="brush-size-badge">20px</span>
                                             </div>
                                         </div>
 
                                         <div class="panel-divider-vertical"></div>
 
-                                        <!-- Group 2: Archaeological Geometry (Polygon & Scale) -->
-                                        <div class="control-cluster geometry-cluster" title="Archaeological vector and scale tools">
-                                            <button class="btn btn-tool" id="polygon-tool" data-tool="polygon"
-                                                title="Draw a polygon around a vessel the model missed. Click to add points; click the first point or double-click to close."><i class="bi bi-vector-pen"></i> Polygon</button>
-                                            <button class="btn btn-tool" id="scale-tool" data-tool="scale"
-                                                title="Calibrate the graphic scale bar: click two endpoints, then enter the real distance in cm."><i class="bi bi-rulers"></i> Scale</button>
+                                        <!-- Group 3: Mask Expansion (Padding 0-100px) -->
+                                        <div class="control-cluster expansion-cluster" title="Mask Expansion Padding">
+                                            <div class="size-control" id="expansion-size-control" title="Adjust expansion padding around all vessels (0-100px, prevents clipping rims/handles)">
+                                                <span class="size-label"><i class="bi bi-arrows-angle-expand"></i> Expansion</span>
+                                                <input type="range" id="mask-expansion" min="0" max="100" value="8" step="1">
+                                                <span id="mask-expansion-val" class="brush-size-badge">8px</span>
+                                            </div>
                                         </div>
 
                                         <div class="panel-divider-vertical"></div>
 
-                                        <!-- Group 3: Visual Inspection & Reset -->
+                                        <!-- Group 4: Archaeological Scale & Reset -->
                                         <div class="control-cluster actions-cluster">
-                                            <button class="btn btn-tool" id="colorize-toggle"
-                                                title="Color each separate mask differently (like a political map) to spot masks that are fused together."><i class="bi bi-palette"></i> Colorize</button>
-                                            <button class="btn btn-tool btn-tool-clear" id="clear-tool" data-tool="clear"
-                                                title="Reset current page mask"><i class="bi bi-trash3"></i> Clear</button>
+                                            <button class="btn btn-tool btn-scale" id="scale-tool" data-tool="scale"
+                                                title="Calibrate Scale (Line): click two points along the graphical bar; enter length in cm."><i class="bi bi-rulers"></i> Scale</button>
+                                            <button class="btn btn-tool btn-tool-clear" id="clear-btn" data-tool="clear"
+                                                title="Clear: remove all polygons on the current image."><i class="bi bi-trash3"></i> Clear</button>
                                         </div>
                                     </div>
+
+                                    <!-- Status Message -->
+                                    <div id="annotation-status" class="status-message"></div>
                                 </div>
 
                                 <!-- Project-level actions: always visible regardless of whether
@@ -769,13 +772,16 @@
                                     <div id="annotation-status" class="status-message"></div>
                                 </div>
 
-                                <!-- Manually drawn vessels (polygons) -->
-                                <div id="vessels-panel" class="vessels-panel" style="display: none;">
-                                    <div class="vessels-panel-header">
-                                        <span><i class="bi bi-vector-pen"></i> Manually drawn vessels (<span id="vessels-count">0</span>)</span>
-                                        <span class="vessels-hint">Each polygon becomes a separate card when you extract.</span>
+                                <!-- Vessels (polygons) -->
+                                <div id="vessels-panel" class="vessels-panel collapsed" style="display: none;">
+                                    <div class="vessels-panel-header" id="vessels-panel-toggle" style="cursor: pointer; user-select: none;" title="Toggle Vessels &amp; Polygons list">
+                                        <div class="vessels-panel-title-row">
+                                            <span><i class="bi bi-bounding-box-circles"></i> Vessels &amp; Polygons (<span id="vessels-count">0</span>)</span>
+                                            <i class="bi bi-chevron-right vessels-chevron" id="vessels-chevron"></i>
+                                        </div>
+                                        <span class="vessels-hint">Each polygon becomes a separate card on extraction. Click a vessel to select or delete.</span>
                                     </div>
-                                    <div id="vessels-list" class="vessels-list"></div>
+                                    <div id="vessels-list" class="vessels-list" style="display: none;"></div>
                                 </div>
 
                                 <!-- Scale calibration entries -->
@@ -1047,16 +1053,16 @@
                         <div class="pp-empty" id="postprocess-empty">Select a project, then click "Process All Images" to review the pieces here.</div>
                     </div>
 
-                    <!-- Lightbox (zoom on click) -->
-                    <div id="postprocess-lightbox" class="postprocess-lightbox" style="display: none;">
-                        <span class="pp-lightbox-close" id="postprocess-lightbox-close"><i class="bi bi-x-lg"></i></span>
-                        <img id="postprocess-lightbox-img" alt="Card">
-                    </div>
-
                 </div>
 
             </div>
         </main>
+
+        <!-- Post Processing Lightbox (zoom on click) -->
+        <div id="postprocess-lightbox" class="postprocess-lightbox" style="display: none;">
+            <span class="pp-lightbox-close" id="postprocess-lightbox-close"><i class="bi bi-x-lg"></i></span>
+            <img id="postprocess-lightbox-img" alt="Card">
+        </div>
 
         <!-- Export Dialog -->
         <div id="export-dialog" class="dialog-overlay" style="display: none;">
@@ -1102,6 +1108,20 @@
                             <strong>Overwrite Warning</strong>
                             <p>Any previously extracted cards in this project will be re-generated and overwritten.</p>
                         </div>
+                    </div>
+                    <div class="extract-clean-box mt-3">
+                        <label class="switch-toggle" for="clean-artifacts-toggle" style="display: flex; align-items: flex-start; gap: 0.85rem; cursor: pointer; width: 100%;">
+                            <input type="checkbox" id="clean-artifacts-toggle" checked>
+                            <span class="switch-track" style="margin-top: 2px;"><span class="switch-thumb"></span></span>
+                            <span class="switch-label-content" style="flex: 1;">
+                                <strong style="display: block; font-size: 0.88rem; color: var(--text-primary); font-weight: 600;">
+                                    <i class="bi bi-stars" style="color: var(--primary);"></i> Clean Artifacts &amp; Numbers
+                                </strong>
+                                <span style="display: block; font-size: 0.8rem; color: var(--text-muted); line-height: 1.35; margin-top: 2px;">
+                                    Deterministically removes isolated inventory numbers, section cuts, and stray fragments outside the vessel.
+                                </span>
+                            </span>
+                        </label>
                     </div>
                 </div>
                 <div class="extract-dialog-footer">

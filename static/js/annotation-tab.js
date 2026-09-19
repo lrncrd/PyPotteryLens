@@ -23,11 +23,20 @@ const annotationState = {
     maxDisplayHeight: 800,   // Max height for display
     polygons: [],            // committed vessel polygons (ORIGINAL coords)
     currentPolygon: [],      // in-progress polygon (ORIGINAL coords)
+    activeLasso: null,       // in-progress freehand stroke [[ox, oy], ...]
+    expansionPx: 8,          // mask expansion padding in original pixels (slider)
+    selectedPolygonIndex: -1,// index of selected polygon (-1 if none)
+    dragVertexIdx: -1,       // index of vertex being dragged in selected polygon
     mousePreview: null,      // {x, y} display coords for rubber-band line
     vesselsSummary: {},      // base -> count of drawn vessels
     canvasZoom: 1,           // CSS zoom multiplier over the canvas buffer
     brushCursor: null,       // {x, y} buffer coords for brush/eraser size ring
-    colorize: false,         // colour each separate mask differently
+    brushStrokeCanvas: null, // offscreen canvas for live round brush painting
+    lastBrushPos: null,      // {x, y} display coords of previous brush position
+    brushDragDistance: 0,    // accumulated distance moved during brush drag
+    lastEraserPos: null,     // {x, y} display coords of previous eraser brush position
+    vesselsPanelCollapsed: true, // Vessels & Polygons panel collapsed by default
+    colorize: true,          // colour each separate mask differently
     colorizedCanvas: null,   // cached offscreen canvas with the coloured masks
     // Scale calibration
     scales: [],              // committed scale entries for current page (original coords)
@@ -42,6 +51,18 @@ const annotationState = {
     cutDraftP1: null,        // {x, y} display coords of first endpoint, null if not started
     cutCursorPos: null       // {x, y} display coords of cursor (live preview)
 };
+
+const VESSEL_PALETTE = [
+    { fill: 'rgba(13, 148, 136, 0.22)', stroke: '#0d9488', halo: 'rgba(13, 148, 136, 0.35)', badge: '#0d9488' }, // Teal
+    { fill: 'rgba(124, 58, 237, 0.22)', stroke: '#7c3aed', halo: 'rgba(124, 58, 237, 0.35)', badge: '#7c3aed' }, // Purple
+    { fill: 'rgba(236, 72, 153, 0.22)', stroke: '#ec4899', halo: 'rgba(236, 72, 153, 0.35)', badge: '#ec4899' }, // Pink
+    { fill: 'rgba(16, 185, 129, 0.22)', stroke: '#10b981', halo: 'rgba(16, 185, 129, 0.35)', badge: '#10b981' }, // Emerald
+    { fill: 'rgba(2, 132, 199, 0.22)',  stroke: '#0284c7', halo: 'rgba(2, 132, 199, 0.35)',  badge: '#0284c7' }, // Sky Blue
+    { fill: 'rgba(217, 119, 6, 0.22)',  stroke: '#d97706', halo: 'rgba(217, 119, 6, 0.35)',  badge: '#d97706' }, // Amber
+    { fill: 'rgba(225, 29, 72, 0.22)',  stroke: '#e11d48', halo: 'rgba(225, 29, 72, 0.35)',  badge: '#e11d48' }, // Rose
+    { fill: 'rgba(101, 163, 13, 0.22)', stroke: '#65a30d', halo: 'rgba(101, 163, 13, 0.35)', badge: '#65a30d' }, // Lime
+    { fill: 'rgba(79, 70, 229, 0.22)',  stroke: '#4f46e5', halo: 'rgba(79, 70, 229, 0.35)',  badge: '#4f46e5' }, // Indigo
+];
 
 const POLYGON_CLOSE_THRESHOLD = 12; // display px to snap-close onto first point
 
@@ -126,28 +147,72 @@ function originalToDisplay(x, y) {
 }
 
 function initializeToolButtons() {
-    // Only real tools carry data-tool (brush/eraser/polygon/clear); zoom &
-    // colorize are toggles handled separately.
+    // Real tools carry data-tool (brush/eraser/polygon/scale/clear)
     document.querySelectorAll('.btn-tool[data-tool]').forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', (e) => {
             const tool = btn.dataset.tool;
-            if (tool === 'clear') clearMask();
-            else selectTool(tool);
+            if (tool === 'clear') {
+                e.preventDefault();
+                clearMask();
+            } else {
+                selectTool(tool);
+            }
         });
     });
 
-    document.getElementById('colorize-toggle')?.addEventListener('click', toggleColorize);
+    const clearBtn = document.getElementById('clear-btn') || document.getElementById('clear-tool');
+    if (clearBtn && !clearBtn.dataset.tool) {
+        clearBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            clearMask();
+        });
+    }
 
-    const slider = document.getElementById('brush-size');
-    const sizeVal = document.getElementById('brush-size-val');
-    if (slider) {
-        const updateSize = () => {
-            const val = parseInt(slider.value) || 20;
+    // Colorize toggle button
+    const colorizeBtn = document.getElementById('colorize-toggle');
+    if (colorizeBtn) {
+        colorizeBtn.classList.toggle('active', annotationState.colorize);
+        colorizeBtn.addEventListener('click', toggleColorize);
+    }
+
+    // Brush Size slider
+    const brushSlider = document.getElementById('brush-size');
+    const brushVal = document.getElementById('brush-size-val');
+    if (brushSlider) {
+        brushSlider.addEventListener('input', () => {
+            const val = parseInt(brushSlider.value) || 20;
             annotationState.brushSize = val;
-            if (sizeVal) sizeVal.textContent = val + 'px';
+            if (brushVal) brushVal.textContent = val + 'px';
+            redrawCanvas();
+        });
+    }
+
+    // Mask Expansion slider (0 - 100px)
+    const expansionSlider = document.getElementById('mask-expansion');
+    const expansionVal = document.getElementById('mask-expansion-val');
+    if (expansionSlider) {
+        const updateExpansion = () => {
+            const val = parseInt(expansionSlider.value) || 0;
+            annotationState.expansionPx = val;
+            if (expansionVal) expansionVal.textContent = val + 'px';
+            annotationState.isModified = true;
+            redrawCanvas();
         };
-        slider.addEventListener('input', updateSize);
-        updateSize();
+        expansionSlider.addEventListener('input', updateExpansion);
+        expansionSlider.addEventListener('change', () => {
+            annotationState.isModified = true;
+            persistPolygons();
+        });
+        updateExpansion();
+    }
+
+    // Vessels & Polygons collapsible panel toggle
+    const vesselsToggle = document.getElementById('vessels-panel-toggle');
+    if (vesselsToggle) {
+        vesselsToggle.addEventListener('click', () => {
+            annotationState.vesselsPanelCollapsed = !annotationState.vesselsPanelCollapsed;
+            renderVesselsPanel();
+        });
     }
 }
 
@@ -341,7 +406,7 @@ async function loadProjectImages() {
             fetch(`/api/projects/${projectId}/images`).then(r => r.json()),
             fetch(`/api/projects/${projectId}/masks`).then(r => r.json()),
             fetch(`/api/projects/${projectId}`).then(r => r.json()),
-            fetch(`/api/projects/${projectId}/vessels-summary`).then(r => r.json()).catch(() => ({}))
+            fetch(`/api/projects/${projectId}/polygons-summary`).then(r => r.json()).catch(() => ({}))
         ]);
 
         hideLoading();
@@ -353,12 +418,24 @@ async function loadProjectImages() {
         const imageUrls = imagesRes.images || [];
         const maskUrls = masksRes.success ? (masksRes.masks || []) : [];
         
-        // Get excluded images from project settings
+        // Get excluded images and reviewed images from project metadata
         const excludedImages = new Set();
-        if (projectRes.success && projectRes.project && projectRes.project.settings) {
-            const excludedList = projectRes.project.settings.excluded_images || [];
-            console.log('[Annotation] Excluded images:', excludedList);
-            excludedList.forEach(img => excludedImages.add(img));
+        const reviewedSet = new Set();
+        if (projectRes.success && projectRes.project) {
+            if (projectRes.project.settings) {
+                const excludedList = projectRes.project.settings.excluded_images || [];
+                console.log('[Annotation] Excluded images:', excludedList);
+                excludedList.forEach(img => excludedImages.add(img));
+            }
+            if (projectRes.project.workflow_status) {
+                const revList = projectRes.project.workflow_status.reviewed_images || [];
+                revList.forEach(name => {
+                    if (name) {
+                        reviewedSet.add(name);
+                        reviewedSet.add(name.replace(/\.(jpg|jpeg|png|bmp)$/i, ''));
+                    }
+                });
+            }
         }
         
         if (imageUrls.length === 0) {
@@ -369,7 +446,7 @@ async function loadProjectImages() {
         const maskMap = {};
         maskUrls.forEach(url => {
             const filename = url.split('/').pop();
-            const base = filename.replace(/_mask_layer\.png$/i, '');
+            const base = filename.replace(/_mask_layer\.png$/i, '').replace(/_polygons\.json$/i, '');
             maskMap[base] = url;
         });
         
@@ -384,7 +461,8 @@ async function loadProjectImages() {
                     maskUrl: maskMap[base] || null,
                     filename: filename,
                     baseName: base,
-                    hasMask: !!maskMap[base]
+                    hasMask: !!maskMap[base],
+                    isViewed: reviewedSet.has(filename) || reviewedSet.has(base)
                 };
             });
         
@@ -410,11 +488,11 @@ function renderImageList() {
     }
     
     const html = annotationState.images.map((img, i) => {
-        const icon = img.hasMask ? '<i class="bi bi-check-circle-fill" style="color:var(--teal)"></i>' : '<i class="bi bi-circle" style="color:var(--text-muted); opacity:0.5"></i>';
+        const icon = img.isViewed ? '<i class="bi bi-check-circle-fill" style="color:var(--teal)"></i>' : '<i class="bi bi-circle" style="color:var(--text-muted); opacity:0.35"></i>';
         const active = i === annotationState.currentIndex ? 'active' : '';
         const vCount = annotationState.vesselsSummary[img.baseName];
         const badge = vCount
-            ? `<span class="vessels-badge" title="${vCount} manually drawn vessel(s)"><i class="bi bi-rulers"></i> ${vCount}</span>`
+            ? `<span class="vessels-badge" title="${vCount} vessel(s)"><i class="bi bi-vector-pen"></i> ${vCount}</span>`
             : '';
         return `
             <div class="annotation-image-item ${active}" data-index="${i}">
@@ -444,6 +522,25 @@ async function selectImage(index) {
     
     annotationState.currentIndex = index;
     const img = annotationState.images[index];
+    
+    // Mark as viewed and notify backend if not already viewed
+    if (img && !img.isViewed) {
+        img.isViewed = true;
+        const targetItem = document.querySelector(`.annotation-image-item[data-index="${index}"]`);
+        if (targetItem) {
+            const numSpan = targetItem.querySelector('.image-number');
+            if (numSpan) {
+                numSpan.innerHTML = '<i class="bi bi-check-circle-fill" style="color:var(--teal)"></i>';
+            }
+        }
+        if (annotationState.currentProject) {
+            fetch(`/api/projects/${annotationState.currentProject.project_id}/reviewed`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image_name: img.filename })
+            }).catch(e => console.warn('[Annotation] Error marking reviewed:', e));
+        }
+    }
     
     document.querySelectorAll('.annotation-image-item').forEach((el, i) => {
         el.classList.toggle('active', i === index);
@@ -502,17 +599,9 @@ async function selectImage(index) {
         
         annotationState.maskCtx.clearRect(0, 0, annotationState.displayWidth, annotationState.displayHeight);
         
-        // Load existing mask if present
-        if (img.maskUrl) {
-            const maskImg = await loadImage(img.maskUrl);
-            // Resize mask to display size
-            annotationState.maskCtx.drawImage(maskImg, 0, 0, annotationState.displayWidth, annotationState.displayHeight);
-        }
-        
         annotationState.isModified = false;
-        await loadVessels(img.baseName);
+        await loadPolygons(img.baseName);
         await loadScales(img.baseName);
-        if (annotationState.colorize) computeColorized();
         redrawCanvas();
         showEditor();
         fitZoom();
@@ -558,16 +647,15 @@ function redrawCanvas() {
     // Direct rendering without requestAnimationFrame for immediate feedback
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(annotationState.backgroundImage, 0, 0);
-    // Coloured connected-components view (except while actively painting, where
-    // we show the live red strokes and recolour on mouse-up).
-    if (annotationState.colorize && annotationState.colorizedCanvas && !annotationState.isDrawing) {
-        ctx.globalAlpha = 0.75;
-        ctx.drawImage(annotationState.colorizedCanvas, 0, 0);
-    } else {
-        ctx.globalAlpha = 0.5;
-        ctx.drawImage(annotationState.maskCanvas, 0, 0);
+
+    // Live round brush stroke preview while drawing
+    if (annotationState.brushStrokeCanvas && annotationState.isDrawing && annotationState.dragVertexIdx < 0) {
+        ctx.save();
+        ctx.globalAlpha = 0.55;
+        ctx.drawImage(annotationState.brushStrokeCanvas, 0, 0);
+        ctx.restore();
     }
-    ctx.globalAlpha = 1.0;
+
     drawPolygons(ctx);
     drawScaleLines(ctx);
     drawScaleAssignmentOverlay(ctx);
@@ -575,12 +663,12 @@ function redrawCanvas() {
     drawBrushCursor(ctx);
 }
 
-// Toggle the "political-map" colouring of separate masks
+// Toggle multi-color palette view for separate vessel masks
 function toggleColorize() {
     annotationState.colorize = !annotationState.colorize;
     const btn = document.getElementById('colorize-toggle');
     if (btn) btn.classList.toggle('active', annotationState.colorize);
-    if (annotationState.colorize) computeColorized();
+    renderVesselsPanel();
     redrawCanvas();
 }
 
@@ -755,32 +843,226 @@ function drawBrushCursor(ctx) {
     ctx.restore();
 }
 
-// Draw committed polygons (green) + the in-progress one (orange)
+// --- Geometric Utilities for Vector Polygons ---
+
+function pointInPolygon(point, vs) {
+    const x = point[0], y = point[1];
+    let inside = false;
+    for (let i = 0, j = vs.length - 1; i < vs.length; j = i++) {
+        const xi = vs[i][0], yi = vs[i][1];
+        const xj = vs[j][0], yj = vs[j][1];
+        const intersect = ((yi > y) !== (yj > y))
+            && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+        if (intersect) inside = !inside;
+    }
+    return inside;
+}
+
+function perpendicularDistance(p, p1, p2) {
+    const dx = p2[0] - p1[0];
+    const dy = p2[1] - p1[1];
+    if (dx === 0 && dy === 0) {
+        return Math.hypot(p[0] - p1[0], p[1] - p1[1]);
+    }
+    const num = Math.abs(dy * p[0] - dx * p[1] + p2[0] * p1[1] - p2[1] * p1[0]);
+    const den = Math.hypot(dx, dy);
+    return num / den;
+}
+
+function ramerDouglasPeucker(points, epsilon) {
+    if (points.length <= 2) return points;
+    let dmax = 0;
+    let index = 0;
+    const end = points.length - 1;
+    for (let i = 1; i < end; i++) {
+        const d = perpendicularDistance(points[i], points[0], points[end]);
+        if (d > dmax) {
+            index = i;
+            dmax = d;
+        }
+    }
+    if (dmax > epsilon) {
+        const rec1 = ramerDouglasPeucker(points.slice(0, index + 1), epsilon);
+        const rec2 = ramerDouglasPeucker(points.slice(index), epsilon);
+        return rec1.slice(0, rec1.length - 1).concat(rec2);
+    } else {
+        return [points[0], points[end]];
+    }
+}
+
+function pointToSegmentDistance(p, a, b) {
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const l2 = dx * dx + dy * dy;
+    if (l2 === 0) return Math.hypot(p[0] - a[0], p[1] - a[1]);
+    let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
+}
+
+function simplifyClosedPolygon(poly, eps = 5.0) {
+    if (!poly || poly.length <= 4) return poly;
+    let maxDist = 0, i1 = 0, i2 = 0;
+    for (let i = 0; i < poly.length; i++) {
+        for (let j = i + 1; j < poly.length; j++) {
+            const d = Math.hypot(poly[i][0] - poly[j][0], poly[i][1] - poly[j][1]);
+            if (d > maxDist) { maxDist = d; i1 = i; i2 = j; }
+        }
+    }
+    const half1 = poly.slice(i1, i2 + 1);
+    const half2 = poly.slice(i2).concat(poly.slice(0, i1 + 1));
+    const s1 = ramerDouglasPeucker(half1, eps);
+    const s2 = ramerDouglasPeucker(half2, eps);
+    const res = s1.slice(0, -1).concat(s2.slice(0, -1));
+    return res.length >= 3 ? res : poly;
+}
+
+// Moore-Neighbor boundary tracer on a 2D binary grid
+function traceContour(grid, w, h) {
+    let startX = -1, startY = -1;
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            if (grid[y * w + x]) {
+                startX = x; startY = y;
+                break;
+            }
+        }
+        if (startX !== -1) break;
+    }
+    if (startX === -1) return [];
+
+    const dx = [0, 1, 1, 1, 0, -1, -1, -1];
+    const dy = [-1, -1, 0, 1, 1, 1, 0, -1];
+    const contour = [];
+    let currX = startX, currY = startY;
+    contour.push([currX, currY]);
+
+    let dir = 7;
+    const maxSteps = Math.min(w * h, 20000);
+    for (let step = 0; step < maxSteps; step++) {
+        let found = false;
+        for (let i = 0; i < 8; i++) {
+            const checkDir = (dir + i) % 8;
+            const nx = currX + dx[checkDir];
+            const ny = currY + dy[checkDir];
+            if (nx >= 0 && nx < w && ny >= 0 && ny < h && grid[ny * w + nx]) {
+                currX = nx;
+                currY = ny;
+                dir = (checkDir + 5) % 8;
+                found = true;
+                break;
+            }
+        }
+        if (!found) break;
+        if (currX === startX && currY === startY && contour.length > 2) break;
+        contour.push([currX, currY]);
+    }
+    return contour;
+}
+
+// Draw committed polygons + expansion halo + in-progress freehand / polygon
 function drawPolygons(ctx) {
-    // Committed vessel polygons
+    const expansion = annotationState.expansionPx || 0;
+    const scale = annotationState.displayWidth / (annotationState.originalWidth || 1);
+    const dispExpansion = expansion * scale;
+
+    // 1. Committed vessel polygons
     (annotationState.polygons || []).forEach((poly, idx) => {
-        if (poly.length < 2) return;
+        if (!poly || poly.length < 2) return;
+        const isSelected = (idx === annotationState.selectedPolygonIndex);
+        const paletteEntry = VESSEL_PALETTE[idx % VESSEL_PALETTE.length];
+        const color = annotationState.colorize 
+            ? paletteEntry 
+            : { fill: 'rgba(13, 148, 136, 0.22)', stroke: '#0d9488', halo: 'rgba(13, 148, 136, 0.35)', badge: '#0d9488' };
+
+        // A. Expansion Halo (visual live preview of dilated mask boundary)
+        if (dispExpansion > 0) {
+            ctx.save();
+            ctx.beginPath();
+            poly.forEach(([ox, oy], k) => {
+                const [px, py] = originalToDisplay(ox, oy);
+                if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+            });
+            ctx.closePath();
+            ctx.strokeStyle = isSelected ? 'rgba(234, 88, 12, 0.4)' : color.halo;
+            ctx.lineWidth = Math.max(3, dispExpansion * 2);
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        // B. Vessel boundary & fill
+        ctx.save();
         ctx.beginPath();
+        let minY = Infinity, topX = 0;
         poly.forEach(([ox, oy], k) => {
             const [px, py] = originalToDisplay(ox, oy);
             if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+            if (py < minY) { minY = py; topX = px; }
         });
         ctx.closePath();
-        ctx.fillStyle = 'rgba(22,163,74,0.15)';
-        ctx.strokeStyle = '#16a34a';
-        ctx.lineWidth = 2;
+        ctx.fillStyle = isSelected ? 'rgba(234, 88, 12, 0.25)' : color.fill;
+        ctx.strokeStyle = isSelected ? '#ea580c' : color.stroke;
+        ctx.lineWidth = isSelected ? 2.5 : 2;
+        ctx.lineJoin = 'round';
         ctx.fill();
         ctx.stroke();
-        // number label at first vertex
-        const [lx, ly] = originalToDisplay(poly[0][0], poly[0][1]);
-        ctx.fillStyle = '#16a34a';
-        ctx.font = 'bold 14px sans-serif';
-        ctx.fillText(`#${idx + 1}`, lx + 3, ly - 4);
+
+        // C. Vertex handles if selected
+        if (isSelected) {
+            poly.forEach(([ox, oy], vIdx) => {
+                const [px, py] = originalToDisplay(ox, oy);
+                const isDragging = (annotationState.dragVertexIdx === vIdx);
+                ctx.beginPath();
+                ctx.arc(px, py, isDragging ? 4.5 : 3, 0, Math.PI * 2);
+                ctx.fillStyle = isDragging ? '#ea580c' : '#ffffff';
+                ctx.strokeStyle = '#ea580c';
+                ctx.lineWidth = 1.5;
+                ctx.fill();
+                ctx.stroke();
+            });
+        }
+
+        // D. Number Badge Pill
+        const label = `#${idx + 1}`;
+        ctx.font = 'bold 11px sans-serif';
+        const tw = ctx.measureText(label).width;
+        const bw = tw + 10, bh = 18;
+        const bx = Math.max(2, Math.min(topX - bw / 2, annotationState.displayWidth - bw - 2));
+        const by = Math.max(2, minY - bh - 4);
+
+        ctx.fillStyle = isSelected ? '#ea580c' : color.badge;
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(bx, by, bw, bh, 4);
+        else ctx.rect(bx, by, bw, bh);
+        ctx.fill();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(label, bx + 5, by + 13);
+        ctx.restore();
     });
 
-    // In-progress polygon
+    // 2. Active Freehand Brush (Lasso) in progress
+    const lasso = annotationState.activeLasso;
+    if (lasso && lasso.length > 1) {
+        ctx.save();
+        ctx.beginPath();
+        lasso.forEach(([ox, oy], k) => {
+            const [px, py] = originalToDisplay(ox, oy);
+            if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        });
+        ctx.strokeStyle = 'rgba(239, 68, 68, 0.85)';
+        ctx.lineWidth = 3;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // 3. Point-by-point polygon in progress
     const cur = annotationState.currentPolygon || [];
     if (cur.length > 0) {
+        ctx.save();
         ctx.beginPath();
         cur.forEach(([ox, oy], k) => {
             const [px, py] = originalToDisplay(ox, oy);
@@ -792,7 +1074,6 @@ function drawPolygons(ctx) {
         ctx.strokeStyle = '#ea580c';
         ctx.lineWidth = 2;
         ctx.stroke();
-        // vertices
         cur.forEach(([ox, oy], k) => {
             const [px, py] = originalToDisplay(ox, oy);
             ctx.beginPath();
@@ -800,6 +1081,7 @@ function drawPolygons(ctx) {
             ctx.fillStyle = k === 0 ? '#16a34a' : '#ea580c';
             ctx.fill();
         });
+        ctx.restore();
     }
 }
 
@@ -816,7 +1098,7 @@ function addPolygonVertex(e) {
             return;
         }
     }
-    // Ignore near-duplicate clicks (e.g. the two clicks of a double-click)
+    // Ignore near-duplicate clicks
     if (cur.length > 0) {
         const [lx, ly] = originalToDisplay(cur[cur.length - 1][0], cur[cur.length - 1][1]);
         if (Math.hypot(x - lx, y - ly) < 5) return;
@@ -829,13 +1111,15 @@ function finishPolygon() {
     const cur = annotationState.currentPolygon;
     if (cur.length >= 3) {
         annotationState.polygons.push(cur);
+        annotationState.selectedPolygonIndex = annotationState.polygons.length - 1;
         annotationState.currentPolygon = [];
         annotationState.mousePreview = null;
+        annotationState.isModified = true;
         updateVesselsSummaryForCurrent();
         renderVesselsPanel();
         renderImageList();
         redrawCanvas();
-        persistVessels();
+        persistPolygons();
     } else {
         cancelPolygon();
     }
@@ -854,25 +1138,87 @@ function onCanvasDblClick(e) {
 }
 
 function onPolygonKeyDown(e) {
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
     if (annotationState.currentTool === 'scale') {
         if (e.key === 'Escape') { e.preventDefault(); cancelScaleDraft(); redrawCanvas(); }
         return;
     }
-    if (annotationState.currentTool === 'cut') {
-        if (e.key === 'Escape') { e.preventDefault(); annotationState.cutDraftP1 = null; redrawCanvas(); }
-        return;
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (annotationState.selectedPolygonIndex >= 0) {
+            e.preventDefault();
+            deleteVessel(annotationState.selectedPolygonIndex);
+            return;
+        }
     }
-    if (annotationState.currentTool !== 'polygon') return;
-    if (e.key === 'Enter') { e.preventDefault(); finishPolygon(); }
-    else if (e.key === 'Escape') { e.preventDefault(); cancelPolygon(); }
-    else if (e.key === 'Backspace' && annotationState.currentPolygon.length > 0) {
-        e.preventDefault();
-        annotationState.currentPolygon.pop();
-        redrawCanvas();
+    if (e.key === 'b' || e.key === 'B') { selectTool('brush'); return; }
+    if (e.key === 'e' || e.key === 'E') { selectTool('eraser'); return; }
+    if (e.key === 'p' || e.key === 'P') { selectTool('polygon'); return; }
+
+    if (annotationState.currentTool === 'polygon') {
+        if (e.key === 'Enter') { e.preventDefault(); finishPolygon(); }
+        else if (e.key === 'Escape') { e.preventDefault(); cancelPolygon(); }
+        else if (e.key === 'Backspace' && annotationState.currentPolygon.length > 0) {
+            e.preventDefault();
+            annotationState.currentPolygon.pop();
+            redrawCanvas();
+        }
     }
 }
 
+// Sweep circular eraser footprint between (x1, y1) and (x2, y2) and erase touched vertices
+function eraseVerticesSweep(x1, y1, x2, y2) {
+    const r = annotationState.brushSize;
+    let anyRemoved = false;
+    const polys = annotationState.polygons || [];
+    if (!polys.length) return false;
+
+    for (let pIdx = polys.length - 1; pIdx >= 0; pIdx--) {
+        const poly = polys[pIdx];
+        if (!poly || !poly.length) continue;
+
+        const filtered = [];
+        let removedFromPoly = false;
+
+        for (let i = 0; i < poly.length; i++) {
+            const [vx, vy] = originalToDisplay(poly[i][0], poly[i][1]);
+            const dist = pointToSegmentDistance([vx, vy], [x1, y1], [x2, y2]);
+            if (dist <= r) {
+                removedFromPoly = true;
+            } else {
+                filtered.push(poly[i]);
+            }
+        }
+
+        if (removedFromPoly) {
+            anyRemoved = true;
+            if (filtered.length < 3) {
+                // Less than 3 vertices remaining: remove vessel polygon entirely
+                polys.splice(pIdx, 1);
+                if (annotationState.selectedPolygonIndex === pIdx) {
+                    annotationState.selectedPolygonIndex = -1;
+                } else if (annotationState.selectedPolygonIndex > pIdx) {
+                    annotationState.selectedPolygonIndex--;
+                }
+            } else {
+                polys[pIdx] = filtered;
+            }
+        }
+    }
+
+    if (anyRemoved) {
+        annotationState.isModified = true;
+        updateVesselsSummaryForCurrent();
+        renderVesselsPanel();
+        redrawCanvas();
+    }
+    return anyRemoved;
+}
+
 function startDrawing(e) {
+    if (!annotationState.backgroundImage) return;
+    const { x, y } = eventToDisplayXY(e);
+    const [ox, oy] = displayToOriginal(x, y);
+
     if (annotationState.currentTool === 'polygon') {
         addPolygonVertex(e);
         return;
@@ -881,12 +1227,143 @@ function startDrawing(e) {
         handleScaleMouseDown(e);
         return;
     }
-    if (annotationState.currentTool === 'cut') {
-        handleCutMouseDown(e);
+
+    if (annotationState.currentTool === 'eraser') {
+        annotationState.isDrawing = true;
+        annotationState.lastEraserPos = { x, y };
+        annotationState.brushCursor = { x, y };
+        eraseVerticesSweep(x, y, x, y);
         return;
     }
-    annotationState.isDrawing = true;
-    draw(e);
+
+    if (annotationState.currentTool === 'brush') {
+        // Check if clicking near a vertex of the currently selected polygon
+        if (annotationState.selectedPolygonIndex >= 0) {
+            const poly = annotationState.polygons[annotationState.selectedPolygonIndex];
+            if (poly) {
+                for (let vIdx = 0; vIdx < poly.length; vIdx++) {
+                    const [vx, vy] = originalToDisplay(poly[vIdx][0], poly[vIdx][1]);
+                    if (Math.hypot(x - vx, y - vy) <= 8) {
+                        // Alt+click or Shift+click deletes this vertex (if polygon has > 3 vertices)
+                        if (e.altKey || e.shiftKey) {
+                            if (poly.length > 3) {
+                                poly.splice(vIdx, 1);
+                                annotationState.isModified = true;
+                                renderVesselsPanel();
+                                redrawCanvas();
+                                persistPolygons();
+                            }
+                            return;
+                        }
+                        annotationState.isDrawing = true;
+                        annotationState.dragVertexIdx = vIdx;
+                        return;
+                    }
+                }
+
+                // Check if clicking near an edge of the selected polygon to insert a new vertex
+                for (let vIdx = 0; vIdx < poly.length; vIdx++) {
+                    const nextIdx = (vIdx + 1) % poly.length;
+                    const p1 = originalToDisplay(poly[vIdx][0], poly[vIdx][1]);
+                    const p2 = originalToDisplay(poly[nextIdx][0], poly[nextIdx][1]);
+                    if (pointToSegmentDistance([x, y], p1, p2) <= 5) {
+                        poly.splice(nextIdx, 0, [ox, oy]);
+                        annotationState.isDrawing = true;
+                        annotationState.dragVertexIdx = nextIdx;
+                        annotationState.isModified = true;
+                        renderVesselsPanel();
+                        redrawCanvas();
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Start round brush stroke on brushStrokeCanvas
+        annotationState.isDrawing = true;
+        annotationState.dragVertexIdx = -1;
+        annotationState.brushDragDistance = 0;
+        annotationState.lastBrushPos = { x, y };
+
+        if (!annotationState.brushStrokeCanvas) {
+            annotationState.brushStrokeCanvas = document.createElement('canvas');
+        }
+        if (annotationState.brushStrokeCanvas.width !== annotationState.displayWidth ||
+            annotationState.brushStrokeCanvas.height !== annotationState.displayHeight) {
+            annotationState.brushStrokeCanvas.width = annotationState.displayWidth;
+            annotationState.brushStrokeCanvas.height = annotationState.displayHeight;
+        }
+        const bctx = annotationState.brushStrokeCanvas.getContext('2d');
+        bctx.clearRect(0, 0, annotationState.displayWidth, annotationState.displayHeight);
+        bctx.fillStyle = '#ef4444';
+        bctx.beginPath();
+        bctx.arc(x, y, annotationState.brushSize, 0, Math.PI * 2);
+        bctx.fill();
+        redrawCanvas();
+    }
+}
+
+function draw(e) {
+    if (!annotationState.backgroundImage) return;
+    const { x, y } = eventToDisplayXY(e);
+    const [ox, oy] = displayToOriginal(x, y);
+
+    if (annotationState.currentTool === 'polygon') {
+        if (annotationState.currentPolygon.length > 0) {
+            annotationState.mousePreview = { x, y };
+            redrawCanvas();
+        }
+        return;
+    }
+
+    if (annotationState.currentTool === 'scale') {
+        annotationState.scaleCursorPos = { x, y };
+        redrawCanvas();
+        return;
+    }
+
+    if (annotationState.currentTool === 'eraser') {
+        annotationState.brushCursor = { x, y };
+        if (annotationState.isDrawing) {
+            const prev = annotationState.lastEraserPos || { x, y };
+            eraseVerticesSweep(prev.x, prev.y, x, y);
+            annotationState.lastEraserPos = { x, y };
+        }
+        redrawCanvas();
+        return;
+    }
+
+    if (annotationState.currentTool === 'brush') {
+        annotationState.brushCursor = { x, y };
+        if (annotationState.isDrawing) {
+            if (annotationState.dragVertexIdx >= 0 && annotationState.selectedPolygonIndex >= 0) {
+                const poly = annotationState.polygons[annotationState.selectedPolygonIndex];
+                if (poly && poly[annotationState.dragVertexIdx]) {
+                    poly[annotationState.dragVertexIdx] = [ox, oy];
+                    redrawCanvas();
+                }
+                return;
+            }
+
+            if (annotationState.brushStrokeCanvas && annotationState.lastBrushPos) {
+                const bctx = annotationState.brushStrokeCanvas.getContext('2d');
+                bctx.strokeStyle = '#ef4444';
+                bctx.fillStyle = '#ef4444';
+                bctx.lineWidth = annotationState.brushSize * 2;
+                bctx.lineCap = 'round';
+                bctx.lineJoin = 'round';
+                bctx.beginPath();
+                bctx.moveTo(annotationState.lastBrushPos.x, annotationState.lastBrushPos.y);
+                bctx.lineTo(x, y);
+                bctx.stroke();
+
+                annotationState.brushDragDistance += Math.hypot(x - annotationState.lastBrushPos.x, y - annotationState.lastBrushPos.y);
+                annotationState.lastBrushPos = { x, y };
+            }
+        }
+        redrawCanvas();
+        return;
+    }
 }
 
 function stopDrawing(e) {
@@ -894,122 +1371,289 @@ function stopDrawing(e) {
         handleScaleZoneEnd(e);
         return;
     }
+
     if (!annotationState.isDrawing) return;
     annotationState.isDrawing = false;
-    if (annotationState.colorize) {
-        computeColorized();
-        redrawCanvas();
-    }
-    if (annotationState.isModified) {
-        scheduleAutoSave(1200);
-    }
-}
 
-function draw(e) {
-    if (annotationState.currentTool === 'polygon') {
-        // Rubber-band preview to the cursor while building a polygon
-        if (annotationState.currentPolygon.length > 0) {
-            annotationState.mousePreview = eventToDisplayXY(e);
+    if (annotationState.currentTool === 'eraser') {
+        annotationState.lastEraserPos = null;
+        if (annotationState.isModified) {
+            persistPolygons();
+            scheduleAutoSave();
+        }
+        redrawCanvas();
+        return;
+    }
+
+    if (annotationState.currentTool === 'brush') {
+        if (annotationState.dragVertexIdx >= 0) {
+            annotationState.dragVertexIdx = -1;
+            annotationState.isModified = true;
+            persistPolygons();
             redrawCanvas();
-        }
-        return;
-    }
-
-    if (annotationState.currentTool === 'scale') {
-        annotationState.scaleCursorPos = eventToDisplayXY(e);
-        redrawCanvas();
-        return;
-    }
-
-    if (annotationState.currentTool === 'cut') {
-        annotationState.cutCursorPos = eventToDisplayXY(e);
-        redrawCanvas();
-        return;
-    }
-
-    // Brush / eraser: always track the cursor so we can show the size ring
-    const { x, y } = eventToDisplayXY(e);
-    annotationState.brushCursor = { x, y };
-
-    if (annotationState.isDrawing) {
-        const ctx = annotationState.maskCtx;
-        annotationState.isModified = true;
-
-        if (annotationState.currentTool === 'eraser') {
-            ctx.globalCompositeOperation = 'destination-out';
-            ctx.fillStyle = 'rgba(0,0,0,1)';
-        } else {
-            ctx.globalCompositeOperation = 'source-over';
-            ctx.fillStyle = 'rgba(255, 0, 0, 1)';
+            return;
         }
 
-        ctx.beginPath();
-        ctx.arc(x, y, annotationState.brushSize, 0, Math.PI * 2);
-        ctx.fill();
-    }
+        const moved = annotationState.brushDragDistance;
+        annotationState.brushDragDistance = 0;
+        annotationState.lastBrushPos = null;
 
-    // Immediate redraw for responsiveness + cursor ring
-    redrawCanvas();
+        // If the user just clicked without dragging, test if selecting an existing vessel
+        if (moved < 5 && e) {
+            const { x, y } = eventToDisplayXY(e);
+            const [ox, oy] = displayToOriginal(x, y);
+            let hitIdx = -1;
+            for (let i = annotationState.polygons.length - 1; i >= 0; i--) {
+                if (pointInPolygon([ox, oy], annotationState.polygons[i])) {
+                    hitIdx = i;
+                    break;
+                }
+            }
+            if (hitIdx >= 0 || annotationState.selectedPolygonIndex >= 0) {
+                annotationState.selectedPolygonIndex = hitIdx;
+                if (annotationState.brushStrokeCanvas) {
+                    const bctx = annotationState.brushStrokeCanvas.getContext('2d');
+                    bctx.clearRect(0, 0, annotationState.displayWidth, annotationState.displayHeight);
+                }
+                renderVesselsPanel();
+                redrawCanvas();
+                return;
+            }
+        }
+
+        // Trace the outer contour from the painted brush stroke
+        if (annotationState.brushStrokeCanvas) {
+            const w = annotationState.displayWidth;
+            const h = annotationState.displayHeight;
+            const bctx = annotationState.brushStrokeCanvas.getContext('2d');
+            const imgData = bctx.getImageData(0, 0, w, h);
+            const data = imgData.data;
+            const strokeGrid = new Uint8Array(w * h);
+            let count = 0;
+            let sMinX = w, sMaxX = 0, sMinY = h, sMaxY = 0;
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    if (data[(y * w + x) * 4 + 3] > 30) {
+                        strokeGrid[y * w + x] = 1;
+                        count++;
+                        if (x < sMinX) sMinX = x;
+                        if (x > sMaxX) sMaxX = x;
+                        if (y < sMinY) sMinY = y;
+                        if (y > sMaxY) sMaxY = y;
+                    }
+                }
+            }
+            bctx.clearRect(0, 0, w, h);
+
+            if (count > 20) {
+                // Find existing polygons that intersect with the new brush stroke
+                const polys = annotationState.polygons || [];
+                const intersectingIndices = [];
+                const testCanvas = document.createElement('canvas');
+                testCanvas.width = w;
+                testCanvas.height = h;
+                const tctx = testCanvas.getContext('2d');
+
+                polys.forEach((p, idx) => {
+                    if (!p || p.length < 3) return;
+                    const dispPoly = p.map(([ox, oy]) => originalToDisplay(ox, oy));
+                    let pMinX = Infinity, pMinY = Infinity, pMaxX = -Infinity, pMaxY = -Infinity;
+                    for (const [px, py] of dispPoly) {
+                        if (px < pMinX) pMinX = px;
+                        if (px > pMaxX) pMaxX = px;
+                        if (py < pMinY) pMinY = py;
+                        if (py > pMaxY) pMaxY = py;
+                    }
+                    // Bounding box overlap check
+                    if (pMaxX < sMinX || pMinX > sMaxX || pMaxY < sMinY || pMinY > sMaxY) {
+                        return;
+                    }
+
+                    // Precise intersection test via canvas rasterization in overlap box
+                    tctx.clearRect(0, 0, w, h);
+                    tctx.fillStyle = '#ffffff';
+                    tctx.beginPath();
+                    dispPoly.forEach(([dx, dy], k) => k === 0 ? tctx.moveTo(dx, dy) : tctx.lineTo(dx, dy));
+                    tctx.closePath();
+                    tctx.fill();
+
+                    const oMinX = Math.max(0, Math.max(sMinX, Math.floor(pMinX)));
+                    const oMaxX = Math.min(w - 1, Math.min(sMaxX, Math.ceil(pMaxX)));
+                    const oMinY = Math.max(0, Math.max(sMinY, Math.floor(pMinY)));
+                    const oMaxY = Math.min(h - 1, Math.min(sMaxY, Math.ceil(pMaxY)));
+
+                    if (oMinX > oMaxX || oMinY > oMaxY) return;
+
+                    const ow = oMaxX - oMinX + 1;
+                    const oh = oMaxY - oMinY + 1;
+                    const tData = tctx.getImageData(oMinX, oMinY, ow, oh).data;
+
+                    let hit = false;
+                    for (let ly = 0; ly < oh; ly++) {
+                        const gy = oMinY + ly;
+                        for (let lx = 0; lx < ow; lx++) {
+                            const gx = oMinX + lx;
+                            if (strokeGrid[gy * w + gx] && tData[(ly * ow + lx) * 4 + 3] > 0) {
+                                hit = true;
+                                break;
+                            }
+                        }
+                        if (hit) break;
+                    }
+                    if (hit) {
+                        intersectingIndices.push(idx);
+                    }
+                });
+
+                if (intersectingIndices.length > 0) {
+                    // Union the new stroke with all intersecting polygons
+                    tctx.clearRect(0, 0, w, h);
+                    tctx.fillStyle = '#ffffff';
+                    intersectingIndices.forEach(idx => {
+                        const dispPoly = polys[idx].map(([ox, oy]) => originalToDisplay(ox, oy));
+                        tctx.beginPath();
+                        dispPoly.forEach(([dx, dy], k) => k === 0 ? tctx.moveTo(dx, dy) : tctx.lineTo(dx, dy));
+                        tctx.closePath();
+                        tctx.fill();
+                    });
+
+                    const unionData = tctx.getImageData(0, 0, w, h).data;
+                    const unionGrid = new Uint8Array(w * h);
+                    for (let i = 0; i < w * h; i++) {
+                        if (strokeGrid[i] || unionData[i * 4 + 3] > 30) {
+                            unionGrid[i] = 1;
+                        }
+                    }
+
+                    const contour = traceContour(unionGrid, w, h);
+                    if (contour && contour.length >= 6) {
+                        const simplifiedDisp = simplifyClosedPolygon(contour, 3.5);
+                        const simplifiedOrig = simplifiedDisp.map(([dx, dy]) => displayToOriginal(dx, dy));
+                        if (simplifiedOrig.length >= 3) {
+                            const targetIdx = intersectingIndices[0];
+                            polys[targetIdx] = simplifiedOrig;
+                            annotationState.selectedPolygonIndex = targetIdx;
+
+                            // Remove any other polygons that got merged into targetIdx (descending index)
+                            const toRemove = intersectingIndices.slice(1).sort((a, b) => b - a);
+                            for (const rIdx of toRemove) {
+                                polys.splice(rIdx, 1);
+                                if (annotationState.selectedPolygonIndex > rIdx) {
+                                    annotationState.selectedPolygonIndex--;
+                                }
+                            }
+
+                            annotationState.isModified = true;
+                            updateVesselsSummaryForCurrent();
+                            renderVesselsPanel();
+                            renderImageList();
+                            persistPolygons();
+                            if (window.PyPotteryUtils) {
+                                window.PyPotteryUtils.showToast(`Merged with vessel #${targetIdx + 1}`, 'success');
+                            }
+                        }
+                    }
+                } else {
+                    // No intersection: create a new separate vessel polygon
+                    const contour = traceContour(strokeGrid, w, h);
+                    if (contour && contour.length >= 6) {
+                        const simplifiedDisp = simplifyClosedPolygon(contour, 3.5);
+                        const simplifiedOrig = simplifiedDisp.map(([dx, dy]) => displayToOriginal(dx, dy));
+                        if (simplifiedOrig.length >= 3) {
+                            annotationState.polygons.push(simplifiedOrig);
+                            annotationState.selectedPolygonIndex = annotationState.polygons.length - 1;
+                            annotationState.isModified = true;
+                            updateVesselsSummaryForCurrent();
+                            renderVesselsPanel();
+                            renderImageList();
+                            persistPolygons();
+                        }
+                    }
+                }
+            }
+        }
+
+        redrawCanvas();
+    }
 }
 
 function onCanvasMouseLeave() {
     const wasDrawing = annotationState.isDrawing;
-    annotationState.isDrawing = false;
     annotationState.brushCursor = null;
     annotationState.scaleCursorPos = null;
-    if (wasDrawing && annotationState.colorize) computeColorized();
-    redrawCanvas();
-    if (annotationState.isModified) {
-        scheduleAutoSave(1200);
+    if (wasDrawing && (annotationState.currentTool === 'brush' || annotationState.currentTool === 'eraser')) {
+        stopDrawing();
+    } else {
+        annotationState.isDrawing = false;
+        annotationState.activeLasso = null;
+        annotationState.dragVertexIdx = -1;
+        annotationState.lastEraserPos = null;
     }
+    redrawCanvas();
 }
 
 function selectTool(tool) {
-    // Abandon any half-drawn polygon when switching tools
     if (annotationState.currentTool === 'polygon' && tool !== 'polygon') {
         cancelPolygon();
     }
-    // Cancel in-progress scale when switching away
     if (annotationState.currentTool === 'scale' && tool !== 'scale') {
         cancelScaleDraft();
-    }
-    // Cancel in-progress cut when switching away
-    if (annotationState.currentTool === 'cut' && tool !== 'cut') {
-        annotationState.cutDraftP1 = null;
     }
     annotationState.currentTool = tool;
     document.querySelectorAll('.btn-tool').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.tool === tool);
     });
 
-    // Dim brush size control when not using brush or eraser
-    const sizeControl = document.getElementById('brush-size-control');
-    if (sizeControl) {
-        const isBrushOrEraser = (tool === 'brush' || tool === 'eraser');
-        sizeControl.classList.toggle('disabled', !isBrushOrEraser);
-    }
-
     const canvas = annotationState.canvas;
-    if (canvas) canvas.style.cursor = 'crosshair';
+    if (canvas) {
+        canvas.style.cursor = 'crosshair';
+    }
 }
 
-// ---- Manually drawn vessels (polygons) ----------------------------------
+// ---- Vector Polygons Management -----------------------------------------
 
-async function loadVessels(baseName) {
+async function loadPolygons(baseName) {
     annotationState.polygons = [];
     annotationState.currentPolygon = [];
-    annotationState.mousePreview = null;
+    annotationState.activeLasso = null;
+    annotationState.selectedPolygonIndex = -1;
     if (!annotationState.currentProject) { renderVesselsPanel(); return; }
     const projectId = annotationState.currentProject.project_id;
     try {
-        const res = await fetch(`/api/projects/${projectId}/vessels/${encodeURIComponent(baseName)}`);
+        const res = await fetch(`/api/projects/${projectId}/polygons/${encodeURIComponent(baseName)}`);
         const data = await res.json();
-        if (data.success) annotationState.polygons = data.polygons || [];
+        if (data.success) {
+            let loaded = data.polygons || [];
+            let anySimplified = false;
+            // Clean up dense swarms of points from older runs
+            loaded = loaded.map(p => {
+                if (p && p.length > 25) {
+                    const s = simplifyClosedPolygon(p, 6.0);
+                    if (s.length < p.length) {
+                        anySimplified = true;
+                        return s;
+                    }
+                }
+                return p;
+            });
+            annotationState.polygons = loaded;
+            annotationState.expansionPx = data.expansion_px !== undefined ? data.expansion_px : 8;
+            const slider = document.getElementById('mask-expansion');
+            const valEl = document.getElementById('mask-expansion-val');
+            if (slider) slider.value = annotationState.expansionPx;
+            if (valEl) valEl.textContent = annotationState.expansionPx + 'px';
+            if (anySimplified) {
+                persistPolygons();
+            }
+        }
     } catch (e) {
-        console.warn('[Annotation] Could not load vessels:', e);
+        console.warn('[Annotation] Could not load polygons:', e);
     }
+    updateVesselsSummaryForCurrent();
     renderVesselsPanel();
 }
+
+const loadVessels = loadPolygons;
 
 function renderVesselsPanel() {
     const panel = document.getElementById('vessels-panel');
@@ -1026,25 +1670,80 @@ function renderVesselsPanel() {
         return;
     }
     panel.style.display = 'block';
-    list.innerHTML = polys.map((p, i) => `
-        <div class="vessel-item" data-index="${i}">
-            <span class="vessel-item-label">#${i + 1} — polygon (${p.length} points)</span>
-            <button class="vessel-delete" data-index="${i}"><i class="bi bi-trash3"></i> Delete</button>
-        </div>
-    `).join('');
+    panel.classList.toggle('collapsed', !!annotationState.vesselsPanelCollapsed);
+    list.style.display = annotationState.vesselsPanelCollapsed ? 'none' : 'flex';
+    list.innerHTML = polys.map((p, i) => {
+        const isSel = (i === annotationState.selectedPolygonIndex);
+        const paletteEntry = VESSEL_PALETTE[i % VESSEL_PALETTE.length];
+        const color = annotationState.colorize ? paletteEntry : { stroke: '#0d9488' };
+        const borderStyle = isSel 
+            ? 'border-left: 4px solid #ea580c; background: rgba(234, 88, 12, 0.08);' 
+            : `border-left: 4px solid ${color.stroke};`;
+        return `
+            <div class="vessel-item ${isSel ? 'active' : ''}" data-index="${i}" style="${borderStyle}">
+                <span class="vessel-item-label" style="cursor:pointer;" title="Click to select on canvas">#${i + 1} — vessel (${p.length} pts)</span>
+                <button class="vessel-simplify" data-index="${i}" title="Simplify polygon points"><i class="bi bi-bezier2"></i> Simplify</button>
+                <button class="vessel-delete" data-index="${i}"><i class="bi bi-trash3"></i> Delete</button>
+            </div>
+        `;
+    }).join('');
+
+    list.querySelectorAll('.vessel-item-label').forEach(label => {
+        label.addEventListener('click', (e) => {
+            const item = e.target.closest('.vessel-item');
+            const idx = parseInt(item.dataset.index);
+            annotationState.selectedPolygonIndex = (annotationState.selectedPolygonIndex === idx) ? -1 : idx;
+            renderVesselsPanel();
+            redrawCanvas();
+        });
+    });
+
+    list.querySelectorAll('.vessel-simplify').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            simplifyVessel(parseInt(btn.dataset.index));
+        });
+    });
 
     list.querySelectorAll('.vessel-delete').forEach(btn => {
-        btn.addEventListener('click', () => deleteVessel(parseInt(btn.dataset.index)));
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            deleteVessel(parseInt(btn.dataset.index));
+        });
     });
 }
 
+function simplifyVessel(index) {
+    if (index < 0 || index >= annotationState.polygons.length) return;
+    const poly = annotationState.polygons[index];
+    if (!poly || poly.length <= 4) return;
+    const simplified = simplifyClosedPolygon(poly, 8.0);
+    if (simplified.length < poly.length) {
+        annotationState.polygons[index] = simplified;
+        annotationState.isModified = true;
+        renderVesselsPanel();
+        redrawCanvas();
+        persistPolygons();
+        if (window.PyPotteryUtils) {
+            window.PyPotteryUtils.showToast(`Simplified vessel #${index + 1}: ${poly.length} → ${simplified.length} points`, 'info');
+        }
+    }
+}
+
 function deleteVessel(index) {
+    if (index < 0 || index >= annotationState.polygons.length) return;
     annotationState.polygons.splice(index, 1);
+    if (annotationState.selectedPolygonIndex === index) {
+        annotationState.selectedPolygonIndex = -1;
+    } else if (annotationState.selectedPolygonIndex > index) {
+        annotationState.selectedPolygonIndex--;
+    }
+    annotationState.isModified = true;
     updateVesselsSummaryForCurrent();
     renderVesselsPanel();
     renderImageList();
     redrawCanvas();
-    persistVessels();
+    persistPolygons();
 }
 
 function updateVesselsSummaryForCurrent() {
@@ -1055,21 +1754,30 @@ function updateVesselsSummaryForCurrent() {
     else delete annotationState.vesselsSummary[img.baseName];
 }
 
-async function persistVessels() {
-    if (!annotationState.currentProject) return;
+async function persistPolygons() {
+    if (!annotationState.currentProject || annotationState.currentIndex < 0) return;
     const img = annotationState.images[annotationState.currentIndex];
     if (!img) return;
     const projectId = annotationState.currentProject.project_id;
     try {
-        await fetch(`/api/projects/${projectId}/vessels/${encodeURIComponent(img.baseName)}`, {
+        await fetch(`/api/projects/${projectId}/polygons/${encodeURIComponent(img.baseName)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ polygons: annotationState.polygons })
+            body: JSON.stringify({
+                polygons: annotationState.polygons,
+                expansion_px: annotationState.expansionPx
+            })
         });
+        annotationState.isModified = false;
+        img.hasMask = annotationState.polygons.length > 0;
+        updateVesselsSummaryForCurrent();
+        renderImageList();
     } catch (e) {
-        console.error('[Annotation] Failed to persist vessels:', e);
+        console.error('[Annotation] Failed to persist polygons:', e);
     }
 }
+
+const persistVessels = persistPolygons;
 
 // ---- Scale calibration --------------------------------------------------
 
@@ -1126,7 +1834,7 @@ function renderScalesPanel() {
             <div class="vessel-item scale-line-item">
                 <span class="vessel-item-label">#${i + 1} · ${s.real_cm}cm → <code>${ratioStr}</code> <em>(${zoneStr})</em>${calibBadge}</span>
                 <div class="scale-item-actions">
-                    <button class="btn-scale-zone" data-idx="${i}" title="Draw a zone rectangle on canvas to limit this scale to a page region"><i class="bi bi-geo-alt"></i></button>
+                    <button class="btn-scale-zone" data-idx="${i}" title="Draw a zone rectangle on canvas to limit this scale to a page region"><i class="bi bi-geo-alt"></i> Zone</button>
                     <button class="vessel-delete btn-scale-del" data-idx="${i}"><i class="bi bi-trash3"></i></button>
                 </div>
             </div>
@@ -1528,11 +2236,27 @@ async function clearMask() {
     });
     if (!confirmed) return;
     const canvas = annotationState.maskCanvas;
-    annotationState.maskCtx.clearRect(0, 0, canvas.width, canvas.height);
+    if (canvas && annotationState.maskCtx) {
+        annotationState.maskCtx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    if (annotationState.brushStrokeCanvas && annotationState.brushStrokeCtx) {
+        annotationState.brushStrokeCtx.clearRect(0, 0, annotationState.brushStrokeCanvas.width, annotationState.brushStrokeCanvas.height);
+    }
+    annotationState.polygons = [];
+    annotationState.currentPolygon = [];
+    annotationState.activeLasso = null;
+    annotationState.selectedPolygonIndex = -1;
+    annotationState.dragVertexIdx = -1;
+    annotationState.isDrawing = false;
     annotationState.isModified = true;
+    updateVesselsSummaryForCurrent();
+    renderVesselsPanel();
     if (annotationState.colorize) computeColorized();
     redrawCanvas();
-    scheduleAutoSave(600);
+    await persistPolygons();
+    if (window.PyPotteryUtils && typeof window.PyPotteryUtils.showToast === 'function') {
+        window.PyPotteryUtils.showToast('Annotations cleared for this image', 'info');
+    }
 }
 
 let autoSaveTimeout = null;
@@ -1550,51 +2274,15 @@ async function saveMask(silent = false) {
     if (!annotationState.currentProject || annotationState.currentIndex < 0) return;
     if (!annotationState.isModified) return;
     
-    const img = annotationState.images[annotationState.currentIndex];
-    const projectId = annotationState.currentProject.project_id;
-    
     try {
-        // Create full-resolution mask canvas
-        const fullResMaskCanvas = document.createElement('canvas');
-        fullResMaskCanvas.width = annotationState.originalWidth;
-        fullResMaskCanvas.height = annotationState.originalHeight;
-        const fullResMaskCtx = fullResMaskCanvas.getContext('2d');
-        
-        // Scale up the mask to original resolution
-        fullResMaskCtx.drawImage(
-            annotationState.maskCanvas, 
-            0, 0, annotationState.displayWidth, annotationState.displayHeight,
-            0, 0, annotationState.originalWidth, annotationState.originalHeight
-        );
-        
-        const blob = await new Promise(resolve => {
-            fullResMaskCanvas.toBlob(resolve, 'image/png');
-        });
-        
-        const formData = new FormData();
-        formData.append('mask', blob, `${img.baseName}_mask_layer.png`);
-        
-        const res = await fetch(`/api/projects/${projectId}/masks/save`, {
-            method: 'POST',
-            body: formData
-        });
-        
-        const result = await res.json();
-        if (result.success) {
-            annotationState.isModified = false;
-            img.hasMask = true;
-            // Update maskUrl so it can be reloaded
-            img.maskUrl = result.mask_url || `/api/projects/${projectId}/mask/${img.baseName}_mask_layer.png`;
-            renderImageList();
-            // Force redraw of the main canvas to show the newly saved mask
-            redrawCanvas();
-            if (!silent && window.PyPotteryUtils) {
-                window.PyPotteryUtils.showToast('Mask saved!', 'success');
-            }
-            console.log(`[Annotation] Mask auto-saved at original resolution: ${annotationState.originalWidth}x${annotationState.originalHeight}`);
-        } else {
-            throw new Error(result.error || 'Save failed');
+        await persistPolygons();
+        annotationState.isModified = false;
+        renderImageList();
+        redrawCanvas();
+        if (!silent && window.PyPotteryUtils) {
+            window.PyPotteryUtils.showToast('Annotations saved!', 'success');
         }
+        console.log('[Annotation] Vector polygons saved for current image.');
     } catch (error) {
         console.error('[Annotation] Save error:', error);
         if (!silent) alert('Error: ' + error.message);
@@ -1700,11 +2388,17 @@ async function extractCards() {
         // Start polling in background
         pollProgress();
 
+        const cleanToggle = document.getElementById('clean-artifacts-toggle');
+        const cleanArtifacts = cleanToggle ? cleanToggle.checked : true;
+
         // Perform the mask extraction request
         const res = await fetch(`/api/projects/${projectId}/masks/extract`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({})
+            body: JSON.stringify({
+                expansion_px: annotationState.expansionPx !== undefined ? annotationState.expansionPx : 8,
+                clean_artifacts: cleanArtifacts
+            })
         });
 
         const result = await res.json();

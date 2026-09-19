@@ -321,6 +321,16 @@ class ProjectManager:
         if not folder_path or not folder_path.exists():
             return []
         
+        if folder_type == 'masks':
+            # Support both vector JSON masks and legacy raster masks
+            mask_files = set()
+            for file_path in folder_path.iterdir():
+                if file_path.is_file():
+                    name = file_path.name
+                    if name.endswith('_polygons.json') or name.endswith('_mask_layer.png'):
+                        mask_files.add(name)
+            return sorted(list(mask_files), key=_natural_sort_key)
+
         image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
         images = []
         
