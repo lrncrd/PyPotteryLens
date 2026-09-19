@@ -3,6 +3,43 @@ Flask Application for PyPotteryLens
 Migrated from Gradio to Flask with native HTML, CSS, and JavaScript
 """
 
+# --- Crash diagnostics: identical block in every PyPottery app (keep in sync) ---
+# Native crashes (torch/OpenCV segfaults) leave no Python traceback, and the
+# default excepthooks carry no timestamp or thread name. Output goes to stderr,
+# which the PyPottery Launcher already captures in logs/apps/<app>.log.
+def _install_crash_diagnostics():
+    import faulthandler
+    import sys
+    import threading
+    import time
+    import traceback
+
+    try:
+        faulthandler.enable()
+    except Exception:
+        pass  # stderr can be None/unusable on windowless builds
+
+    def _report(kind, exc_type, exc_value, exc_tb, thread_name="MainThread"):
+        try:
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+            sys.stderr.write(f"{stamp} CRITICAL [{thread_name}] {kind}\n{text}")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+    def _thread_hook(args):
+        if args.exc_type is SystemExit:
+            return
+        _report("Unhandled exception in thread", args.exc_type, args.exc_value,
+                args.exc_traceback, getattr(args.thread, "name", "?"))
+
+    sys.excepthook = lambda t, v, tb: _report("Unhandled exception", t, v, tb)
+    threading.excepthook = _thread_hook
+
+
+_install_crash_diagnostics()
+
 from flask import Flask, render_template, request, jsonify, send_file, send_from_directory, Response
 from pathlib import Path
 from typing import Dict, Optional
