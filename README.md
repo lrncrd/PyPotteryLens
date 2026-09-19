@@ -28,7 +28,7 @@ As part of the [**PyPottery**](https://github.com/lrncrd/PyPottery) toolkit, **P
 - **PDF Processing**: convert multi-page PDFs to high-quality images, with support for split-page scanning
 - **Drawing Detection**: YOLO-based computer vision model with customizable confidence thresholds
 - **Interactive Annotation Review**: canvas editor with brush, eraser, zoom/pan and a colorize mode to spot fused mask regions
-- **Nested Vessel Handling**: polygon tool to outline vessels drawn inside other vessels; inner areas are subtracted from the outer card
+- **Nested Vessel Handling**: polygon tool to outline by hand vessels drawn inside other vessels; each polygon becomes its own card
 - **Tabular Data Management**: integrated spreadsheet with AI-assisted extraction, canonical column names and per-drawing crop mode for small inventory numbers
 - **Post Processing**: grid of all pieces at real relative size, automatic orientation and ENT/FRAG classification
 - **Export**: standardized ZIP with images and merged metadata CSV, named with your own acronym
