@@ -4105,11 +4105,16 @@ def export_project_results(project_id):
                     print(f"Loaded classifications CSV with {len(classifications_df)} rows")
                     print(f"Classifications CSV columns: {list(classifications_df.columns)}")
                     
-                    # Ensure filename columns are compatible (remove .png if present in one but not other)
-                    if 'filename' in combined_df.columns and 'filename' in classifications_df.columns:
-                        # Normalize filenames - remove extension for matching
-                        combined_df['filename_base'] = combined_df['filename'].str.replace('.png', '').str.replace('.jpg', '')
-                        classifications_df['filename_base'] = classifications_df['filename'].str.replace('.png', '').str.replace('.jpg', '')
+                    # mask_info.csv names the card in `mask_file` (older files: `filename`), while
+                    # classifications.csv uses `filename` with the extension: join on the name without it.
+                    # (It used to require `filename` in both, so with the current mask_info.csv the join
+                    # never happened and the export lost type/position/rotation.)
+                    key_col = next((c for c in ('mask_file', 'filename') if c in combined_df.columns), None)
+                    if key_col and 'filename' in classifications_df.columns:
+                        def _strip_ext(series):
+                            return series.astype(str).str.replace(r'\.(png|jpe?g)$', '', regex=True, case=False)
+                        combined_df['filename_base'] = _strip_ext(combined_df[key_col])
+                        classifications_df['filename_base'] = _strip_ext(classifications_df['filename'])
                         
                         # Merge on normalized filename
                         merged = pd.merge(
@@ -4132,7 +4137,8 @@ def export_project_results(project_id):
                         print(f"Auto-merged {len(merged)} annotations to {merged_path}")
                         print(f"Merged columns: {list(merged.columns)}")
                     else:
-                        print("Warning: 'filename' column not found in one of the CSVs")
+                        print("Warning: no card-name column (mask_file/filename) to join the CSVs on - "
+                              f"tabular columns: {list(combined_df.columns)}, classification columns: {list(classifications_df.columns)}")
                         merged_path = cards_modified_path / 'merged_annotations.csv'
                         combined_df.to_csv(merged_path, index=False)
                 else:
