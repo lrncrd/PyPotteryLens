@@ -59,6 +59,7 @@ import cv2
 from werkzeug.utils import secure_filename
 import torch
 import gc
+import shutil
 import threading
 import time
 import platform
@@ -582,8 +583,16 @@ def clear_operation_progress():
 ROOT_DIR = Path(".")
 PRED_OUTPUT_DIR = ROOT_DIR / "outputs"
 PDFIMG_OUTPUT_DIR = ROOT_DIR / "pdf2img_outputs"
-MODELS_DIR = ROOT_DIR / "models_vision"
-MODELS_CLASSIFIER_DIR = ROOT_DIR / "models_classifier"
+# Model weights: in the suite's shared model cache when launched by the PyPottery Suite launcher
+# (so the launcher lists them under AI models), next to the app otherwise, as before.
+_LEGACY_MODELS_DIR = ROOT_DIR / "models_vision"
+_LEGACY_MODELS_CLASSIFIER_DIR = ROOT_DIR / "models_classifier"
+if _suite_model_cache:
+    MODELS_DIR = Path(_suite_model_cache) / "yolo"
+    MODELS_CLASSIFIER_DIR = Path(_suite_model_cache) / "classifier"
+else:
+    MODELS_DIR = _LEGACY_MODELS_DIR
+    MODELS_CLASSIFIER_DIR = _LEGACY_MODELS_CLASSIFIER_DIR
 ASSETS_DIR = ROOT_DIR / "imgs"
 
 # Logging: full tracebacks go to a rotating file so failures can be
@@ -601,7 +610,25 @@ def handle_error(exc: Exception, action: str, status: int = 500):
 
 # Create necessary directories
 for directory in [PDFIMG_OUTPUT_DIR, MODELS_DIR, PRED_OUTPUT_DIR, MODELS_CLASSIFIER_DIR]:
-    directory.mkdir(exist_ok=True)
+    directory.mkdir(parents=True, exist_ok=True)
+
+
+def _migrate_legacy_models(legacy_dir: Path, target_dir: Path):
+    """Move weights left in the old per-app folder (including custom .pt files) into the shared
+    cache once, so an existing install does not download them again."""
+    try:
+        if not legacy_dir.is_dir() or legacy_dir.resolve() == target_dir.resolve():
+            return
+        for f in legacy_dir.iterdir():
+            if f.is_file() and not (target_dir / f.name).exists():
+                shutil.move(str(f), str(target_dir / f.name))
+    except OSError as e:
+        print(f"Could not move models from {legacy_dir} to {target_dir}: {e}")
+
+
+if _suite_model_cache:
+    _migrate_legacy_models(_LEGACY_MODELS_DIR, MODELS_DIR)
+    _migrate_legacy_models(_LEGACY_MODELS_CLASSIFIER_DIR, MODELS_CLASSIFIER_DIR)
 
 
 # ==================== MODEL INITIALIZATION ====================
