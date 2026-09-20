@@ -2709,6 +2709,27 @@ body {
     gap: 6px;
 }
 
+/* Zone/scale tag (Z1, Z2, ...): same colour as the zone rectangle on the canvas */
+.zone-chip {
+    display: inline-block;
+    min-width: 26px;
+    padding: 0 6px;
+    border-radius: 4px;
+    color: #fff;
+    font-size: 0.72rem;
+    font-weight: 700;
+    line-height: 18px;
+    text-align: center;
+}
+
+.zone-chip-conflict {
+    background: #dc2626;
+}
+
+.zone-chip-none {
+    background: rgba(100, 116, 139, 0.85);
+}
+
 .vessel-item {
     display: flex;
     align-items: center;

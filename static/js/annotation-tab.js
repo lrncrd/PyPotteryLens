@@ -746,35 +746,37 @@ function computeColorized() {
     cc.getContext('2d').putImageData(out, 0, 0);
 }
 
-// Recompute which scale (if any) each connected mask blob would be assigned
-// at extraction time — mirrors the backend's _assign_px_per_cm zone
-// containment + smallest-zone-wins tie-break (utils.py) so the preview never
-// lies about the real outcome. Cached in annotationState.scaleAssignment
-// until a scale/zone changes (see persistScales/handleScaleZoneEnd/loadScales).
+// Which scale (if any) each vessel polygon gets at extraction time. Mirrors the backend
+// (utils.py: extract_polygon_with_expansion + _assign_px_per_cm): the centre of the polygon's
+// bounding box grown by the expansion (clamped to the image) is tested against the zones, the
+// smallest zone containing it wins, and a scale without a zone is the global fallback.
+// Cheap (a few hundred vertices at most), so it is computed on every redraw instead of cached:
+// the polygons, the zones and the expansion can change from many places.
+// Returns an array parallel to annotationState.polygons: {cx, cy (display coords), scaleIdx, conflict} or null.
 function computeScaleAssignment() {
     annotationState.scaleAssignment = null;
     const scales = annotationState.scales || [];
-    if (!scales.length) return;
+    const polys = annotationState.polygons || [];
+    if (!scales.length || !polys.length) return null;
 
-    const lm = labelMaskComponents();
-    if (!lm || !lm.count) return;
-    const { labels, count, w, h } = lm;
-
-    const sumX = new Float64Array(count + 1);
-    const sumY = new Float64Array(count + 1);
-    const n = new Float64Array(count + 1);
-    for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-            const l = labels[y * w + x];
-            if (l) { sumX[l] += x; sumY[l] += y; n[l]++; }
-        }
-    }
-
+    const pad = Math.max(0, Math.floor(annotationState.expansionPx || 0));
+    const imgW = annotationState.originalWidth, imgH = annotationState.originalHeight;
     const globalScaleIdx = scales.findIndex(s => !s.zone);
-    const blobs = [];
-    for (let l = 1; l <= count; l++) {
-        const cx = sumX[l] / n[l], cy = sumY[l] / n[l]; // display coords, for drawing
-        const [ox, oy] = displayToOriginal(cx, cy);
+
+    const result = polys.map(poly => {
+        if (!poly || poly.length < 3) return null;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        poly.forEach(([px, py]) => {
+            if (px < minX) minX = px;
+            if (px > maxX) maxX = px;
+            if (py < minY) minY = py;
+            if (py > maxY) maxY = py;
+        });
+        // cv2.boundingRect is inclusive: width = max - min + 1
+        const x1 = Math.max(0, minX - pad), y1 = Math.max(0, minY - pad);
+        const x2 = Math.min(imgW, maxX + 1 + pad), y2 = Math.min(imgH, maxY + 1 + pad);
+        const ox = (x1 + x2) / 2, oy = (y1 + y2) / 2;
+
         const matches = [];
         scales.forEach((s, idx) => {
             const z = s.zone;
@@ -783,14 +785,17 @@ function computeScaleAssignment() {
                 matches.push({ idx, area: Math.abs(z[2] - z[0]) * Math.abs(z[3] - z[1]) });
             }
         });
-        matches.sort((a, b) => a.area - b.area);
-        blobs.push({
+        matches.sort((m1, m2) => m1.area - m2.area);
+
+        const [cx, cy] = originalToDisplay(ox, oy);
+        return {
             cx, cy,
             scaleIdx: matches.length ? matches[0].idx : globalScaleIdx,
             conflict: matches.length > 1
-        });
-    }
-    annotationState.scaleAssignment = blobs;
+        };
+    });
+    annotationState.scaleAssignment = result;
+    return result;
 }
 
 function hslToRgb(h, s, l) {
@@ -1667,6 +1672,7 @@ function renderVesselsPanel() {
     if (polys.length === 0) {
         panel.style.display = 'none';
         list.innerHTML = '';
+        renderScalesPanel();
         return;
     }
     panel.style.display = 'block';
@@ -1682,6 +1688,7 @@ function renderVesselsPanel() {
         return `
             <div class="vessel-item ${isSel ? 'active' : ''}" data-index="${i}" style="${borderStyle}">
                 <span class="vessel-item-label" style="cursor:pointer;" title="Click to select on canvas">#${i + 1} — vessel (${p.length} pts)</span>
+                <span class="zone-chip-slot" data-index="${i}"></span>
                 <button class="vessel-simplify" data-index="${i}" title="Simplify polygon points"><i class="bi bi-bezier2"></i> Simplify</button>
                 <button class="vessel-delete" data-index="${i}"><i class="bi bi-trash3"></i> Delete</button>
             </div>
@@ -1697,6 +1704,9 @@ function renderVesselsPanel() {
             redrawCanvas();
         });
     });
+
+    fillZoneChips();
+    renderScalesPanel(); // the vessel count of each zone follows the polygons
 
     list.querySelectorAll('.vessel-simplify').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -1821,10 +1831,13 @@ function renderScalesPanel() {
     if (scales.length === 0) {
         panel.style.display = 'none';
         list.innerHTML = '';
+        fillZoneChips();
         return;
     }
     panel.style.display = 'block';
+    const assignment = computeScaleAssignment() || [];
     list.innerHTML = scales.map((s, i) => {
+        const vesselCount = assignment.filter(a => a && !a.conflict && a.scaleIdx === i).length;
         const ratio = computeScaleRatio(s);
         const ratioStr = ratio ? ratio.toFixed(1) + ' px/cm' : '—';
         const zoneStr = s.zone ? 'zone set' : 'global';
@@ -1832,7 +1845,7 @@ function renderScalesPanel() {
             ? ` <i class="bi bi-check-circle-fill" style="color:var(--primary)" title="Calibrated from the project-wide histogram"></i>` : '';
         return `
             <div class="vessel-item scale-line-item">
-                <span class="vessel-item-label">#${i + 1} · ${s.real_cm}cm → <code>${ratioStr}</code> <em>(${zoneStr})</em>${calibBadge}</span>
+                <span class="vessel-item-label"><span class="zone-chip" style="background:${scaleColor(i)}">Z${i + 1}</span> ${s.real_cm}cm → <code>${ratioStr}</code> <em>(${zoneStr})</em>${calibBadge} · ${vesselCount} vessel${vesselCount === 1 ? '' : 's'}</span>
                 <div class="scale-item-actions">
                     <button class="btn-scale-zone" data-idx="${i}" title="Draw a zone rectangle on canvas to limit this scale to a page region"><i class="bi bi-geo-alt"></i> Zone</button>
                     <button class="vessel-delete btn-scale-del" data-idx="${i}"><i class="bi bi-trash3"></i></button>
@@ -1846,6 +1859,27 @@ function renderScalesPanel() {
     });
     list.querySelectorAll('.btn-scale-del').forEach(btn => {
         btn.addEventListener('click', () => deleteScale(parseInt(btn.dataset.idx)));
+    });
+
+    fillZoneChips(); // the Zn chips of the vessels list follow the scales
+}
+
+// Fill the Zn chip of every row of the vessels list (same colours as the zones on the canvas)
+function fillZoneChips() {
+    const slots = document.querySelectorAll('#vessels-list .zone-chip-slot');
+    if (!slots.length) return;
+    const scaleCount = (annotationState.scales || []).length;
+    const assignment = scaleCount ? (computeScaleAssignment() || []) : [];
+    slots.forEach(slot => {
+        const a = assignment[parseInt(slot.dataset.index)];
+        if (!a) { slot.innerHTML = ''; return; }
+        if (a.conflict) {
+            slot.innerHTML = '<span class="zone-chip zone-chip-conflict" title="More than one zone contains this vessel: the smallest zone is used">!</span>';
+        } else if (a.scaleIdx >= 0) {
+            slot.innerHTML = `<span class="zone-chip" style="background:${scaleColor(a.scaleIdx)}" title="Scale used for this vessel">Z${a.scaleIdx + 1}</span>`;
+        } else {
+            slot.innerHTML = '<span class="zone-chip zone-chip-none" title="No scale applies to this vessel">?</span>';
+        }
     });
 }
 
@@ -2118,7 +2152,7 @@ function drawScaleLines(ctx) {
 
         // Label
         const ratio = computeScaleRatio(s);
-        const label = `#${i + 1} · ${s.real_cm}cm` + (ratio ? ` · ${ratio.toFixed(1)} px/cm` : '');
+        const label = `Z${i + 1} · ${s.real_cm}cm` + (ratio ? ` · ${ratio.toFixed(1)} px/cm` : '');
         const mx = (dx1 + dx2) / 2, my = (dy1 + dy2) / 2;
         ctx.fillStyle = '#f59e0b';
         ctx.font = 'bold 11px sans-serif';
@@ -2138,6 +2172,12 @@ function drawScaleLines(ctx) {
             ctx.strokeStyle = color;
             ctx.strokeRect(zx1, zy1, zx2 - zx1, zy2 - zy1);
             ctx.setLineDash([]);
+
+            // Name the zone in its corner, in its own colour
+            ctx.font = 'bold 12px sans-serif';
+            ctx.textBaseline = 'top';
+            ctx.fillStyle = color;
+            ctx.fillText(`Z${i + 1}`, Math.min(zx1, zx2) + 6, Math.min(zy1, zy2) + 5);
         }
         ctx.restore();
     });
@@ -2176,44 +2216,44 @@ function drawScaleLines(ctx) {
     }
 }
 
-// Badge each mask blob with the scale it would be assigned at extraction
-// time (or a warning if more than one zone claims it), so the user can see
-// the block<->scale association while still editing instead of only after
-// "Extract Cards". Only drawn once at least one scale exists.
+// Tag each vessel with the scale/zone it would be assigned at extraction time (Z1, Z2, ...),
+// a red "!" if more than one zone claims it, or a grey "?" if no scale applies, so the
+// vessel <-> zone association is visible while editing and not only after "Extract Cards".
+// Only drawn once at least one scale exists.
 function drawScaleAssignmentOverlay(ctx) {
     if (!(annotationState.scales || []).length) return;
 
-    if (!annotationState.scaleAssignment) computeScaleAssignment();
-    const blobs = annotationState.scaleAssignment;
-    if (!blobs) return;
+    const assignment = computeScaleAssignment();
+    if (!assignment) return;
 
     ctx.save();
     ctx.font = 'bold 11px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    blobs.forEach(b => {
-        const r = 10;
-        ctx.beginPath();
-        ctx.arc(b.cx, b.cy, r, 0, Math.PI * 2);
+    assignment.forEach(b => {
+        if (!b) return;
+        let text, fill;
         if (b.conflict) {
-            ctx.fillStyle = '#dc2626';
-            ctx.fill();
-            ctx.fillStyle = '#fff';
-            ctx.fillText('!', b.cx, b.cy + 1);
+            text = '!';
+            fill = '#dc2626';
         } else if (b.scaleIdx >= 0) {
-            ctx.fillStyle = scaleColor(b.scaleIdx);
-            ctx.fill();
-            ctx.fillStyle = '#fff';
-            ctx.fillText(String(b.scaleIdx + 1), b.cx, b.cy + 1);
+            text = `Z${b.scaleIdx + 1}`;
+            fill = scaleColor(b.scaleIdx);
         } else {
-            ctx.fillStyle = 'rgba(100,116,139,0.85)'; // no scale applies at all
-            ctx.fill();
-            ctx.fillStyle = '#fff';
-            ctx.fillText('?', b.cx, b.cy + 1);
+            text = '?'; // no scale applies at all
+            fill = 'rgba(100,116,139,0.85)';
         }
+        const w = Math.max(20, ctx.measureText(text).width + 12), h = 20;
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(b.cx - w / 2, b.cy - h / 2, w, h, 10);
+        else ctx.rect(b.cx - w / 2, b.cy - h / 2, w, h);
+        ctx.fillStyle = fill;
+        ctx.fill();
         ctx.lineWidth = 1.5;
         ctx.strokeStyle = '#fff';
         ctx.stroke();
+        ctx.fillStyle = '#fff';
+        ctx.fillText(text, b.cx, b.cy + 1);
     });
     ctx.restore();
 }
