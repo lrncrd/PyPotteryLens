@@ -27,6 +27,10 @@ const annotationState = {
     expansionPx: 8,          // mask expansion padding in original pixels (slider)
     selectedPolygonIndex: -1,// index of selected polygon (-1 if none)
     dragVertexIdx: -1,       // index of vertex being dragged in selected polygon
+    selectDrag: null,        // Select tool: {ox, oy, dx, dy, orig} while a whole polygon is dragged (ORIGINAL coords)
+    selectMoved: false,      // Select tool: the current drag really moved something
+    polygonsBaseline: null,  // JSON of the polygons at the last persist (source of the undo history)
+    undoStack: [],           // previous polygon states (JSON), newest last
     mousePreview: null,      // {x, y} display coords for rubber-band line
     vesselsSummary: {},      // base -> count of drawn vessels
     canvasZoom: 1,           // CSS zoom multiplier over the canvas buffer
@@ -1144,6 +1148,14 @@ function onCanvasDblClick(e) {
 
 function onPolygonKeyDown(e) {
     if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'z' || e.key === 'Z')) {
+        // only while the annotation canvas is on screen
+        if (annotationState.canvas && annotationState.canvas.offsetParent !== null) {
+            e.preventDefault();
+            undoPolygons();
+        }
+        return;
+    }
     if (annotationState.currentTool === 'scale') {
         if (e.key === 'Escape') { e.preventDefault(); cancelScaleDraft(); redrawCanvas(); }
         return;
@@ -1155,6 +1167,7 @@ function onPolygonKeyDown(e) {
             return;
         }
     }
+    if ((e.key === 'v' || e.key === 'V') && !e.ctrlKey && !e.metaKey) { selectTool('select'); return; }
     if (e.key === 'b' || e.key === 'B') { selectTool('brush'); return; }
     if (e.key === 'e' || e.key === 'E') { selectTool('eraser'); return; }
     if (e.key === 'p' || e.key === 'P') { selectTool('polygon'); return; }
@@ -1230,6 +1243,10 @@ function startDrawing(e) {
     }
     if (annotationState.currentTool === 'scale') {
         handleScaleMouseDown(e);
+        return;
+    }
+    if (annotationState.currentTool === 'select') {
+        handleSelectMouseDown(e, x, y, ox, oy);
         return;
     }
 
@@ -1327,6 +1344,11 @@ function draw(e) {
         return;
     }
 
+    if (annotationState.currentTool === 'select') {
+        handleSelectMouseMove(x, y, ox, oy);
+        return;
+    }
+
     if (annotationState.currentTool === 'eraser') {
         annotationState.brushCursor = { x, y };
         if (annotationState.isDrawing) {
@@ -1379,6 +1401,11 @@ function stopDrawing(e) {
 
     if (!annotationState.isDrawing) return;
     annotationState.isDrawing = false;
+
+    if (annotationState.currentTool === 'select') {
+        finishSelectDrag();
+        return;
+    }
 
     if (annotationState.currentTool === 'eraser') {
         annotationState.lastEraserPos = null;
@@ -1586,7 +1613,7 @@ function onCanvasMouseLeave() {
     const wasDrawing = annotationState.isDrawing;
     annotationState.brushCursor = null;
     annotationState.scaleCursorPos = null;
-    if (wasDrawing && (annotationState.currentTool === 'brush' || annotationState.currentTool === 'eraser')) {
+    if (wasDrawing && (annotationState.currentTool === 'brush' || annotationState.currentTool === 'eraser' || annotationState.currentTool === 'select')) {
         stopDrawing();
     } else {
         annotationState.isDrawing = false;
@@ -1605,20 +1632,211 @@ function selectTool(tool) {
         cancelScaleDraft();
     }
     annotationState.currentTool = tool;
+    annotationState.selectDrag = null;
+    annotationState.dragVertexIdx = -1;
     document.querySelectorAll('.btn-tool').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.tool === tool);
     });
 
     const canvas = annotationState.canvas;
     if (canvas) {
-        canvas.style.cursor = 'crosshair';
+        canvas.style.cursor = tool === 'select' ? 'default' : 'crosshair';
     }
+}
+
+// ---- Select tool: pick a vessel, move it whole or move/add/delete its vertices ----
+
+const SELECT_VERTEX_RADIUS = 8;  // display px
+const SELECT_EDGE_RADIUS = 5;    // display px
+const SELECT_MOVE_THRESHOLD = 3; // display px: a click is not a move
+
+function topPolygonAt(ox, oy) {
+    const polys = annotationState.polygons || [];
+    for (let i = polys.length - 1; i >= 0; i--) {
+        if (polys[i] && pointInPolygon([ox, oy], polys[i])) return i;
+    }
+    return -1;
+}
+
+function selectedVertexAt(x, y) {
+    const poly = annotationState.polygons[annotationState.selectedPolygonIndex];
+    if (!poly) return -1;
+    for (let v = 0; v < poly.length; v++) {
+        const [vx, vy] = originalToDisplay(poly[v][0], poly[v][1]);
+        if (Math.hypot(x - vx, y - vy) <= SELECT_VERTEX_RADIUS) return v;
+    }
+    return -1;
+}
+
+function selectedEdgeAt(x, y) {
+    const poly = annotationState.polygons[annotationState.selectedPolygonIndex];
+    if (!poly) return -1;
+    for (let v = 0; v < poly.length; v++) {
+        const next = (v + 1) % poly.length;
+        const p1 = originalToDisplay(poly[v][0], poly[v][1]);
+        const p2 = originalToDisplay(poly[next][0], poly[next][1]);
+        if (pointToSegmentDistance([x, y], p1, p2) <= SELECT_EDGE_RADIUS) return v;
+    }
+    return -1;
+}
+
+function handleSelectMouseDown(e, x, y, ox, oy) {
+    const s = annotationState;
+    s.selectMoved = false;
+    s.selectDrag = null;
+    s.dragVertexIdx = -1;
+
+    if (s.selectedPolygonIndex >= 0 && s.polygons[s.selectedPolygonIndex]) {
+        const poly = s.polygons[s.selectedPolygonIndex];
+
+        const vIdx = selectedVertexAt(x, y);
+        if (vIdx >= 0) {
+            // Alt/Shift+click deletes the vertex (a polygon keeps at least 3)
+            if (e.altKey || e.shiftKey) {
+                if (poly.length > 3) {
+                    poly.splice(vIdx, 1);
+                    s.isModified = true;
+                    renderVesselsPanel();
+                    redrawCanvas();
+                    persistPolygons();
+                }
+                return;
+            }
+            s.isDrawing = true;
+            s.dragVertexIdx = vIdx;
+            s.selectDrag = { x, y };
+            return;
+        }
+
+        // Click on an edge: new vertex, dragged right away
+        const eIdx = selectedEdgeAt(x, y);
+        if (eIdx >= 0) {
+            const at = eIdx + 1;
+            poly.splice(at, 0, [ox, oy]);
+            s.isDrawing = true;
+            s.dragVertexIdx = at;
+            s.selectDrag = { x, y };
+            s.selectMoved = true; // the insertion is already a change
+            s.isModified = true;
+            renderVesselsPanel();
+            redrawCanvas();
+            return;
+        }
+    }
+
+    // Otherwise pick the vessel under the cursor (top-most first) and start moving it
+    const hit = topPolygonAt(ox, oy);
+    if (hit !== s.selectedPolygonIndex) {
+        s.selectedPolygonIndex = hit;
+        renderVesselsPanel();
+    }
+    if (hit >= 0) {
+        s.isDrawing = true;
+        s.selectDrag = { x, y, ox, oy, orig: s.polygons[hit].map(p => [p[0], p[1]]) };
+    }
+    redrawCanvas();
+}
+
+function handleSelectMouseMove(x, y, ox, oy) {
+    const s = annotationState;
+
+    if (!s.isDrawing || !s.selectDrag) {
+        // Hover feedback
+        let cursor = 'default';
+        if (s.selectedPolygonIndex >= 0 && selectedVertexAt(x, y) >= 0) cursor = 'pointer';
+        else if (s.selectedPolygonIndex >= 0 && selectedEdgeAt(x, y) >= 0) cursor = 'copy';
+        else if (topPolygonAt(ox, oy) >= 0) cursor = 'move';
+        if (s.canvas) s.canvas.style.cursor = cursor;
+        return;
+    }
+
+    if (Math.hypot(x - s.selectDrag.x, y - s.selectDrag.y) > SELECT_MOVE_THRESHOLD) s.selectMoved = true;
+    if (!s.selectMoved) return;
+
+    const maxX = s.originalWidth - 1, maxY = s.originalHeight - 1;
+    const poly = s.polygons[s.selectedPolygonIndex];
+    if (!poly) return;
+
+    if (s.dragVertexIdx >= 0) {
+        // Move one vertex
+        if (poly[s.dragVertexIdx]) {
+            poly[s.dragVertexIdx] = [Math.min(Math.max(ox, 0), maxX), Math.min(Math.max(oy, 0), maxY)];
+        }
+    } else if (s.selectDrag.orig) {
+        // Move the whole polygon; the shift is limited so that no vertex leaves the image
+        const orig = s.selectDrag.orig;
+        let minX = Infinity, minY = Infinity, mxX = -Infinity, mxY = -Infinity;
+        orig.forEach(([px, py]) => {
+            if (px < minX) minX = px;
+            if (px > mxX) mxX = px;
+            if (py < minY) minY = py;
+            if (py > mxY) mxY = py;
+        });
+        const dx = Math.min(Math.max(ox - s.selectDrag.ox, -minX), maxX - mxX);
+        const dy = Math.min(Math.max(oy - s.selectDrag.oy, -minY), maxY - mxY);
+        s.polygons[s.selectedPolygonIndex] = orig.map(([px, py]) => [px + dx, py + dy]);
+    }
+    s.isModified = true;
+    redrawCanvas();
+}
+
+function finishSelectDrag() {
+    const s = annotationState;
+    const moved = s.selectMoved;
+    s.selectDrag = null;
+    s.dragVertexIdx = -1;
+    s.selectMoved = false;
+    if (moved) {
+        s.isModified = true;
+        renderVesselsPanel();   // also refreshes the zone chips: the vessel may now sit in another zone
+        persistPolygons();
+    }
+    redrawCanvas();
+}
+
+// ---- Undo for the polygons (Ctrl+Z) --------------------------------------
+// History is derived from persistPolygons(): every persisted change stores the state before it, so
+// all tools (brush, polygon, eraser, select, delete, simplify) are undoable without touching each one.
+
+function trackPolygonHistory() {
+    const s = annotationState;
+    const current = JSON.stringify(s.polygons || []);
+    if (s.polygonsBaseline !== null && s.polygonsBaseline !== current) {
+        s.undoStack.push(s.polygonsBaseline);
+        if (s.undoStack.length > 50) s.undoStack.shift();
+    }
+    s.polygonsBaseline = current;
+}
+
+function resetPolygonHistory() {
+    annotationState.undoStack = [];
+    annotationState.polygonsBaseline = JSON.stringify(annotationState.polygons || []);
+}
+
+function undoPolygons() {
+    const s = annotationState;
+    if (!s.undoStack.length) {
+        if (window.PyPotteryUtils) window.PyPotteryUtils.showToast('Nothing to undo', 'info');
+        return;
+    }
+    const previous = s.undoStack.pop();
+    s.polygons = JSON.parse(previous);
+    s.polygonsBaseline = previous;   // persistPolygons() then sees no change and adds nothing to the history
+    s.selectedPolygonIndex = -1;
+    s.selectDrag = null;
+    s.dragVertexIdx = -1;
+    s.isModified = true;
+    updateVesselsSummaryForCurrent();
+    renderVesselsPanel();
+    redrawCanvas();
+    persistPolygons();
 }
 
 // ---- Vector Polygons Management -----------------------------------------
 
 async function loadPolygons(baseName) {
     annotationState.polygons = [];
+    resetPolygonHistory();
     annotationState.currentPolygon = [];
     annotationState.activeLasso = null;
     annotationState.selectedPolygonIndex = -1;
@@ -1642,6 +1860,7 @@ async function loadPolygons(baseName) {
                 return p;
             });
             annotationState.polygons = loaded;
+            resetPolygonHistory();
             annotationState.expansionPx = data.expansion_px !== undefined ? data.expansion_px : 8;
             const slider = document.getElementById('mask-expansion');
             const valEl = document.getElementById('mask-expansion-val');
@@ -1765,6 +1984,7 @@ function updateVesselsSummaryForCurrent() {
 }
 
 async function persistPolygons() {
+    trackPolygonHistory();
     if (!annotationState.currentProject || annotationState.currentIndex < 0) return;
     const img = annotationState.images[annotationState.currentIndex];
     if (!img) return;
