@@ -1641,7 +1641,7 @@ def get_image_polygons(project_id, base):
         return jsonify({
             'success': True,
             'polygons': data.get('polygons', []),
-            'expansion_px': data.get('expansion_px', 8)
+            'expansion_px': data.get('expansion_px', 20)
         })
     except Exception as e:
         return jsonify({'error': str(e), 'success': False}), 500
@@ -1656,7 +1656,7 @@ def save_image_polygons(project_id, base):
             return jsonify({'error': 'Project masks folder not found', 'success': False}), 404
         data = request.get_json(silent=True) or {}
         polygons = data.get('polygons', [])
-        expansion_px = int(data.get('expansion_px', 8))
+        expansion_px = int(data.get('expansion_px', 20))
         write_polygons_sidecar(masks_path, base, polygons, expansion_px)
         return jsonify({'success': True, 'count': len(polygons), 'expansion_px': expansion_px})
     except Exception as e:
@@ -4234,8 +4234,9 @@ def export_project_results(project_id):
                             if mask.any():
                                 row = metadata_df[mask].iloc[0]
                                 
-                                # Copy all columns except unwanted ones
-                                exclude_cols = ['mask_file', 'filename', 'Filename', 'filename_base', 'file', 'ID', 'id']
+                                # Copy all columns except unwanted ones (position/rotation are
+                                # internal orientation-classifier fields, not export metadata)
+                                exclude_cols = ['mask_file', 'filename', 'Filename', 'filename_base', 'file', 'ID', 'id', 'position', 'rotation']
                                 for metadata_col in metadata_df.columns:
                                     if metadata_col not in exclude_cols:
                                         row_data[metadata_col] = row[metadata_col]

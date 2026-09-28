@@ -24,7 +24,7 @@ const annotationState = {
     polygons: [],            // committed vessel polygons (ORIGINAL coords)
     currentPolygon: [],      // in-progress polygon (ORIGINAL coords)
     activeLasso: null,       // in-progress freehand stroke [[ox, oy], ...]
-    expansionPx: 8,          // mask expansion padding in original pixels (slider)
+    expansionPx: 20,         // mask expansion padding in original pixels (slider)
     selectedPolygonIndex: -1,// index of selected polygon (-1 if none)
     dragVertexIdx: -1,       // index of vertex being dragged in selected polygon
     selectDrag: null,        // Select tool: {ox, oy, dx, dy, orig} while a whole polygon is dragged (ORIGINAL coords)
@@ -1861,7 +1861,7 @@ async function loadPolygons(baseName) {
             });
             annotationState.polygons = loaded;
             resetPolygonHistory();
-            annotationState.expansionPx = data.expansion_px !== undefined ? data.expansion_px : 8;
+            annotationState.expansionPx = data.expansion_px !== undefined ? data.expansion_px : 20;
             const slider = document.getElementById('mask-expansion');
             const valEl = document.getElementById('mask-expansion-val');
             if (slider) slider.value = annotationState.expansionPx;
@@ -2656,7 +2656,7 @@ async function extractCards() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                expansion_px: annotationState.expansionPx !== undefined ? annotationState.expansionPx : 8,
+                expansion_px: annotationState.expansionPx !== undefined ? annotationState.expansionPx : 20,
                 clean_artifacts: cleanArtifacts
             })
         });

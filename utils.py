@@ -429,7 +429,7 @@ class ModelProcessor:
                     if len(poly) >= 3:
                         polygons.append(poly)
             
-            write_polygons_sidecar(output_folder, base_name, polygons, expansion_px=8)
+            write_polygons_sidecar(output_folder, base_name, polygons, expansion_px=20)
         except Exception as e:
             print(f"Error processing image {image_file}: {str(e)}")
 
@@ -748,7 +748,7 @@ class MaskExtractor:
                 if default_expansion_px is not None:
                     expansion_px = default_expansion_px
                 elif expansion_px is None:
-                    expansion_px = 8
+                    expansion_px = 20
                 
                 scales = read_scale_sidecar(masks_path, base_filename)
 
@@ -1213,7 +1213,7 @@ POLYGONS_SIDECAR_SUFFIX = "_polygons.json"
 VESSELS_SIDECAR_SUFFIX = "_vessels.json"
 
 
-def write_polygons_sidecar(masks_dir, base_filename: str, polygons: list, expansion_px: int = 8) -> Path:
+def write_polygons_sidecar(masks_dir, base_filename: str, polygons: list, expansion_px: int = 20) -> Path:
     """Persist vector polygons for an image as JSON."""
     masks_dir = Path(masks_dir)
     masks_dir.mkdir(parents=True, exist_ok=True)
@@ -1228,7 +1228,7 @@ def write_polygons_sidecar(masks_dir, base_filename: str, polygons: list, expans
     return sidecar
 
 
-def save_polygons(img_name: str, polygons: list, output_folder: Path, expansion_px: int = 8) -> Path:
+def save_polygons(img_name: str, polygons: list, output_folder: Path, expansion_px: int = 20) -> Path:
     """Alias for write_polygons_sidecar"""
     return write_polygons_sidecar(output_folder, img_name, polygons, expansion_px)
 
@@ -1259,10 +1259,10 @@ def read_polygons_sidecar(masks_dir, base_filename: str) -> dict:
                     else:
                         cleaned_polygons.append(poly)
                 if modified:
-                    write_polygons_sidecar(masks_dir, base_filename, cleaned_polygons, data.get("expansion_px", 8))
+                    write_polygons_sidecar(masks_dir, base_filename, cleaned_polygons, data.get("expansion_px", 20))
                 return {
                     "polygons": cleaned_polygons,
-                    "expansion_px": data.get("expansion_px", 8)
+                    "expansion_px": data.get("expansion_px", 20)
                 }
         except Exception as e:
             print(f"Error reading polygons sidecar for {base_filename}: {e}")
@@ -1299,16 +1299,16 @@ def read_polygons_sidecar(masks_dir, base_filename: str) -> dict:
             if vessels:
                 polygons.extend(vessels)
             # Cache converted polygons
-            write_polygons_sidecar(masks_dir, base_filename, polygons, expansion_px=8)
-            return {"polygons": polygons, "expansion_px": 8}
+            write_polygons_sidecar(masks_dir, base_filename, polygons, expansion_px=20)
+            return {"polygons": polygons, "expansion_px": 20}
         except Exception as e:
             print(f"Error converting legacy mask for {base_filename}: {e}")
 
     if vessels:
-        write_polygons_sidecar(masks_dir, base_filename, vessels, expansion_px=8)
-        return {"polygons": vessels, "expansion_px": 8}
+        write_polygons_sidecar(masks_dir, base_filename, vessels, expansion_px=20)
+        return {"polygons": vessels, "expansion_px": 20}
 
-    return {"polygons": [], "expansion_px": 8}
+    return {"polygons": [], "expansion_px": 20}
 
 
 def write_vessels_sidecar(masks_dir, base_filename: str, polygons: list) -> Path:
