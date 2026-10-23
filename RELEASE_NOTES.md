@@ -1,3 +1,10 @@
+## What's new in v0.3.4
+
+### 📦 Export
+- **Excel copy of the metadata** — new "Also export Excel (.xlsx)" switch in the Export dialog adds `{acronym}_metadata.xlsx` to the ZIP, next to the CSV. Excel opens it directly, with no separator or encoding surprises
+- **Safer metadata CSV** — every field is quoted, line breaks inside a value (e.g. text read by the AI) become spaces, and the file is UTF-8 with BOM, so commas, quotes and accents no longer break the table when the CSV is opened in Excel or imported elsewhere
+- `openpyxl` added to the requirements
+
 ## What's new in v0.3.0
 
 ### ✏️ Annotation tab

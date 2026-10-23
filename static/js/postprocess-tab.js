@@ -414,6 +414,7 @@ function showExportDialog() {
 function hideExportDialog() {
     document.getElementById('export-dialog').style.display = 'none';
     document.getElementById('export-acronym').value = '';
+    document.getElementById('export-xlsx').checked = false;
     const st = document.getElementById('export-dialog-status');
     if (st) { st.textContent = ''; st.className = 'status-message'; }
 }
@@ -436,7 +437,7 @@ async function handleExportConfirm() {
         const response = await fetch(`/api/projects/${projectId()}/export`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ acronym: acronym })
+            body: JSON.stringify({ acronym: acronym, xlsx: document.getElementById('export-xlsx').checked })
         });
 
         window.PyPotteryUtils.hideLoading();

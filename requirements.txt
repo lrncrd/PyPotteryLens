@@ -9,6 +9,7 @@ psutil
 gputil
 reportlab
 pandas
+openpyxl
 numpy
 scipy
 transformers>=4.51.0

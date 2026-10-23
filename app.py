@@ -46,6 +46,7 @@ from typing import Dict, Optional
 import sys
 import os
 import re
+import csv
 import json
 # Module-level aliases so shared helpers can use them (some routes also import
 # these names locally, which harmlessly shadows within those functions).
@@ -4058,6 +4059,13 @@ def merge_project_annotations(project_id):
         return jsonify({'error': str(e), 'success': False}), 500
 
 
+def _write_metadata_csv(df, path):
+    """Write the export CSV so any reader gets one row per record: every field
+    quoted, embedded line breaks flattened, UTF-8 BOM so Excel keeps accents."""
+    df.replace(r'\s*[\r\n]+\s*', ' ', regex=True).to_csv(
+        path, index=False, encoding='utf-8-sig', quoting=csv.QUOTE_ALL, lineterminator='\r\n')
+
+
 @app.route('/api/projects/<project_id>/export', methods=['POST'])
 def export_project_results(project_id):
     """Export final results for a project (with auto-merge if CSV exists)"""
@@ -4069,6 +4077,7 @@ def export_project_results(project_id):
         
         data = request.json
         acronym = data.get('acronym')
+        include_xlsx = bool(data.get('xlsx'))
         
         if not acronym:
             return jsonify({'error': 'Acronym is required', 'success': False}), 400
@@ -4276,7 +4285,10 @@ def export_project_results(project_id):
             # Save metadata to temp file — all fields as text
             metadata_temp_path = Path(temp_dir) / f"{acronym}_metadata.csv"
             final_df = final_df.astype(str).replace({'nan': '', 'None': ''})
-            final_df.to_csv(metadata_temp_path, index=False)
+            _write_metadata_csv(final_df, metadata_temp_path)
+            xlsx_temp_path = Path(temp_dir) / f"{acronym}_metadata.xlsx"
+            if include_xlsx:
+                final_df.to_excel(xlsx_temp_path, index=False)
             print(f"Created final metadata with {len(final_df)} rows and columns: {list(final_df.columns)}")
             
             # Create ZIP
@@ -4302,6 +4314,8 @@ def export_project_results(project_id):
                 # Add metadata
                 zipf.write(metadata_temp_path, f"{acronym}_metadata.csv")
                 print(f"Added metadata CSV")
+                if include_xlsx:
+                    zipf.write(xlsx_temp_path, f"{acronym}_metadata.xlsx")
         
             # Send the ZIP file, with export counts exposed as headers so the
             # frontend can report "exported vs excluded" after download.
