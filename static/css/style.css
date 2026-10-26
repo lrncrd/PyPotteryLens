@@ -5156,6 +5156,12 @@ body {
     user-select: none;
 }
 
+/* Inside a .form-group the generic `label { display: block }` would win over inline-flex */
+.form-group .switch-toggle {
+    display: inline-flex;
+    margin-bottom: 0;
+}
+
 .switch-toggle input {
     position: absolute;
     opacity: 0;
